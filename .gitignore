@@ -1,0 +1,7 @@
+﻿.venv/
+__pycache__/
+_overlay_*.png
+_overlay_*.svg
+_debug/
+_shadow_out/
+*.echo

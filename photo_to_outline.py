@@ -1,0 +1,1584 @@
+#!/usr/bin/env python3
+# =============================================================================
+# photo_to_outline.py — foto da ferramenta → SVG de contorno em mm (Spec 12)
+# -----------------------------------------------------------------------------
+# Recebe uma FOTO de uma ferramenta apoiada sobre a BASE DE CALIBRAÇÃO impressa
+# (moldura de marcadores ArUco + miolo branco — gerada por make_calibration_target
+# → tools/base.svg) e emite um SVG em MILÍMETROS — contorno + preenchimento translúcido
+# numa cor destacada (sobrepõe o objeto p/ conferir cobertura) — com o contorno EXTERNO
+# da peça, corrigido de perspectiva/inclinação pelos
+# marcadores e SUAVIZADO para impressão 3D (sem cantos de 90°, sem bicos afiados).
+# A saída alimenta tools/svg_to_scad.py → ItemPoly → gridfinity_itemholder (Spec 11).
+#
+# Pipeline (5 estágios): rectify (homografia ArUco → miolo branco em mm) →
+# segment_tool (objeto sobre branco) → [symmetrize_mask, opcional] → extract_outline
+# → process_for_print → polygon_to_svg. O estágio de simetria (--symmetry) espelha a
+# máscara e tira a MÉDIA das duas metades (duas amostras do mesmo contorno → menos
+# ruído) quando o objeto é simétrico. Funções puras de polígono/escala ficam separadas da I/O para
+# serem testáveis sem imagem (tools/tests/). A GEOMETRIA da base vem de
+# calibration_target.py (fonte única, compartilhada com o renderizador do alvo).
+#
+# Roda no venv isolado tools/.venv (numpy + opencv-python); a suíte OpenSCAD
+# segue stdlib-pura. Uso:
+#   tools/.venv/Scripts/python tools/photo_to_outline.py --in tools/thermpro.jpg \
+#       --out tools/thermpro.svg
+# (imprima tools/base.svg em A4 a 100%, apoie a peça no centro branco e
+#  fotografe de cima — o mais próximo do nadir, mirando pelo anel-guia.)
+# =============================================================================
+
+import argparse
+import base64
+import math
+import os
+import sys
+
+import numpy as np
+
+try:
+    import cv2
+except ImportError:  # mensagem amigável fora do venv
+    print("ERRO: opencv ausente. Use o Python do venv: tools/.venv/Scripts/python", file=sys.stderr)
+    raise
+
+import calibration_target as CT
+
+# Console do Windows costuma ser cp1252 — força UTF-8 para "→", "·" etc.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
+# -----------------------------------------------------------------------------
+# Constantes / defaults (ver specs/12-foto-para-contorno.md)
+# -----------------------------------------------------------------------------
+PX_PER_MM = 8.0            # resolução do canvas métrico retificado (px/mm)
+DICT_NAME = "DICT_4X4_50"  # dicionário ArUco da base; DEVE casar com a impressa
+MIN_MARKERS = 8            # mínimo de marcadores detectados p/ homografia confiável
+TILT_WARN_DEG = 5.0        # avisa se a câmera passou disto do nadir (paralaxe cresce)
+SEG_SAT_MARGIN = 45        # saturação ACIMA do fundo (branco) → pixel colorido = objeto
+SEG_VAL_FRAC = 0.30        # brilho ABAIXO de SEG_VAL_FRAC × fundo → pixel escuro = objeto.
+                           # 0.30 (não 0.5): exclui a SOMBRA DE CONTATO (faixa fofa V≈90-130
+                           # na base da peça) mantendo o corpo preto real (V≈30-50) — sem ela
+                           # o teste de escuro abocanhava a sombra e serrilhava a base.
+SEG_VAL_WEAK_FRAC = 0.65   # corte FRACO da histerese de borda (--shadow): V abaixo disto (não é
+                           # papel claro) E com croma continua sendo objeto. Cresce a borda
+                           # arredondada (bisel preto no topo, toe laranja no fundo) pela rampa até
+                           # parar, recuperando a borda real que o corte único deixava comida/serrilhada.
+SEG_WEAK_SAT_MIN = 35      # piso de SATURAÇÃO do corte fraco da histerese: o plástico real (tanto o
+                           # bisel preto do topo quanto o toe laranja do fundo) tem CROMA (S≈40-85); a
+                           # SOMBRA DE CONTATO é cinza DESATURADA (S≈25). Exigir S ≥ isto faz a histerese
+                           # crescer pela borda dos DOIS lados (recupera a borda real) SEM inundar a
+                           # sombra cinza da base — que só deixaria o pocket frouxo. Separa os dois.
+SEG_SHADOW_GROW_MM = 3.0   # alcance MÁX. do crescimento da histerese a partir dos núcleos (preto+colorido).
+                           # Limitado (dilatação geodésica) p/ cobrir a RAMPA da borda; com o piso
+                           # de saturação (SEG_WEAK_SAT_MIN) o crescimento é AUTO-LIMITADO — para no
+                           # papel claro e não entra na sombra cinza, então 3 mm cobre a borda dos dois
+                           # lados sem risco de inflar (medido: topo +2.6 mm preto, fundo +0.4 mm toe).
+ILLUM_SCALE = 0.125        # escala reduzida p/ estimar o campo de luz (só velocidade)
+ILLUM_KERNEL_FRAC = 0.9    # kernel do closing ≈ fração do maior lado; DEVE cobrir o objeto
+ILLUM_MAX_GAIN = 3.0       # teto do ganho da divisão (não amplifica ruído/JPEG nas zonas escuras)
+SEG_HUE_MARGIN = 25        # |matiz − matiz_do_fundo| (unid. OpenCV, ½°) acima disto = pixel cromático
+SEG_HUE_SAT_MIN = 60       # saturação mínima p/ aceitar um pixel SÓ pelo matiz (acima do ruído do fundo).
+                           # Recupera a BORDA LARANJA arredondada com brilho (highlight) que baixa a
+                           # saturação abaixo do corte de `colored` mas continua com matiz quente,
+                           # bem longe do fundo azulado — sem isso o realce virava uma "mossa".
+SYM_SEARCH_MM = 4.0         # busca do eixo de simetria em torno do centroide (± mm), maximizando IoU
+MIN_RADIUS_MM = 1.5
+SMOOTH_MM = 8.0             # janela do low-pass que remove o serrilhado (≪ features reais)
+CLEARANCE_MM = 0.0          # ETAPA 1 SEM GANHO: contorno no tamanho REAL; a folga é aplicada
+                            # depois (gridfinity_itemholder clearance, ou à mão). Ver Manual.
+DP_EPSILON_MM = 0.4
+FIT_TOL_MM = 0.2            # tolerância do ajuste de Bézier (Schneider): passa pela média
+BEZIER_GUIDE_MM = 0.5      # folga do guia p/ o ajuste (contém a peça; bbox depois é fixada ao objeto)
+CORNER_ANGLE_DEG = 40.0    # ângulo p/ marcar um canto (nó cusp entre curvas suaves)
+ANCHOR_SIMPLIFY_MM = 2.0   # RDP do fecho convexo: MAIOR = menos âncoras/nós (mais "hull"),
+                            # MENOR = mais âncoras = contorno mais justo (porém mais nós)
+MAX_NODES = 4              # TETO RÍGIDO de CURVAS (Béziers suaves) do contorno; default 4.
+                            # >0 = teto real: o ajuste parte das âncoras dominantes (≤ teto),
+                            # 1 cúbica por trecho, e só subdivide o trecho de pior contenção
+                            # ENQUANTO sobra orçamento — nunca passa do teto (ver
+                            # _fit_anchored_capped). 0 = automático/ILIMITADO (subdivisão por
+                            # contenção sem teto: o caminho legado, justo porém com mais nós).
+ANCHOR_EPS_MM = 0.08       # penetração máx. (mm) tolerada no piso ao ajustar cada trecho (modo fiel)
+POCKET_EPS_MM = 0.5        # penetração tolerada (mm) no modo POCKET de encaixe: a curva pode
+                            # TOCAR/cortar de leve a peça em vez de estufar p/ fora a span inteira
+                            # por ruído sub-mm → pocket bem mais justo, ainda contendo ~0.998
+ANCHOR_MIN_DIST_MM = 10.0  # distância mínima (mm) entre âncoras DO MESMO QUADRANTE: ao adensar
+                            # (8, 12, 16…), o 2º/3º ponto de um quadrante só entra se ficar a
+                            # ≥ este valor dos já escolhidos ali → âncoras espaçadas, sem aglomerar
+PROTRUSION_DEV_MM = 0.8    # proeminência mín. (mm) de uma SALIÊNCIA local p/ virar âncora forçada:
+                            # o seletor radial por quadrante ancora os CANTOS (mais externos ao
+                            # centro) e ignora ressaltos no MEIO de uma aresta (pega lateral etc.).
+                            # Um pico convexo que se ergue ≥ este valor acima da vizinhança ganha
+                            # âncora própria → a cúbica não arredonda por cima dele. Só vale com
+                            # teto > 4 (no teto 4 as 4 vagas são dos cantos). Ver _protrusion_anchors.
+CONTAIN_COVERAGE = 0.99    # encaixe mínimo p/ dar a peça por "contida"; abaixo disso, com
+                            # teto de curvas ativo, o CLI avisa p/ aumentar --max-nodes
+RASTER_PPM = 16.0           # px/mm das operações raster (filete/IoU)
+OUTLINE_COLOR = "#ff00ff"      # cor BEM DESTACADA (magenta) do vetor de saída e do overlay
+OUTLINE_FILL_OPACITY = 0.25    # preenchimento quase transparente: sobrepõe TODO o objeto p/ conferir
+                               # de relance se o contorno o cobre (qualquer parte de fora = contorno curto)
+
+
+class GridDetectionError(RuntimeError):
+    """Confiança insuficiente na retificação (marcadores ArUco insuficientes)."""
+
+
+def warn(msg):
+    print(f"WARNING: {msg}", file=sys.stderr)
+
+
+# =============================================================================
+# FUNÇÕES PURAS DE POLÍGONO  (pts = list[(x,y)] ou ndarray Nx2, em mm)
+# =============================================================================
+def _xy(pts):
+    """Normaliza para lista de tuplas float."""
+    return [(float(p[0]), float(p[1])) for p in pts]
+
+
+def signed_area(pts):
+    """Área com sinal (shoelace): >0 = CCW (eixo Y para cima)."""
+    p = _xy(pts)
+    n = len(p)
+    a = 0.0
+    for i in range(n):
+        x0, y0 = p[i]
+        x1, y1 = p[(i + 1) % n]
+        a += x0 * y1 - x1 * y0
+    return a / 2.0
+
+
+def polygon_area(pts):
+    return abs(signed_area(pts))
+
+
+def ensure_ccw(pts):
+    p = _xy(pts)
+    return p if signed_area(p) >= 0 else list(reversed(p))
+
+
+def bbox(pts):
+    p = _xy(pts)
+    xs = [q[0] for q in p]
+    ys = [q[1] for q in p]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def size(pts):
+    min_x, min_y, max_x, max_y = bbox(pts)
+    return (max_x - min_x, max_y - min_y)
+
+
+def is_closed(pts, tol=1e-6):
+    p = _xy(pts)
+    if len(p) < 2:
+        return False
+    return abs(p[0][0] - p[-1][0]) < tol and abs(p[0][1] - p[-1][1]) < tol
+
+
+def dedup_closing_point(pts, tol=1e-6):
+    p = _xy(pts)
+    return p[:-1] if (len(p) >= 2 and is_closed(p, tol)) else p
+
+
+def close_polygon(pts):
+    p = _xy(pts)
+    return p if is_closed(p) else p + [p[0]]
+
+
+def _dist_point_seg(p, a, b):
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    dx, dy = bx - ax, by - ay
+    dd = dx * dx + dy * dy
+    if dd == 0:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * dx + (py - ay) * dy) / dd
+    t = max(0.0, min(1.0, t))
+    cx, cy = ax + t * dx, ay + t * dy
+    return math.hypot(px - cx, py - cy)
+
+
+def douglas_peucker(pts, eps):
+    """Ramer–Douglas–Peucker numa polilinha ABERTA (mantém extremos)."""
+    p = _xy(pts)
+    if len(p) < 3:
+        return p
+    dmax, idx = 0.0, 0
+    for i in range(1, len(p) - 1):
+        d = _dist_point_seg(p[i], p[0], p[-1])
+        if d > dmax:
+            dmax, idx = d, i
+    if dmax > eps:
+        left = douglas_peucker(p[:idx + 1], eps)
+        right = douglas_peucker(p[idx:], eps)
+        return left[:-1] + right
+    return [p[0], p[-1]]
+
+
+def chaikin(pts, iterations, closed=True):
+    """Corner-cutting de Chaikin (suaviza/arredonda cantos)."""
+    p = _xy(pts)
+    for _ in range(max(0, int(iterations))):
+        out = []
+        n = len(p)
+        rng = range(n) if closed else range(n - 1)
+        for i in rng:
+            a = p[i]
+            b = p[(i + 1) % n]
+            q = (0.75 * a[0] + 0.25 * b[0], 0.75 * a[1] + 0.25 * b[1])
+            r = (0.25 * a[0] + 0.75 * b[0], 0.25 * a[1] + 0.75 * b[1])
+            out.extend((q, r))
+        if not closed:
+            out = [p[0]] + out + [p[-1]]
+        p = out
+    return p
+
+
+def corner_angles(pts, closed=True):
+    """Ângulo interno (graus) em cada vértice."""
+    p = _xy(pts)
+    n = len(p)
+    out = []
+    rng = range(n) if closed else range(1, n - 1)
+    for i in rng:
+        a = p[(i - 1) % n]
+        b = p[i]
+        c = p[(i + 1) % n]
+        v1 = (a[0] - b[0], a[1] - b[1])
+        v2 = (c[0] - b[0], c[1] - b[1])
+        dot = v1[0] * v2[0] + v1[1] * v2[1]
+        cross = v1[0] * v2[1] - v1[1] * v2[0]
+        ang = math.degrees(math.atan2(abs(cross), dot))
+        out.append(ang)
+    return out
+
+
+def _circumradius(a, b, c):
+    """Raio do círculo por 3 pontos; colineares → inf."""
+    ax, ay = a
+    bx, by = b
+    cx, cy = c
+    la = math.hypot(bx - cx, by - cy)
+    lb = math.hypot(ax - cx, ay - cy)
+    lc = math.hypot(ax - bx, ay - by)
+    area2 = abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay))
+    if area2 < 1e-12:
+        return float("inf")
+    return (la * lb * lc) / (2.0 * area2)
+
+
+def corner_radii(pts, closed=True):
+    """Raio osculador (círculo por vizinhos imediatos) em cada vértice."""
+    p = _xy(pts)
+    n = len(p)
+    out = []
+    rng = range(n) if closed else range(1, n - 1)
+    for i in rng:
+        out.append(_circumradius(p[(i - 1) % n], p[i], p[(i + 1) % n]))
+    return out
+
+
+def lowpass_closed(pts, win_mm, step=0.15):
+    """Low-pass de um contorno fechado: reamostra uniforme e convolui x(s)/y(s)
+    com janela de Hann (circular) de largura ~win_mm. Remove ripple de
+    rasterização (sub-mm) preservando a curvatura macro."""
+    rp = resample_uniform(pts, step, closed=True)
+    n = len(rp)
+    if n < 5 or win_mm <= step:
+        return rp
+    half = max(1, int(round((win_mm / step) / 2.0)))
+    w = np.hanning(2 * half + 1)
+    w = w / w.sum()
+    xs = np.array([p[0] for p in rp])
+    ys = np.array([p[1] for p in rp])
+    xe = np.concatenate([xs[-half:], xs, xs[:half]])   # padding circular
+    ye = np.concatenate([ys[-half:], ys, ys[:half]])
+    xf = np.convolve(xe, w, mode="same")[half:half + n]
+    yf = np.convolve(ye, w, mode="same")[half:half + n]
+    return list(zip(xf.tolist(), yf.tolist()))
+
+
+def _perimeter(pts, closed=True):
+    p = _xy(pts)
+    n = len(p)
+    rng = range(n) if closed else range(n - 1)
+    return sum(math.hypot(p[(i + 1) % n][0] - p[i][0], p[(i + 1) % n][1] - p[i][1]) for i in rng)
+
+
+def resample_uniform(pts, step, closed=True):
+    """Reamostra a poligonal em passos ~iguais de comprimento `step`."""
+    p = _xy(pts)
+    if len(p) < 2 or step <= 0:
+        return p
+    pts_loop = p + [p[0]] if closed else p
+    out = [pts_loop[0]]
+    acc = 0.0
+    for i in range(len(pts_loop) - 1):
+        a = pts_loop[i]
+        b = pts_loop[i + 1]
+        seg = math.hypot(b[0] - a[0], b[1] - a[1])
+        if seg == 0:
+            continue
+        while acc + seg >= step:
+            t = (step - acc) / seg
+            nx = a[0] + t * (b[0] - a[0])
+            ny = a[1] + t * (b[1] - a[1])
+            out.append((nx, ny))
+            a = (nx, ny)
+            seg = math.hypot(b[0] - a[0], b[1] - a[1])
+            acc = 0.0
+        acc += seg
+    if closed and len(out) > 1:
+        # remove ponto final coincidente com o inicial
+        if math.hypot(out[-1][0] - out[0][0], out[-1][1] - out[0][1]) < step * 0.5:
+            out.pop()
+    return out
+
+
+def min_corner_radius(pts, closed=True, sample_step=0.2, window=0.8):
+    """Menor raio de curvatura ao longo do contorno, robusto e sem viés.
+
+    Reamostra a passos uniformes (`sample_step` mm) e mede o circunraio com
+    vizinhos afastados ~`window` mm (não os imediatos): 3 pontos sobre um arco de
+    raio R dão circunraio R exato, mas o afastamento `window` evita o viés de
+    subestimação do estimador de 3 pontos vizinhos sobre um contorno discretizado.
+    """
+    rp = resample_uniform(pts, sample_step, closed=closed)
+    n = len(rp)
+    if n < 5:
+        return float("inf")
+    k = max(1, int(round(window / (2.0 * sample_step))))
+    best = float("inf")
+    rng = range(n) if closed else range(k, n - k)
+    for i in rng:
+        a = rp[(i - k) % n]
+        b = rp[i]
+        c = rp[(i + k) % n]
+        r = _circumradius(a, b, c)
+        if r < best:
+            best = r
+    return best
+
+
+# --- filete por morfologia raster: arredonda TODO canto ao raio mínimo --------
+def _polys_to_mask(polys_px, w, h):
+    mask = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(mask, [np.round(np.array(pp, np.float32)).astype(np.int32) for pp in polys_px], 255)
+    return mask
+
+
+def enforce_min_radius(pts, r_min, closed=True, clearance=0.0, ppm=RASTER_PPM):
+    """Arredonda cantos a um raio mínimo `r_min` (mm) via abertura+fechamento
+    morfológico com disco; opcional `clearance` (mm) dilata o contorno (folga do
+    bolso). Garante curvatura mínima ~r_min em TODO canto convexo (inclui o bico).
+    """
+    p = ensure_ccw(dedup_closing_point(pts))
+    if len(p) < 3 or r_min <= 0:
+        return p
+    min_x, min_y, max_x, max_y = bbox(p)
+    pad_mm = r_min + clearance + 2.0
+    ox, oy = min_x - pad_mm, min_y - pad_mm
+    w = int(math.ceil((max_x - min_x + 2 * pad_mm) * ppm))
+    h = int(math.ceil((max_y - min_y + 2 * pad_mm) * ppm))
+    poly_px = [((x - ox) * ppm, (y - oy) * ppm) for (x, y) in p]
+    mask = _polys_to_mask([poly_px], w, h)
+
+    rr = max(1, int(round(r_min * ppm)))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rr + 1, 2 * rr + 1))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)   # arredonda côncavos
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)    # arredonda convexos
+    if clearance > 0:
+        cr = max(1, int(round(clearance * ppm)))
+        kc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * cr + 1, 2 * cr + 1))
+        mask = cv2.dilate(mask, kc)
+
+    # Suaviza só o serrilhado de 1px (sigma fixo pequeno; NÃO erode o raio macro).
+    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=1.0)
+    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return p
+    c = max(cnts, key=cv2.contourArea)
+    out = [(float(pt[0][0]) / ppm + ox, float(pt[0][1]) / ppm + oy) for pt in c]
+    # Low-pass (janela ~r_min) remove o ripple de rasterização preservando o raio
+    # macro garantido pela abertura morfológica.
+    out = lowpass_closed(out, win_mm=r_min, step=0.15)
+    return ensure_ccw(out)
+
+
+# =============================================================================
+# ESCALA / HOMOGRAFIA / DETECÇÃO DOS MARCADORES ArUco
+# =============================================================================
+def px_per_mm(spacing_px, mm):
+    """Utilitário de escala: px por mm dado um comprimento de `mm` em `spacing_px`."""
+    return spacing_px / mm
+
+
+def mm_per_px(spacing_px, mm):
+    return mm / spacing_px
+
+
+def homography_from_corners(src4, dst4):
+    s = np.array(src4, np.float32)
+    d = np.array(dst4, np.float32)
+    return cv2.getPerspectiveTransform(s, d)
+
+
+def apply_homography(H, pts):
+    H = np.asarray(H, np.float64)
+    out = []
+    for x, y in _xy(pts):
+        v = H @ np.array([x, y, 1.0])
+        out.append((v[0] / v[2], v[1] / v[2]))
+    return out
+
+
+def detect_markers(gray, dict_name=DICT_NAME):
+    """Detecta os marcadores ArUco da base. Devolve `(corners, ids)` onde `corners`
+    é a lista de arrays (1×4×2) de cantos sub-pixel (ordem ArUco) e `ids` é a lista
+    de IDs inteiros (vazia se nenhum)."""
+    dic = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
+    det = cv2.aruco.ArucoDetector(dic, cv2.aruco.DetectorParameters())
+    corners, ids, _rej = det.detectMarkers(gray)
+    return list(corners), ([] if ids is None else [int(i) for i in ids.flatten()])
+
+
+def aruco_correspondences(corners, ids, layout):
+    """Casa os cantos DETECTADOS (px na imagem) com os cantos NOMINAIS (mm) de cada
+    marcador, pelo ID — o contrato de `calibration_target.homography_correspondences`.
+    Devolve `(img_pts Nx2, mm_pts Nx2)` em float32 (4 pontos por marcador casado)."""
+    corr = dict(CT.homography_correspondences(layout))
+    img_pts, mm_pts = [], []
+    for c, i in zip(corners, ids):
+        if i in corr:
+            for (px, py), (mx, my) in zip(np.asarray(c).reshape(-1, 2), corr[i]):
+                img_pts.append((float(px), float(py)))
+                mm_pts.append((float(mx), float(my)))
+    return np.array(img_pts, np.float32), np.array(mm_pts, np.float32)
+
+
+def estimate_tilt_deg(img_pts, mm_pts, image_shape):
+    """Inclinação (graus) entre o eixo da câmera e a NORMAL do papel, a partir da
+    homografia mm→pixel decomposta com uma intrínseca APROXIMADA (foco ~1,2·lado
+    maior — chute razoável p/ celular). Mede o quão longe do nadir a foto está; o
+    valor é aproximado (não temos calibração da lente), serve de aviso de paralaxe.
+    Devolve `nan` se não der p/ estimar."""
+    if len(img_pts) < 4:
+        return float("nan")
+    h, w = image_shape[:2]
+    f = 1.2 * max(h, w)
+    K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], np.float64)
+    Hpix, _ = cv2.findHomography(mm_pts, img_pts, cv2.RANSAC, 3.0)
+    if Hpix is None:
+        return float("nan")
+    B = np.linalg.inv(K) @ Hpix
+    lam = 1.0 / np.linalg.norm(B[:, 0])
+    r0 = B[:, 0] * lam
+    r1 = B[:, 1] * lam
+    r2 = np.cross(r0, r1)
+    U, _s, Vt = np.linalg.svd(np.column_stack([r0, r1, r2]))
+    R = U @ Vt
+    return float(math.degrees(math.acos(min(1.0, abs(R[2, 2])))))
+
+
+# =============================================================================
+# PIPELINE (I/O)
+# =============================================================================
+def load_image(path):
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    if img is None:
+        raise FileNotFoundError(f"não consegui ler a imagem: {path}")
+    return img
+
+
+def rectify(img, dict_name=DICT_NAME, ppmm=PX_PER_MM, layout=None, debug_dir=None):
+    """Estágio 1: detecta a moldura ArUco da base, resolve a homografia imagem→mm
+    e RETIFICA recortando o MIOLO BRANCO (onde está o objeto) para um canvas
+    métrico de escala UNIFORME `ppmm` px/mm. Os marcadores e o anel-guia ficam de
+    FORA do recorte → o segmentador vê só objeto sobre branco.
+
+    A dimensão real do objeto sai daqui (px do canvas × 1/ppmm). `layout` é o layout
+    do alvo (default = o padrão de calibration_target, que casa com a base.svg
+    impressa nos defaults). Também estima a INCLINAÇÃO da foto vs o nadir e AVISA se
+    passar de TILT_WARN_DEG (a paralaxe pela altura do objeto cresce com o ângulo).
+
+    Devolve `(rectified, mm_per_px, mm_per_px, confidence)` (escala uniforme, X = Y);
+    levanta `GridDetectionError` se faltarem marcadores p/ uma homografia confiável.
+    """
+    if layout is None:
+        layout = CT.target_layout(dict_name=dict_name)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    corners, ids = detect_markers(gray, layout["dict"])
+    img_pts, mm_pts = aruco_correspondences(corners, ids, layout)
+    n = len(img_pts) // 4
+    if n < MIN_MARKERS:
+        raise GridDetectionError(
+            f"só {n} marcadores ArUco detectados (mínimo {MIN_MARKERS}) — confira a "
+            f"base impressa (tools/base.svg), o foco e a iluminação")
+    H, _m = cv2.findHomography(img_pts, mm_pts, cv2.RANSAC, 3.0)   # imagem → mm
+    if H is None:
+        raise GridDetectionError("homografia ArUco falhou (marcadores degenerados)")
+
+    # Aviso de inclinação (aproximado): longe do nadir = mais paralaxe pela altura.
+    tilt = estimate_tilt_deg(img_pts, mm_pts, gray.shape)
+    if not math.isnan(tilt) and tilt > TILT_WARN_DEG:
+        warn(f"foto a ~{tilt:.0f}° do nadir (> {TILT_WARN_DEG:.0f}°): a altura do "
+             f"objeto pode inflar o contorno — fotografe mais de cima.")
+
+    # Canvas = miolo branco do alvo a `ppmm` px/mm. Compõe mm→px(canvas) ∘ imagem→mm.
+    x0, y0, x1, y1 = layout["inner_rect"]
+    S = np.array([[ppmm, 0, -x0 * ppmm], [0, ppmm, -y0 * ppmm], [0, 0, 1]], np.float64)
+    Hc = S @ H
+    out_w = int(round((x1 - x0) * ppmm))
+    out_h = int(round((y1 - y0) * ppmm))
+    rect = cv2.warpPerspective(img, Hc, (out_w, out_h), flags=cv2.INTER_LINEAR,
+                               borderValue=(255, 255, 255))
+    mmpp = 1.0 / ppmm
+    conf = n / len(layout["markers"])
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(debug_dir, "01_rectified.png"), rect)
+    return rect, mmpp, mmpp, conf
+
+
+def normalize_illumination(img, scale=ILLUM_SCALE, kernel_frac=ILLUM_KERNEL_FRAC,
+                           max_gain=ILLUM_MAX_GAIN, debug_dir=None):
+    """Estágio 1b (tratamento de luz / remoção de sombra) — entre rectify e segment.
+    A sombra é um ESCURECIMENTO SUAVE e multiplicativo do papel branco. Estima-se o
+    campo de luz L(x,y) por um CLOSING em escala-cinza com kernel MAIOR que o objeto
+    (ele "pinta" a peça escura com o branco ao redor, sobrando só a iluminação),
+    seguido de um borrão gaussiano; depois divide-se a imagem por L. O ganho é
+    HUE-PRESERVING (mesmo fator nos 3 canais BGR) → o fundo branco fica uniforme e o
+    halo de sombra é atenuado SEM mudar a cor da peça. Feito em escala reduzida
+    (`scale`) por velocidade e reampliado. NÃO remove a sombra de CONTATO (faixa
+    escura justo na base da peça, que é local e fica dentro da estimativa de L) —
+    essa é tratada na segmentação (limiar de escuro)."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    ks = max(3, int(max(small.shape) * kernel_frac)) | 1
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks))
+    L = cv2.morphologyEx(small, cv2.MORPH_CLOSE, kern)     # remove o objeto escuro
+    L = cv2.GaussianBlur(L, (0, 0), sigmaX=ks / 4.0)       # suaviza → campo de luz
+    L = cv2.resize(L, (w, h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+    L = np.maximum(L, 1.0)
+    target = float(np.median(L))
+    gain = np.clip(target / L, 0.0, max_gain)
+    out = np.clip(img.astype(np.float32) * gain[:, :, None], 0.0, 255.0).astype(np.uint8)
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(debug_dir, "01b_illumination.png"), L.astype(np.uint8))
+        cv2.imwrite(os.path.join(debug_dir, "01b_flat.png"), out)
+    return out
+
+
+def segment_tool(img, deshadow=False, debug_dir=None):
+    """Estágio 2: máscara da ferramenta sobre o miolo BRANCO da base. O fundo é
+    branco conhecido e o objeto está centrado, então a MOLDURA da borda do canvas é
+    fundo puro — amostrada p/ modelar o branco (auto-adapta ao balanço de branco e à
+    iluminação). Um pixel é OBJETO se for COLORIDO (saturação bem acima do fundo —
+    a borda laranja) OU ESCURO (brilho bem abaixo do fundo — a moldura preta); a
+    SOMBRA suave é dessaturada e só um pouco mais escura, então fica no fundo. Depois:
+    morfologia (abre respingos, fecha vãos), maior componente conectado e preenche
+    buracos internos (display, texto) p/ um contorno cheio.
+
+    `deshadow=True` liga a HISTERESE de borda: a borda arredondada que vira p/ a base cai
+    no VÃO entre `colored` e `dark` (o corte único a come e serrilha) dos DOIS lados — o
+    BISEL PRETO no topo (escurece, mas com croma) e o TOE LARANJA no fundo (dessatura, mas
+    com croma). A histerese cresce os DOIS núcleos (preto `dark` + colorido `colored`) pelos
+    pixels "fracos" — não-claros (≤ SEG_VAL_WEAK_FRAC·fundo) E COM CROMA (S ≥ SEG_WEAK_SAT_MIN)
+    — recuperando a borda real e PARANDO na sombra de contato CINZA desaturada da base (que
+    fica de fora; se entrasse, só deixaria o pocket frouxo)."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    H = hsv[:, :, 0].astype(np.int16)
+    S = hsv[:, :, 1].astype(np.int16)
+    V = hsv[:, :, 2].astype(np.int16)
+    hh, ww = S.shape
+    # Moldura da borda (3% do menor lado) = fundo branco garantido (objeto é central).
+    b = max(2, int(round(0.03 * min(hh, ww))))
+    frame = np.ones((hh, ww), bool)
+    frame[b:-b, b:-b] = False
+    bg_h = float(np.median(H[frame]))
+    bg_s = float(np.median(S[frame]))
+    bg_v = float(np.median(V[frame]))
+    dh = np.abs(H - bg_h)
+    dh = np.minimum(dh, 180 - dh)                 # distância CIRCULAR de matiz (0..90)
+    colored = S >= bg_s + SEG_SAT_MARGIN          # laranja/colorido saturado
+    chromatic = (dh >= SEG_HUE_MARGIN) & (S >= SEG_HUE_SAT_MIN)  # matiz quente ≠ fundo (borda c/ realce)
+    dark = V <= SEG_VAL_FRAC * bg_v               # núcleo preto/escuro certo
+    if deshadow:
+        # Histerese (estilo Canny) p/ recuperar a BORDA arredondada do objeto, dos DOIS
+        # lados, com o MESMO separador físico (croma). A borda vira p/ a base e cai no VÃO
+        # entre `colored` e `dark`, então o corte único a perde e serrilha:
+        #   • TOPO  — BISEL PRETO: escurece (V cai) mas mantém croma → semeado por `dark`.
+        #   • FUNDO — TOE LARANJA: dessatura (S cai p/ ~40) e escurece um pouco → o corte
+        #             `colored` (S alto) o larga; semeado por `colored`.
+        # Os dois NÚCLEOS (preto + colorido) crescem pelos pixels "fracos" — não-claros
+        # (V ≤ WEAK·fundo, exclui o papel) E COM CROMA (S ≥ SAT_MIN) — por ALCANCE LIMITADO
+        # (dilatação geodésica). O piso de saturação é o que separa o PLÁSTICO (croma → entra,
+        # recupera a borda real) da SOMBRA DE CONTATO cinza desaturada (S≈25 → barrada): o
+        # crescimento para exatamente na sombra. Sem ele inundaria o anel de sombra e deixaria
+        # o pocket frouxo (medido: base inflava +2 mm; topo recupera ~2.6 mm de preto real).
+        weak = ((V <= SEG_VAL_WEAK_FRAC * bg_v) & (S >= SEG_WEAK_SAT_MIN)).astype(np.uint8) * 255
+        core = ((dark | colored).astype(np.uint8) * 255)        # núcleo: preto (topo) E colorido (fundo)
+        seed = cv2.bitwise_and(core, weak)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        for _ in range(max(1, int(round(SEG_SHADOW_GROW_MM * PX_PER_MM)))):
+            seed = cv2.bitwise_and(cv2.dilate(seed, k), weak)   # cresce 1px, contido em weak
+        dark = dark | (seed > 0)                                # une a borda recuperada ao núcleo
+    tool = (colored | chromatic | dark).astype(np.uint8) * 255
+
+    # Abertura remove respingos finos; fechamento tapa vãos internos do corpo.
+    tool = cv2.morphologyEx(tool, cv2.MORPH_OPEN,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    tool = cv2.morphologyEx(tool, cv2.MORPH_CLOSE,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(tool, connectivity=8)
+    if n <= 1:
+        raise GridDetectionError("nenhum objeto segmentado sobre o miolo branco")
+    biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    mask = np.where(labels == biggest, 255, 0).astype(np.uint8)
+    # Preenche buracos internos (display, texto gravado, reflexos) → contorno cheio.
+    ff = mask.copy()
+    cv2.floodFill(ff, np.zeros((hh + 2, ww + 2), np.uint8), (0, 0), 255)
+    mask = cv2.bitwise_or(mask, cv2.bitwise_not(ff))
+
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(debug_dir, "02_mask.png"), mask)
+    return mask
+
+
+# --- simetria: espelha a máscara e tira a MÉDIA das duas metades --------------
+# Muitos objetos são simétricos: se o eixo é conhecido, a metade esquerda e a
+# metade direita (ou topo/baixo) são DUAS medições do MESMO contorno. Espelhar e
+# fazer a média cancela o ruído aleatório da foto (sombra, serrilhado de um lado
+# só, realce assimétrico) e FORÇA a simetria perfeita. A média de duas formas é
+# feita pelo campo de distância COM SINAL (positivo dentro, negativo fora): médio
+# os dois campos e corto em 0 → a "forma média" (média morfológica), não a
+# interseção (AND) nem a união (OR), que enviesariam p/ dentro/fora.
+def _signed_distance(mask):
+    """Distância com sinal (mm-agnóstica, em px): >0 dentro, <0 fora da máscara."""
+    inside = cv2.distanceTransform(mask, cv2.DIST_L2, 5).astype(np.float32)
+    outside = cv2.distanceTransform(255 - mask, cv2.DIST_L2, 5).astype(np.float32)
+    return inside - outside
+
+
+def _reflect_mask(mask, axis, c):
+    """Reflete a máscara na linha de simetria: 'vertical' = linha VERTICAL em x=c
+    (espelha esquerda↔direita), 'horizontal' = linha HORIZONTAL em y=c (topo↔baixo)."""
+    h, w = mask.shape
+    if axis == "vertical":
+        M = np.array([[-1.0, 0.0, 2.0 * c], [0.0, 1.0, 0.0]], np.float32)
+    else:
+        M = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 2.0 * c]], np.float32)
+    return cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_NEAREST, borderValue=0)
+
+
+def symmetrize_mask(mask, axis, ppmm=PX_PER_MM, search_mm=SYM_SEARCH_MM, debug_dir=None):
+    """Impõe a simetria do objeto: acha o eixo (parte do centroide, refina por máx.
+    IoU entre a máscara e seu espelho ±`search_mm`) e devolve a MÉDIA morfológica
+    das duas metades (média dos campos de distância com sinal). `axis` ∈
+    {'vertical','horizontal','both'}; 'both' aplica os dois eixos em sequência."""
+    if axis == "both":
+        return symmetrize_mask(symmetrize_mask(mask, "vertical", ppmm, search_mm),
+                               "horizontal", ppmm, search_mm, debug_dir=debug_dir)
+    m = cv2.moments(mask, binaryImage=True)
+    if m["m00"] == 0:
+        return mask
+    c0 = (m["m10"] / m["m00"]) if axis == "vertical" else (m["m01"] / m["m00"])
+
+    # Refina o eixo: o centroide é o eixo exato p/ uma forma perfeita, mas a foto
+    # tem ruído/leve perspectiva — varre ±search_mm a 0,5 px e fica com o de maior IoU.
+    rng = max(1, int(round(search_mm * ppmm)))
+    best_c, best_iou = c0, -1.0
+    for c in (c0 + 0.5 * d for d in range(-rng, rng + 1)):
+        refl = _reflect_mask(mask, axis, c)
+        inter = np.count_nonzero(cv2.bitwise_and(mask, refl))
+        union = np.count_nonzero(cv2.bitwise_or(mask, refl))
+        iou = (inter / union) if union else 0.0
+        if iou > best_iou:
+            best_iou, best_c = iou, c
+
+    refl = _reflect_mask(mask, axis, best_c)
+    sdf = 0.5 * (_signed_distance(mask) + _signed_distance(refl))
+    out = (sdf >= 0.0).astype(np.uint8) * 255
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        dbg = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        dbg[:, :, 2] = refl                                # vermelho = espelho
+        cv2.imwrite(os.path.join(debug_dir, "02b_symmetry_pair.png"), dbg)
+        cv2.imwrite(os.path.join(debug_dir, "02b_symmetric.png"), out)
+    return out
+
+
+def extract_outline(mask, mm_per_px_x, mm_per_px_y=None, debug_dir=None):
+    """Estágio 3: maior contorno externo → pontos em mm (escala X/Y separada, Y
+    invertido p/ impressão). `mm_per_px_y` default = `mm_per_px_x` (grade quadrada)."""
+    if mm_per_px_y is None:
+        mm_per_px_y = mm_per_px_x
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        raise GridDetectionError("nenhum contorno externo encontrado")
+    c = max(cnts, key=cv2.contourArea)
+    pts = [(float(p[0][0]) * mm_per_px_x, -float(p[0][1]) * mm_per_px_y) for p in c]
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        dbg = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        cv2.drawContours(dbg, [c], -1, (0, 0, 255), 2)
+        cv2.imwrite(os.path.join(debug_dir, "03_contour.png"), dbg)
+    return ensure_ccw(pts)
+
+
+def process_for_print(pts_mm, min_radius=MIN_RADIUS_MM, smooth_mm=SMOOTH_MM, clearance=CLEARANCE_MM):
+    """Estágio 4: filete dos cantos (≥ r_min) + FOLGA (encaixe) → low-pass forte
+    (remove o serrilhado da foto) → decima. A folga `clearance` (dilatação externa)
+    mais que compensa o leve recuo do low-pass, garantindo pocket ⊇ ferramenta."""
+    # 1) Morfologia: arredonda todo canto a ≥ r_min e dilata `clearance` (margem de
+    #    encaixe). É a etapa que GARANTE o raio mínimo e empurra a borda p/ fora.
+    p = enforce_min_radius(pts_mm, min_radius, closed=True, clearance=clearance)
+    # 2) Low-pass forte (janela ≫ pixel): elimina o serrilhado de alta frequência da
+    #    foto, preservando as features reais da peça (todas ≫ smooth_mm).
+    if smooth_mm and smooth_mm > 0:
+        p = lowpass_closed(p, win_mm=smooth_mm, step=0.15)
+    # 3) Decima pontos redundantes (desvio ≤ ~0,02 mm) p/ um poly leve no ItemPoly.
+    if len(p) >= 3:
+        c = cv2.approxPolyDP(np.array(p, np.float32).reshape(-1, 1, 2), 0.02, True)
+        p = [(float(q[0][0]), float(q[0][1])) for q in c]
+    return ensure_ccw(p)
+
+
+# =============================================================================
+# AJUSTE DE BÉZIERS CÚBICAS (Schneider) — polyline → poucas curvas suaves
+# -----------------------------------------------------------------------------
+# Substitui o polyline denso/facetado por curvas de Bézier cúbicas com poucos
+# nós, que PASSAM PELA MÉDIA do traço (mínimos quadrados): remove o serrilhado
+# residual (menos inflexões de curvatura) e economiza pontos. É a matemática do
+# "Simplify" do Inkscape — o que o usuário aplicou à mão nas curvas da lâmina.
+# Cada Bézier = (p0, c1, c2, p3) em mm.
+# =============================================================================
+def _bernstein3(t):
+    u = 1.0 - t
+    return (u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t)
+
+
+def bezier_point(bez, t):
+    b0, b1, b2, b3 = bez
+    c0, c1, c2, c3 = _bernstein3(t)
+    return (c0 * b0[0] + c1 * b1[0] + c2 * b2[0] + c3 * b3[0],
+            c0 * b0[1] + c1 * b1[1] + c2 * b2[1] + c3 * b3[1])
+
+
+def _unit(v):
+    n = math.hypot(v[0], v[1])
+    return (v[0] / n, v[1] / n) if n > 1e-12 else (0.0, 0.0)
+
+
+def _chord_params(pts):
+    """Parametrização por comprimento de corda, normalizada em [0,1]."""
+    d = [0.0]
+    for i in range(1, len(pts)):
+        d.append(d[-1] + math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]))
+    total = d[-1] or 1.0
+    return [x / total for x in d]
+
+
+def _fit_one_cubic(pts, t, that1, that2):
+    """Mínimos quadrados de UMA cúbica com tangentes fixas nas pontas (Schneider)."""
+    p0, p3 = pts[0], pts[-1]
+    c00 = c01 = c11 = x0 = x1 = 0.0
+    for i in range(len(pts)):
+        b0, b1, b2, b3 = _bernstein3(t[i])
+        a1 = (that1[0] * b1, that1[1] * b1)
+        a2 = (that2[0] * b2, that2[1] * b2)
+        c00 += a1[0] * a1[0] + a1[1] * a1[1]
+        c01 += a1[0] * a2[0] + a1[1] * a2[1]
+        c11 += a2[0] * a2[0] + a2[1] * a2[1]
+        tmp = (pts[i][0] - (p0[0] * (b0 + b1) + p3[0] * (b2 + b3)),
+               pts[i][1] - (p0[1] * (b0 + b1) + p3[1] * (b2 + b3)))
+        x0 += a1[0] * tmp[0] + a1[1] * tmp[1]
+        x1 += a2[0] * tmp[0] + a2[1] * tmp[1]
+    det = c00 * c11 - c01 * c01
+    seg = math.hypot(p3[0] - p0[0], p3[1] - p0[1])
+    if abs(det) < 1e-12:
+        alpha1 = alpha2 = seg / 3.0
+    else:
+        alpha1 = (x0 * c11 - c01 * x1) / det
+        alpha2 = (c00 * x1 - x0 * c01) / det
+    if alpha1 < 1e-6 or alpha2 < 1e-6:
+        alpha1 = alpha2 = seg / 3.0
+    return (p0,
+            (p0[0] + that1[0] * alpha1, p0[1] + that1[1] * alpha1),
+            (p3[0] + that2[0] * alpha2, p3[1] + that2[1] * alpha2),
+            p3)
+
+
+def _max_error(pts, t, bez):
+    dmax, idx = 0.0, len(pts) // 2
+    for i in range(len(pts)):
+        bp = bezier_point(bez, t[i])
+        d = math.hypot(bp[0] - pts[i][0], bp[1] - pts[i][1])
+        if d > dmax:
+            dmax, idx = d, i
+    return dmax, idx
+
+
+def _fit_cubic_recursive(pts, that1, that2, tol, out, depth=0):
+    if len(pts) < 2:
+        return
+    if len(pts) == 2:
+        seg = math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) / 3.0
+        out.append((pts[0],
+                    (pts[0][0] + that1[0] * seg, pts[0][1] + that1[1] * seg),
+                    (pts[1][0] + that2[0] * seg, pts[1][1] + that2[1] * seg),
+                    pts[1]))
+        return
+    t = _chord_params(pts)
+    bez = _fit_one_cubic(pts, t, that1, that2)
+    err, idx = _max_error(pts, t, bez)
+    if err < tol or depth > 16 or idx <= 0 or idx >= len(pts) - 1:
+        out.append(bez)
+        return
+    tc = _unit((pts[idx + 1][0] - pts[idx - 1][0], pts[idx + 1][1] - pts[idx - 1][1]))
+    _fit_cubic_recursive(pts[:idx + 1], that1, (-tc[0], -tc[1]), tol, out, depth + 1)
+    _fit_cubic_recursive(pts[idx:], tc, that2, tol, out, depth + 1)
+
+
+def _corner_indices(rp, angle_thresh, win):
+    """Índices de cantos (cusp) por ângulo de virada acumulado numa janela ±win."""
+    n = len(rp)
+    flags = [False] * n
+    for i in range(n):
+        a, b, c = rp[(i - win) % n], rp[i], rp[(i + win) % n]
+        v1 = (b[0] - a[0], b[1] - a[1])
+        v2 = (c[0] - b[0], c[1] - b[1])
+        dot = v1[0] * v2[0] + v1[1] * v2[1]
+        cr = v1[0] * v2[1] - v1[1] * v2[0]
+        if math.degrees(math.atan2(abs(cr), dot)) >= angle_thresh:
+            flags[i] = True
+    if all(flags):                            # degenerado (todo o contorno "vira")
+        return [0]
+    # NMS circular: ancora num ponto FORA de canto p/ não partir um grupo na emenda.
+    start = flags.index(False)
+    order = list(range(start, n)) + list(range(0, start))
+    corners, i = [], 0
+    while i < n:
+        if flags[order[i]]:
+            grp = [order[i]]
+            i += 1
+            while i < n and flags[order[i]]:
+                grp.append(order[i])
+                i += 1
+            corners.append(grp[len(grp) // 2])
+        else:
+            i += 1
+    return sorted(corners)
+
+
+def fit_closed_beziers(poly, tol=FIT_TOL_MM, corner_angle=CORNER_ANGLE_DEG, step=0.4):
+    """Ajusta o contorno fechado por Béziers cúbicas: corta em cantos (cusp) e fita
+    cada trecho por mínimos quadrados recursivos. Devolve lista de (p0,c1,c2,p3)."""
+    rp = resample_uniform(poly, step, closed=True)
+    n = len(rp)
+    if n < 4:
+        return []
+    corners = _corner_indices(rp, corner_angle, max(1, int(round(1.2 / step))))
+    if len(corners) < 2:                      # contorno liso: fecha em 2 pontos opostos
+        corners = [0, n // 2]
+    cubics = []
+    m = len(corners)
+    for k in range(m):
+        i0, i1 = corners[k], corners[(k + 1) % m]
+        seg = rp[i0:i1 + 1] if i1 > i0 else rp[i0:] + rp[:i1 + 1]
+        if len(seg) < 2:
+            continue
+        t1 = _unit((seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]))
+        t2 = _unit((seg[-2][0] - seg[-1][0], seg[-2][1] - seg[-1][1]))
+        _fit_cubic_recursive(seg, t1, t2, tol, cubics)
+    return cubics
+
+
+def flatten_beziers(cubics, seg=16):
+    """Achata uma lista de cúbicas numa polilinha fechada (p/ métricas/checagem)."""
+    out = []
+    for bez in cubics:
+        for i in range(seg):
+            out.append(bezier_point(bez, i / seg))
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Ajuste de Béziers com RESTRIÇÃO DE CONTENÇÃO (one-sided): o MÍNIMO de curvas tal
+# que o contorno nunca invade a ferramenta (a peça cabe). A recursão divide um
+# trecho SÓ quando a cúbica penetraria o "piso" (silhueta + folga de encaixe) —
+# não por tolerância. Cada trecho entre cantos vira 1 Bézier, ganhando mais só
+# onde a curvatura real exige para não cortar a peça.
+# -----------------------------------------------------------------------------
+def _floor_field(silhouette, c_fit, ppm):
+    """Mapa de profundidade-para-dentro do piso (silhueta dilatada por `c_fit`):
+    para um ponto, quão FUNDO ele está dentro da peça+folga, em mm. Devolve
+    (dt, ppm, ox, oy)."""
+    min_x, min_y, max_x, max_y = bbox(silhouette)
+    pad = c_fit + 3.0
+    ox, oy = min_x - pad, min_y - pad
+    w = int(math.ceil((max_x - min_x + 2 * pad) * ppm))
+    h = int(math.ceil((max_y - min_y + 2 * pad) * ppm))
+    poly = [((x - ox) * ppm, (y - oy) * ppm) for (x, y) in silhouette]
+    mask = _polys_to_mask([poly], w, h)
+    if c_fit > 0:
+        cr = max(1, int(round(c_fit * ppm)))
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * cr + 1, 2 * cr + 1)))
+    dt = cv2.distanceTransform(mask, cv2.DIST_L2, 3)   # profundidade p/ dentro (px)
+    return dt, ppm, ox, oy
+
+
+def _max_penetration(bez, field, nsamp):
+    """Maior penetração (mm) da cúbica no piso + parâmetro t do pior ponto."""
+    dt, ppm, ox, oy = field
+    H, W = dt.shape
+    worst, ti = 0.0, 0.5
+    for i in range(nsamp + 1):
+        t = i / nsamp
+        x, y = bezier_point(bez, t)
+        px = int(round((x - ox) * ppm))
+        py = int(round((y - oy) * ppm))
+        if 0 <= px < W and 0 <= py < H:
+            d = float(dt[py, px]) / ppm
+            if d > worst:
+                worst, ti = d, t
+    return worst, ti
+
+
+def _beziers_max_penetration(cubics, field):
+    """Maior penetração (mm) de QUALQUER cúbica no piso de contenção."""
+    worst = 0.0
+    for bez in cubics:
+        rough = (math.hypot(bez[1][0] - bez[0][0], bez[1][1] - bez[0][1]) +
+                 math.hypot(bez[2][0] - bez[1][0], bez[2][1] - bez[1][1]) +
+                 math.hypot(bez[3][0] - bez[2][0], bez[3][1] - bez[2][1]))
+        pen, _ = _max_penetration(bez, field, max(12, int(rough / 0.25)))
+        if pen > worst:
+            worst = pen
+    return worst
+
+
+# Tolerâncias testadas (grande→pequena): a MAIOR que ainda contém a peça vence.
+_FIT_TOL_GRID = (3.0, 2.4, 2.0, 1.6, 1.3, 1.0, 0.8, 0.6, 0.45, 0.3, 0.2)
+
+
+def fit_closed_beziers_contained(guide, silhouette, c_fit=0.3, eps=0.06, ppm=10.0):
+    """MÍNIMO de Béziers tal que a peça cabe: escolhe a MAIOR tolerância de ajuste
+    cuja curva não penetra a peça+`c_fit` além de `eps` (mais tolerância = menos
+    nós). Usa o ajuste por tolerância (`fit_closed_beziers`), que é bem-comportado
+    (não estufa para fora) — só varia a quantidade de curvas."""
+    g = dedup_closing_point(guide)
+    field = _floor_field(silhouette, c_fit, ppm)
+    for tol in sorted(_FIT_TOL_GRID, reverse=True):
+        cub = fit_closed_beziers(g, tol=tol)
+        if cub and _beziers_max_penetration(cub, field) <= eps:
+            return cub
+    return fit_closed_beziers(g, tol=min(_FIT_TOL_GRID))
+
+
+# -----------------------------------------------------------------------------
+# Ajuste ANCORADO NAS EXTREMIDADES (ideia do usuário) — o MELHOR p/ impressão 3D:
+#   1) Fixa âncoras nos pontos MAIS DISTANTES do objeto (vértices do fecho convexo,
+#      simplificados). Ancorar nas extremidades GARANTE que a peça cabe: a cavidade
+#      alcança o bico, o calcanhar e os cantos.
+#   2) Entre âncoras, traça cúbicas CONTIDAS (nunca cortam a peça), suaves — evita
+#      mudanças de direção bruscas, fácil de imprimir.
+# Resultado: poucos nós, contorno justo e limpo, contendo a ferramenta.
+# -----------------------------------------------------------------------------
+def douglas_peucker_idx(pts, eps):
+    """RDP num polígono FECHADO → lista ordenada dos ÍNDICES mantidos (cantos
+    dominantes; descarta pontos quase-colineares). Usado p/ destilar o fecho convexo
+    nas extremidades dominantes."""
+    n = len(pts)
+    if n <= 3:
+        return list(range(n))
+    keep = {0, n - 1}
+
+    def rec(a, b):
+        dmax, idx = 0.0, -1
+        for i in range(a + 1, b):
+            d = _dist_point_seg(pts[i], pts[a], pts[b])
+            if d > dmax:
+                dmax, idx = d, i
+        if dmax > eps and idx != -1:
+            keep.add(idx)
+            rec(a, idx)
+            rec(idx, b)
+
+    rec(0, n - 1)
+    return sorted(keep)
+
+
+def hull_anchor_indices(rp, simplify_mm=ANCHOR_SIMPLIFY_MM):
+    """Índices em `rp` das EXTREMIDADES dominantes: vértices do fecho convexo,
+    destilados por RDP (`simplify_mm`) p/ remover os quase-colineares das bordas
+    retas. São os pontos mais distantes do objeto — ancorar neles garante caber."""
+    pts = np.asarray(rp, np.float32).reshape(-1, 1, 2)
+    hidx = sorted(int(i) for i in cv2.convexHull(pts, returnPoints=False).flatten())
+    if len(hidx) <= 3:
+        return hidx
+    hull_pts = [rp[i] for i in hidx]
+    keep = douglas_peucker_idx(hull_pts, simplify_mm)
+    return sorted(hidx[j] for j in keep)
+
+
+def _fit_segment_contained(seg, that1, that2, field, eps, out):
+    """Ajusta o trecho [âncora→âncora] pela MAIOR tolerância cuja cúbica não penetra
+    o piso além de `eps`: 1 curva onde a peça é lisa, mais só onde a forma exige."""
+    chosen, tmp = None, []
+    for tol in sorted(_FIT_TOL_GRID, reverse=True):
+        tmp = []
+        _fit_cubic_recursive(seg, that1, that2, tol, tmp)
+        if _beziers_max_penetration(tmp, field) <= eps:
+            chosen = tmp
+            break
+    out.extend(chosen if chosen is not None else tmp)
+
+
+def _anchor_tangents(rp, anchors):
+    """Tangente SUAVE em cada âncora = direção de marcha do contorno ali (corda pelos
+    vizinhos imediatos no `rp`). Usar a MESMA tangente nos dois trechos que se encontram
+    numa âncora torna o nó SUAVE (G1, sem bico) — assim TODO nó do contorno fica liso."""
+    n = len(rp)
+    return {i: _unit((rp[(i + 1) % n][0] - rp[(i - 1) % n][0],
+                      rp[(i + 1) % n][1] - rp[(i - 1) % n][1])) for i in anchors}
+
+
+def _anchor_segments(rp, anchors, tang):
+    """Quebra o contorno reamostrado `rp` nos trechos âncora→âncora. Cada trecho vira
+    um (pontos, tangente_inicial, tangente_final) que ajusta para UMA cúbica suave: a
+    tangente em cada âncora é COMPARTILHADA com o trecho vizinho → nó G1 (sem bico)."""
+    m = len(anchors)
+    segs = []
+    for k in range(m):
+        i0, i1 = anchors[k], anchors[(k + 1) % m]
+        seg = rp[i0:i1 + 1] if i1 > i0 else rp[i0:] + rp[:i1 + 1]
+        if len(seg) < 2:
+            continue
+        segs.append((seg, tang[i0], (-tang[i1][0], -tang[i1][1])))
+    return segs
+
+
+def _quadrant_anchors(rp, budget, min_dist_mm=ANCHOR_MIN_DIST_MM):
+    """Âncoras BALANCEADAS POR QUADRANTE p/ um pocket que CONTÉM a peça (encaixe num case
+    3D). Divide a peça em 4 quadrantes (sinal de x-cx, y-cy em torno do MEIO da bbox) e dá
+    a cada um uma cota de `budget//4` âncoras (o resto `budget%4` vai p/ os primeiros).
+    Em cada quadrante escolhe os pontos MAIS EXTERNOS (maior distância ao centro = as
+    extremidades que TÊM de caber), das pontas p/ dentro, com a RESTRIÇÃO de que âncoras
+    DO MESMO QUADRANTE fiquem a ≥ `min_dist_mm` umas das outras — assim a 1ª é a ponta, a
+    2ª/3ª caem ~`min_dist_mm` adiante (espalhadas pelas bordas, sem aglomerar na ponta).
+    `budget=4` → 1 ponto/quadrante (as 4 pontas); +4 = mais 1/quadrante. Devolve índices
+    em `rp` ordenados ao longo do contorno (sai < budget se a peça for pequena demais p/
+    caber a cota com o espaçamento)."""
+    xs = [p[0] for p in rp]
+    ys = [p[1] for p in rp]
+    cx = 0.5 * (min(xs) + max(xs))               # centro = meio da bbox ("divide ao meio")
+    cy = 0.5 * (min(ys) + max(ys))
+    quads = [(True, True), (False, True), (False, False), (True, False)]
+    base, rem = divmod(max(1, budget), 4)        # cota por quadrante (soma = budget)
+    quota = {q: base + (1 if k < rem else 0) for k, q in enumerate(quads)}
+    md2 = min_dist_mm * min_dist_mm
+    kept = []
+    for q in quads:
+        cand = sorted(((  (rp[i][0] - cx) ** 2 + (rp[i][1] - cy) ** 2, i)
+                       for i in range(len(rp)) if (rp[i][0] >= cx, rp[i][1] >= cy) == q),
+                      reverse=True)                # mais externos primeiro
+        sel = []
+        for _d2, i in cand:
+            if len(sel) >= quota[q]:
+                break
+            if all((rp[i][0] - rp[k][0]) ** 2 + (rp[i][1] - rp[k][1]) ** 2 >= md2
+                   for k in sel):                  # ≥ min_dist das já escolhidas do quadrante
+                sel.append(i)
+        kept.extend(sel)
+    return sorted(kept)
+
+
+def _protrusion_anchors(rp, min_dev_mm, span_mm=ANCHOR_MIN_DIST_MM):
+    """Âncoras de CONVEXIDADE LOCAL (saliências) que o seletor radial por quadrante
+    (`_quadrant_anchors`) não pega: um ressalto no MEIO de uma aresta não é 'externo ao
+    centro' como um canto, então nunca entra no orçamento — e a cúbica suave arredonda
+    por cima dele. Aqui se mede, em cada ponto, o desvio CONVEXO (p/ fora) em relação à
+    corda dos vizinhos a ~`span_mm` de arco; um PICO local cuja PROEMINÊNCIA (altura
+    acima do desvio nas bordas da janela) seja ≥ `min_dev_mm` vira âncora. A proeminência
+    (não o desvio absoluto) é o que separa um ressalto de uma curvatura suave/uniforme:
+    num círculo o desvio é constante → proeminência ~0 → nada é marcado. Devolve índices
+    em `rp` (ordem ao longo do contorno), sem dois picos a < `span_mm` (fica o + proeminente)."""
+    n = len(rp)
+    if n < 8 or min_dev_mm <= 0:
+        return []
+    cx = sum(p[0] for p in rp) / n
+    cy = sum(p[1] for p in rp) / n
+    per = sum(math.hypot(rp[(i + 1) % n][0] - rp[i][0], rp[(i + 1) % n][1] - rp[i][1])
+              for i in range(n))
+    k = max(2, int(round(span_mm / (per / n))))      # meia-janela da corda, em amostras
+    dev = [0.0] * n
+    for i in range(n):
+        ax, ay = rp[(i - k) % n]
+        bx, by = rp[i]
+        dx, dy = rp[(i + k) % n][0] - ax, rp[(i + k) % n][1] - ay
+        L = math.hypot(dx, dy)
+        if L < 1e-9:
+            continue
+        d = abs((bx - ax) * dy - (by - ay) * dx) / L     # dist. perpendicular à corda
+        # convexo = a ponta está MAIS LONGE do centro que o meio da corda (bojo p/ fora)
+        if math.hypot(bx - cx, by - cy) > math.hypot(ax + 0.5 * dx - cx,
+                                                      ay + 0.5 * dy - cy):
+            dev[i] = d
+    cand = []
+    for i in range(n):
+        if dev[i] < min_dev_mm:
+            continue
+        if not all(dev[i] >= dev[(i + j) % n] for j in range(-k, k + 1)):
+            continue                                     # tem de ser máximo local
+        prom = dev[i] - min(dev[(i - k) % n], dev[(i + k) % n])   # altura sobre a janela
+        if prom >= min_dev_mm:
+            cand.append((prom, i))
+    cand.sort(reverse=True)                              # mais proeminentes primeiro
+    chosen = []
+    for _prom, i in cand:                                # supressão de não-máximos por arco
+        if all(min((i - j) % n, (j - i) % n) >= k for j in chosen):
+            chosen.append(i)
+    return sorted(chosen)
+
+
+def _one_cubic_contained(seg, field, eps):
+    """UMA cúbica suave para o trecho que NÃO corta a peça. Parte do ajuste por mínimos
+    quadrados (honra as tangentes das pontas → nó G1) e, se penetrar o piso além de
+    `eps`, ESTUFA p/ fora alongando os handles em torno das âncoras — mantém a DIREÇÃO
+    das tangentes (segue G1) e empurra a curva p/ fora até conter a peça. Garante o
+    requisito do pocket: a peça cabe (a forma só fica do tamanho real ou maior, nunca
+    cortando p/ dentro). Devolve a de menor penetração se nem a estufada máxima contiver."""
+    pts, t1, t2 = seg
+    p0, c1, c2, p3 = _fit_one_cubic(pts, _chord_params(pts), t1, t2)
+    best_bez, best_pen = None, float("inf")
+    for scale in (1.0, 1.25, 1.6, 2.0, 2.6, 3.4, 4.5, 6.0):
+        bez = (p0,
+               (p0[0] + (c1[0] - p0[0]) * scale, p0[1] + (c1[1] - p0[1]) * scale),
+               (p3[0] + (c2[0] - p3[0]) * scale, p3[1] + (c2[1] - p3[1]) * scale),
+               p3)
+        pen = _beziers_max_penetration([bez], field)
+        if pen <= eps:
+            return bez
+        if pen < best_pen:
+            best_pen, best_bez = pen, bez
+    return best_bez
+
+
+def _fit_anchored_capped(rp, field, eps, budget, min_dist_mm=ANCHOR_MIN_DIST_MM):
+    """TETO RÍGIDO de `budget` curvas via âncoras BALANCEADAS POR QUADRANTE (ver
+    `_quadrant_anchors`): 1 extremidade por setor angular, com âncoras do mesmo quadrante
+    a ≥ `min_dist_mm` umas das outras, e entre âncoras UMA cúbica suave CONTIDA
+    (`_one_cubic_contained`, estufa p/ fora se preciso → a peça cabe). Emite ≤ `budget`
+    Béziers, todas G1. É o contorno de ENCAIXE: não busca fidelidade máxima, e sim um
+    pocket que contém a peça e fica mais justo a cada +4 pontos (mais 1 por quadrante)."""
+    n = len(rp)
+    prot = _protrusion_anchors(rp, PROTRUSION_DEV_MM, span_mm=min_dist_mm)
+    prot = prot[:max(0, budget - 4)]                 # cabe no teto, deixando >=4 vagas radiais
+    radial = _quadrant_anchors(rp, max(4, budget - len(prot)), min_dist_mm=min_dist_mm)
+    anchors = sorted(set(radial) | set(prot))        # uniao <= budget (curvas <= teto)
+    if len(anchors) < 2:
+        anchors = [0, n // 2]
+    tang = _anchor_tangents(rp, anchors)
+    return [_one_cubic_contained(s, field, eps)
+            for s in _anchor_segments(rp, anchors, tang)]
+
+
+def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
+                                simplify_mm=ANCHOR_SIMPLIFY_MM, eps=ANCHOR_EPS_MM,
+                                step=0.4, ppm=12.0, max_nodes=MAX_NODES,
+                                min_dist_mm=ANCHOR_MIN_DIST_MM):
+    """Ajuste com TODOS os nós SUAVES (G1), contendo a peça. Devolve lista de
+    (p0,c1,c2,p3) no referencial da silhueta; o snap de bbox (depois) fixa a dimensão real.
+
+    Dois regimes:
+    • `max_nodes > 0` (default): TETO RÍGIDO de CURVAS por QUADRANTE (ver
+      `_fit_anchored_capped`/`_quadrant_anchors`) — 1 extremidade por setor angular,
+      cúbicas contidas que ESTUFAM p/ fora se preciso. Contorno de ENCAIXE (a peça cabe),
+      mais justo a cada +4 pontos. Emite ≤ `max_nodes` Béziers, sempre.
+    • `max_nodes <= 0`: automático/ilimitado — ancora nas extremidades do fecho convexo
+      (RDP `simplify_mm`) e subdivide cada trecho por contenção até caber (mais nós, justo)."""
+    clean = ensure_ccw(lowpass_closed(resample_uniform(silhouette, 0.15, closed=True),
+                                      win_mm=smooth_mm, step=0.15))
+    rp = resample_uniform(clean, step, closed=True)
+    n = len(rp)
+    if n < 4:
+        return []
+    field = _floor_field(clean, 0.0, ppm)        # piso de contenção = peça denoisada
+    if max_nodes and max_nodes > 0:              # TETO RÍGIDO de curvas (por quadrante)
+        return _fit_anchored_capped(rp, field, POCKET_EPS_MM, max_nodes, min_dist_mm=min_dist_mm)
+    # Automático/ilimitado: âncoras do fecho convexo + subdivisão por contenção (legado).
+    anchors = hull_anchor_indices(rp, simplify_mm=simplify_mm)
+    if len(anchors) < 2:
+        anchors = [0, n // 2]
+    tang = _anchor_tangents(rp, anchors)         # tangente suave (marcha) por âncora
+    cubics = []
+    for seg, t1, t2 in _anchor_segments(rp, anchors, tang):
+        _fit_segment_contained(seg, t1, t2, field, eps, cubics)
+    return cubics
+
+
+def _scale_cubics_to_bbox(cubics, target_w, target_h):
+    """Normaliza as cúbicas (por eixo, em torno do canto da bbox) p/ a bbox achatada
+    ficar EXATAMENTE `target_w × target_h` — garante a dimensão real medida pela grade."""
+    flat = flatten_beziers(cubics)
+    min_x, min_y, max_x, max_y = bbox(flat)
+    cw, ch = max_x - min_x, max_y - min_y
+    sx = target_w / cw if cw > 1e-9 else 1.0
+    sy = target_h / ch if ch > 1e-9 else 1.0
+    return [tuple((min_x + (qx - min_x) * sx, min_y + (qy - min_y) * sy) for (qx, qy) in bez)
+            for bez in cubics]
+
+
+def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
+                   silhouette=None, c_fit=0.3, anchored=True,
+                   smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, max_nodes=MAX_NODES,
+                   min_dist_mm=ANCHOR_MIN_DIST_MM):
+    """Estágio 5: SVG em mm — contorno + PREENCHIMENTO translúcido (`OUTLINE_COLOR` a
+    `OUTLINE_FILL_OPACITY`, cor destacada quase transparente p/ sobrepor o objeto e
+    conferir cobertura), feito SÓ de curvas de Bézier cúbicas (`C`). Com `silhouette`:
+      • `anchored` (padrão): ancora nas EXTREMIDADES e traça curvas contidas (ver
+        fit_closed_beziers_anchored);
+      • senão: mínimo de Béziers por contenção a partir do guia `pts_mm`.
+    No modo ENCAIXE (anchored + teto `max_nodes > 0`) NÃO se faz o snap de bbox: o pocket
+    fica no tamanho métrico real e ≥ objeto (contém a peça; folga mínima do encaixe). Nos
+    demais modos a bbox é fixada na dimensão real medida pela grade. Sem silhueta, ajusta
+    por tolerância `tol`. `curves=False` emite o polyline cru (`L`)."""
+    p = dedup_closing_point(pts_mm)
+
+    def f(v):
+        s = f"{v:.4f}".rstrip("0").rstrip(".")
+        return "0" if s in ("-0", "") else s
+
+    capped = anchored and max_nodes and max_nodes > 0
+    if not curves:
+        cubics = []
+    elif silhouette is not None:
+        if anchored:
+            cubics = fit_closed_beziers_anchored(silhouette, smooth_mm=smooth_mm,
+                                                 simplify_mm=simplify_mm, max_nodes=max_nodes,
+                                                 min_dist_mm=min_dist_mm)
+        else:
+            cubics = fit_closed_beziers_contained(p, silhouette, c_fit=c_fit)
+        if cubics and not capped:                 # snap p/ a dimensão real (exceto encaixe)
+            tw, th = size(silhouette)
+            cubics = _scale_cubics_to_bbox(cubics, tw, th)
+    else:
+        cubics = fit_closed_beziers(p, tol=tol)
+
+    # bbox derivada da GEOMETRIA EMITIDA (não do guia inflado) → width/height corretos.
+    geo = flatten_beziers(cubics) if cubics else p
+    min_x, min_y, max_x, max_y = bbox(geo)
+    w, h = max_x - min_x, max_y - min_y
+
+    def tx(pt):                               # mm (Y p/ cima) → SVG (origem topo-esq, Y p/ baixo)
+        return (pt[0] - min_x, max_y - pt[1])
+
+    if cubics:
+        start = tx(cubics[0][0])
+        d = f"M {f(start[0])},{f(start[1])}"
+        for (_p0, c1, c2, p3) in cubics:
+            a, b, e = tx(c1), tx(c2), tx(p3)
+            d += f" C {f(a[0])},{f(a[1])} {f(b[0])},{f(b[1])} {f(e[0])},{f(e[1])}"
+        d += " Z"
+        npts = len(cubics)
+    else:
+        pp = [tx(q) for q in p]
+        d = "M " + " L ".join(f"{f(x)},{f(y)}" for (x, y) in pp) + " Z"
+        npts = len(pp)
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+        f'<!-- GERADO por tools/photo_to_outline.py — contorno de {name} (mm), {npts} nós -->\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" version="1.1"\n'
+        f'     width="{f(w)}mm" height="{f(h)}mm" viewBox="0 0 {f(w)} {f(h)}">\n'
+        f'  <path d="{d}"\n'
+        f'        style="fill:{OUTLINE_COLOR};fill-opacity:{OUTLINE_FILL_OPACITY};'
+        f'stroke:{OUTLINE_COLOR};stroke-width:0.264583;vector-effect:non-scaling-stroke"/>\n'
+        f'</svg>\n'
+    )
+
+
+def write_overlay(rect, mask, path):
+    """Grava o OVERLAY de conferência: o contorno SEGMENTADO (já com a simetria, se
+    houver) desenhado em vermelho sobre a foto retificada — o "o que o tool enxergou
+    da peça". Mesma resolução px do `rect`, então é exato (sem remapeamento). Serve p/
+    validar de relance a segmentação/iluminação ANTES de aceitar o .svg."""
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    ov = rect.copy()
+    cv2.drawContours(ov, cnts, -1, (0, 0, 255), 2)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    cv2.imwrite(path, ov)
+
+
+def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
+    """Overlay EDITÁVEL p/ Inkscape: a foto retificada embutida (raster, em camada
+    TRAVADA) + o MESMO contorno de Béziers do `.svg` por cima (camada editável), tudo no
+    referencial MÉTRICO do canvas (viewBox em mm). Abra no Inkscape, ajuste os nós do
+    contorno sobre a foto, apague/oculte a camada da foto e exporte → contorno corrigido
+    na escala real. O frame da foto é (x_mm, −y_mm): px(0,0) no topo-esq, como em `rect`."""
+    h, w = rect.shape[:2]
+    canvas_w, canvas_h = w * mmpp_x, h * mmpp_y
+    _ok, buf = cv2.imencode(".png", rect)
+    b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+
+    def f(v):
+        s = f"{v:.4f}".rstrip("0").rstrip(".")
+        return "0" if s in ("-0", "") else s
+
+    def tx(pt):                      # mm (x≥0, y≤0) → frame da foto (Y p/ baixo)
+        return (pt[0], -pt[1])
+
+    d = ""
+    if cubics:
+        start = tx(cubics[0][0])
+        d = f"M {f(start[0])},{f(start[1])}"
+        for (_p0, c1, c2, p3) in cubics:
+            a, b, e = tx(c1), tx(c2), tx(p3)
+            d += f" C {f(a[0])},{f(a[1])} {f(b[0])},{f(b[1])} {f(e[0])},{f(e[1])}"
+        d += " Z"
+    svg = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+        '<!-- OVERLAY EDITÁVEL (foto retificada + contorno) — tools/photo_to_outline.py.\n'
+        '     Ajuste os nós do contorno sobre a foto no Inkscape, apague a camada "foto" e exporte. -->\n'
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"\n'
+        '     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"\n'
+        '     xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.0.dtd"\n'
+        f'     version="1.1" width="{f(canvas_w)}mm" height="{f(canvas_h)}mm"\n'
+        f'     viewBox="0 0 {f(canvas_w)} {f(canvas_h)}">\n'
+        '  <g inkscape:groupmode="layer" inkscape:label="foto" sodipodi:insensitive="true">\n'
+        f'    <image x="0" y="0" width="{f(canvas_w)}" height="{f(canvas_h)}" preserveAspectRatio="none"\n'
+        f'           xlink:href="data:image/png;base64,{b64}"/>\n'
+        '  </g>\n'
+        f'  <g inkscape:groupmode="layer" inkscape:label="{name}">\n'
+        f'    <path d="{d}"\n'
+        f'          style="fill:{OUTLINE_COLOR};fill-opacity:{OUTLINE_FILL_OPACITY};'
+        f'stroke:{OUTLINE_COLOR};stroke-width:0.3;vector-effect:non-scaling-stroke"/>\n'
+        '  </g>\n'
+        '</svg>\n'
+    )
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(svg)
+
+
+def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
+                     smooth_mm=SMOOTH_MM, clearance=CLEARANCE_MM, symmetry="none",
+                     deshadow=False, simplify_mm=ANCHOR_SIMPLIFY_MM, max_nodes=MAX_NODES,
+                     min_dist_mm=ANCHOR_MIN_DIST_MM,
+                     overlay_path=None, overlay_svg_path=None, debug_dir=None,
+                     return_silhouette=False):
+    """Pipeline completo → lista de pontos (x,y) em mm. Usado pelos testes E pelo CLI.
+    `symmetry` ∈ {'none','vertical','horizontal','both'} impõe a simetria do objeto
+    (espelha + média das metades) p/ limpar o contorno. `deshadow=True` liga a histerese
+    de borda na segmentação (recupera o bisel preto do topo E o toe laranja do fundo,
+    barrando a sombra de contato cinza). `overlay_path` grava o
+    overlay PNG de conferência (contorno segmentado sobre a foto); `overlay_svg_path`
+    grava o overlay SVG EDITÁVEL (foto embutida + Béziers do .svg) p/ ajuste no Inkscape.
+    `return_silhouette=True` devolve também a silhueta crua (p/ checar encaixe)."""
+    img = load_image(in_path)
+    rect, mmpp_x, mmpp_y, _conf = rectify(img, dict_name=dict_name, debug_dir=debug_dir)
+    flat = normalize_illumination(rect, debug_dir=debug_dir)
+    mask = segment_tool(flat, deshadow=deshadow, debug_dir=debug_dir)
+    if symmetry and symmetry != "none":
+        mask = symmetrize_mask(mask, symmetry, ppmm=1.0 / mmpp_x, debug_dir=debug_dir)
+    if overlay_path:
+        write_overlay(rect, mask, overlay_path)
+    sil = extract_outline(mask, mmpp_x, mmpp_y, debug_dir=debug_dir)
+    if overlay_svg_path:
+        # Mesmos Béziers que o .svg emite. No modo encaixe (teto) NÃO se faz o snap de
+        # bbox (o pocket fica ≥ objeto p/ conter a peça); nos demais, snap p/ a dimensão real.
+        cub = fit_closed_beziers_anchored(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
+                                          max_nodes=max_nodes, min_dist_mm=min_dist_mm)
+        if cub and not (max_nodes and max_nodes > 0):
+            cub = _scale_cubics_to_bbox(cub, *size(sil))
+        write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
+    out = process_for_print(sil, min_radius=min_radius, smooth_mm=smooth_mm, clearance=clearance)
+    return (out, sil) if return_silhouette else out
+
+
+def boundary_roughness(pts, win_mm=2.0, step=0.2):
+    """Aspereza do contorno: desvio máximo (mm) entre o contorno e seu low-pass de
+    janela `win_mm`. Alto = serrilhado; ~0 = linha limpa."""
+    rp = resample_uniform(pts, step, closed=True)
+    sm = lowpass_closed(rp, win_mm, step)
+    n = min(len(rp), len(sm))
+    if n == 0:
+        return 0.0
+    return max(math.hypot(rp[i][0] - sm[i][0], rp[i][1] - sm[i][1]) for i in range(n))
+
+
+def coverage(outer, inner, ppm=8.0):
+    """Fração da área de `inner` contida em `outer` (mesmo referencial mm). 1.0 =
+    `inner` totalmente dentro de `outer` (a peça cabe no pocket)."""
+    min_x = min(bbox(outer)[0], bbox(inner)[0])
+    min_y = min(bbox(outer)[1], bbox(inner)[1])
+    max_x = max(bbox(outer)[2], bbox(inner)[2])
+    max_y = max(bbox(outer)[3], bbox(inner)[3])
+    w = int(math.ceil((max_x - min_x) * ppm)) + 2
+    h = int(math.ceil((max_y - min_y) * ppm)) + 2
+    mo = _polys_to_mask([[((x - min_x) * ppm, (y - min_y) * ppm) for (x, y) in _xy(outer)]], w, h)
+    mi = _polys_to_mask([[((x - min_x) * ppm, (y - min_y) * ppm) for (x, y) in _xy(inner)]], w, h)
+    inside = np.count_nonzero(cv2.bitwise_and(mo, mi))
+    total = np.count_nonzero(mi)
+    return (inside / total) if total else 0.0
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Foto da ferramenta → SVG de contorno (mm)")
+    ap.add_argument("--in", "-i", dest="in_path", required=True)
+    ap.add_argument("--out", "-o", dest="out_path")
+    ap.add_argument("--dict", dest="dict_name", default=DICT_NAME,
+                    help="dicionário ArUco da base impressa (deve casar com tools/base.svg)")
+    ap.add_argument("--min-radius", type=float, default=MIN_RADIUS_MM)
+    ap.add_argument("--smooth-mm", dest="smooth_mm", type=float, default=SMOOTH_MM,
+                    help="janela do low-pass (mm) que remove o serrilhado")
+    ap.add_argument("--clearance", type=float, default=CLEARANCE_MM,
+                    help="folga externa (mm). PADRÃO 0 = tamanho REAL (sem ganho); "
+                         "a folga de encaixe é aplicada DEPOIS (gridfinity_itemholder)")
+    ap.add_argument("--shadow", dest="shadow", default="off",
+                    choices=["off", "remove"],
+                    help="'remove' liga a HISTERESE de borda: cresce os núcleos preto E colorido "
+                         "pela borda arredondada que vira p/ a base (bisel PRETO no topo, toe "
+                         "LARANJA dessaturado no fundo) — só pelos pixels COM CROMA — recuperando "
+                         "a borda real que o corte único comia, e PARANDO na sombra de contato "
+                         "cinza (que fica de fora, sem afrouxar o pocket). PADRÃO off.")
+    ap.add_argument("--symmetry", dest="symmetry", default="none",
+                    choices=["none", "vertical", "horizontal", "both"],
+                    help="impõe a simetria do objeto: espelha e faz a MÉDIA das duas metades "
+                         "(duas amostras do mesmo contorno → menos ruído). 'vertical' = eixo "
+                         "vertical (metades esq./dir. iguais), 'horizontal' = eixo horizontal "
+                         "(topo/baixo), 'both' = os dois. PADRÃO none.")
+    ap.add_argument("--simplify", dest="simplify", type=float, default=ANCHOR_SIMPLIFY_MM,
+                    help="densidade das âncoras (mm): MAIOR = menos nós (mais 'hull'), "
+                         "MENOR = contorno mais justo (mais nós)")
+    ap.add_argument("--max-nodes", dest="max_nodes", type=int, default=MAX_NODES,
+                    help="TETO RÍGIDO de CURVAS (Béziers suaves) do contorno. PADRÃO 4: "
+                         "começa com 4 curvas suaves e só subdivide o pior trecho ENQUANTO "
+                         "sobra orçamento — nunca passa do teto. Se 4 não contiver a peça, a "
+                         "tool AVISA; aumente o teto p/ um contorno mais justo. 0 = ilimitado.")
+    ap.add_argument("--fit-tol", dest="fit_tol", type=float, default=FIT_TOL_MM,
+                    help="tolerância (mm) do ajuste por tolerância (só com --tol-fit)")
+    ap.add_argument("--c-fit", dest="c_fit", type=float, default=0.0,
+                    help="folga embutida no SVG (mm); 0 = traço mínimo encostando na peça "
+                         "(o gridfinity_itemholder adiciona a folga de impressão ao furar)")
+    ap.add_argument("--guide", dest="guide", type=float, default=BEZIER_GUIDE_MM,
+                    help="orçamento de suavização (mm): maior = MENOS Béziers, cavidade mais folgada")
+    ap.add_argument("--tol-fit", dest="tol_fit", action="store_true",
+                    help="ajusta por tolerância (mais nós) em vez do mínimo por contenção")
+    ap.add_argument("--polyline", dest="polyline", action="store_true",
+                    help="emite polyline cru (L) em vez de curvas de Bézier (C)")
+    ap.add_argument("--inkscape", dest="inkscape", action="store_true",
+                    help="gera também o overlay SVG EDITÁVEL `_overlay_<nome>.svg` (foto retificada "
+                         "embutida + Béziers em camadas, no referencial mm) p/ ajuste fino no Inkscape "
+                         "e export na escala real. PADRÃO off (só o overlay PNG de conferência sai sempre).")
+    ap.add_argument("--min-dist", dest="min_dist", type=float, default=ANCHOR_MIN_DIST_MM,
+                    help="distância MÍNIMA (mm) entre âncoras do MESMO QUADRANTE no pocket de "
+                         "encaixe: ao adensar (8, 12…), o 2º/3º ponto de um quadrante só entra "
+                         "se ficar a ≥ este valor dos já escolhidos ali (evita aglomerar). PADRÃO 10.")
+    ap.add_argument("--name", dest="name")
+    ap.add_argument("--debug-dir", dest="debug_dir")
+    args = ap.parse_args(argv)
+
+    if not os.path.exists(args.in_path):
+        print(f"imagem não encontrada: {args.in_path}", file=sys.stderr)
+        return 2
+    out_path = args.out_path or os.path.splitext(args.in_path)[0] + ".svg"
+    name = args.name or os.path.splitext(os.path.basename(args.in_path))[0]
+    # Overlay PNG de conferência SEMPRE gerado ao lado do .svg (prefixo "_overlay_", com
+    # underscore inicial = rascunho/ignorado pelo git): contorno segmentado sobre a foto.
+    # O overlay SVG EDITÁVEL (foto embutida + Béziers, p/ ajuste fino no Inkscape) só sai
+    # com --inkscape. Ambos gravados ANTES do .svg final.
+    _ov_base = os.path.join(os.path.dirname(out_path) or ".",
+                            f"_overlay_{os.path.splitext(os.path.basename(out_path))[0]}")
+    overlay_path = _ov_base + ".png"
+    overlay_svg_path = (_ov_base + ".svg") if args.inkscape else None
+
+    try:
+        pts, sil = generate_outline(args.in_path, dict_name=args.dict_name,
+                                    min_radius=args.min_radius, smooth_mm=args.smooth_mm,
+                                    clearance=args.clearance, symmetry=args.symmetry,
+                                    deshadow=(args.shadow == "remove"),
+                                    simplify_mm=args.simplify, max_nodes=args.max_nodes,
+                                    min_dist_mm=args.min_dist,
+                                    overlay_path=overlay_path,
+                                    overlay_svg_path=overlay_svg_path,
+                                    debug_dir=args.debug_dir, return_silhouette=True)
+    except GridDetectionError as e:
+        print(f"ERRO: retificação pela base ArUco falhou — {e}", file=sys.stderr)
+        print("      imprima tools/base.svg em A4 a 100%, apoie a peça no centro branco e "
+              "fotografe de cima; use --debug-dir p/ inspecionar.", file=sys.stderr)
+        return 3
+
+    anchored = not args.tol_fit                     # ancorado nas extremidades (padrão)
+    floor = None if args.tol_fit else sil
+    # Guia de FORMA só p/ o caminho por contenção (--tol-fit): silhueta suavizada com
+    # orçamento `--guide`. O caminho ancorado não usa guia — parte da silhueta direto.
+    guide = pts
+    if floor is not None and not anchored and not args.polyline:
+        guide = process_for_print(sil, min_radius=args.min_radius, smooth_mm=args.smooth_mm,
+                                  clearance=args.guide)
+    svg = polygon_to_svg(guide, name=name, curves=not args.polyline, tol=args.fit_tol,
+                         silhouette=floor, c_fit=args.c_fit, anchored=anchored,
+                         smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
+                         max_nodes=args.max_nodes, min_dist_mm=args.min_dist)
+    with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(svg)
+    ow, oh = size(sil)                              # dimensão REAL medida pelos marcadores
+    undercontained = False
+    capped = anchored and args.max_nodes > 0        # modo ENCAIXE (pocket por quadrante)
+    obj_line = f"    objeto (medido pela base) = {ow:.2f} x {oh:.2f} mm  [= dimensão do SVG]"
+    if args.polyline:
+        nodes = "polyline"
+    elif anchored:
+        cub = fit_closed_beziers_anchored(sil, smooth_mm=args.smooth_mm,
+                                          simplify_mm=args.simplify, max_nodes=args.max_nodes,
+                                          min_dist_mm=args.min_dist)
+        if cub and not capped:                      # mesma geometria do SVG emitido
+            cub = _scale_cubics_to_bbox(cub, *size(sil))
+        cov = coverage(flatten_beziers(cub), sil)
+        if capped:
+            pw, ph = size(flatten_beziers(cub))     # pocket = ≥ objeto (contém a peça)
+            nodes = (f"{len(cub)} Béziers — POCKET de encaixe (âncoras por quadrante), nós "
+                     f"suaves, teto {args.max_nodes}; contém a peça {cov:.4f}")
+            obj_line = (f"    objeto (medido) = {ow:.2f} x {oh:.2f} mm  |  pocket (SVG, ≥ objeto, "
+                        f"folga +{pw - ow:.2f} x +{ph - oh:.2f}) = {pw:.2f} x {ph:.2f} mm")
+            undercontained = cov < CONTAIN_COVERAGE
+        else:
+            nodes = f"{len(cub)} Béziers (ancorado nas extremidades, nós suaves; encaixe {cov:.4f})"
+    elif floor is not None:
+        cub = fit_closed_beziers_contained(dedup_closing_point(guide), sil, c_fit=args.c_fit)
+        cov = coverage(flatten_beziers(cub), sil)
+        nodes = f"{len(cub)} Béziers (mínimo p/ a peça caber; encaixe {cov:.4f})"
+    else:
+        nodes = f"{len(fit_closed_beziers(dedup_closing_point(pts), tol=args.fit_tol))} Béziers (por tolerância)"
+    print(f"OK  {args.in_path}  ->  {out_path}")
+    print(f"    overlay PNG (conferência): {overlay_path}")
+    if overlay_svg_path:
+        print(f"    overlay SVG (editável no Inkscape): {overlay_svg_path}")
+    print(obj_line)
+    if args.shadow == "remove":
+        print("    sombra: histerese de borda ligada (bisel preto do topo + toe laranja do "
+              "fundo recuperados; sombra de contato cinza barrada)")
+    if args.symmetry != "none":
+        print(f"    simetria imposta: {args.symmetry} (espelho + média das metades)")
+    print(f"    {nodes}")
+    if undercontained:
+        print(f"    AVISO: mesmo com {args.max_nodes} curvas o pocket não contém 100% a peça "
+              f"(encaixe < {CONTAIN_COVERAGE:.2f}); aumente --max-nodes.", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

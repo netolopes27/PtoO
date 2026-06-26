@@ -361,6 +361,20 @@ class TestAnchoredFit(unittest.TestCase):
                 self.assertGreaterEqual(pw, tw - margin)     # não encolhe além da tolerância
                 self.assertGreaterEqual(ph, th - margin)
 
+    def test_pocket_eps_param_default_and_tighter(self):
+        # `pocket_eps` é a penetração tolerada (mm) do modo POCKET, exposta como parâmetro
+        # (e flag --pocket-eps). Default = POCKET_EPS_MM; menor eps corta MENOS a peça →
+        # cobertura nunca menor (contém ≥). Respeita o teto e segue contendo a peça.
+        self.assertEqual(P.POCKET_EPS_MM, 0.5)
+        shape = rounded_rect(50, 34, 8)
+        cov = {}
+        for eps in (0.0, 0.5):
+            cub = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, max_nodes=8, pocket_eps=eps)
+            self.assertLessEqual(len(cub), 8)                 # teto respeitado
+            cov[eps] = P.coverage(P.flatten_beziers(cub, seg=40), shape)
+            self.assertGreaterEqual(cov[eps], 0.99)           # ainda contém a peça
+        self.assertGreaterEqual(cov[0.0], cov[0.5] - 1e-9)    # eps menor não contém menos
+
 
 class TestProtrusionAnchors(unittest.TestCase):
     """Saliência no MEIO de uma aresta (ressalto lateral): o seletor radial por

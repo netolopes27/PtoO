@@ -1195,7 +1195,8 @@ def _fit_anchored_capped(rp, field, eps, budget, min_dist_mm=ANCHOR_MIN_DIST_MM)
 def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
                                 simplify_mm=ANCHOR_SIMPLIFY_MM, eps=ANCHOR_EPS_MM,
                                 step=0.4, ppm=12.0, max_nodes=MAX_NODES,
-                                min_dist_mm=ANCHOR_MIN_DIST_MM):
+                                min_dist_mm=ANCHOR_MIN_DIST_MM,
+                                pocket_eps=POCKET_EPS_MM):
     """Ajuste com TODOS os nós SUAVES (G1), contendo a peça. Devolve lista de
     (p0,c1,c2,p3) no referencial da silhueta; o snap de bbox (depois) fixa a dimensão real.
 
@@ -1214,7 +1215,7 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
         return []
     field = _floor_field(clean, 0.0, ppm)        # piso de contenção = peça denoisada
     if max_nodes and max_nodes > 0:              # TETO RÍGIDO de curvas (por quadrante)
-        return _fit_anchored_capped(rp, field, POCKET_EPS_MM, max_nodes, min_dist_mm=min_dist_mm)
+        return _fit_anchored_capped(rp, field, pocket_eps, max_nodes, min_dist_mm=min_dist_mm)
     # Automático/ilimitado: âncoras do fecho convexo + subdivisão por contenção (legado).
     anchors = hull_anchor_indices(rp, simplify_mm=simplify_mm)
     if len(anchors) < 2:
@@ -1241,7 +1242,7 @@ def _scale_cubics_to_bbox(cubics, target_w, target_h):
 def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                    silhouette=None, c_fit=0.3, anchored=True,
                    smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, max_nodes=MAX_NODES,
-                   min_dist_mm=ANCHOR_MIN_DIST_MM):
+                   min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM):
     """Estágio 5: SVG em mm — contorno + PREENCHIMENTO translúcido (`OUTLINE_COLOR` a
     `OUTLINE_FILL_OPACITY`, cor destacada quase transparente p/ sobrepor o objeto e
     conferir cobertura), feito SÓ de curvas de Bézier cúbicas (`C`). Com `silhouette`:
@@ -1265,7 +1266,7 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
         if anchored:
             cubics = fit_closed_beziers_anchored(silhouette, smooth_mm=smooth_mm,
                                                  simplify_mm=simplify_mm, max_nodes=max_nodes,
-                                                 min_dist_mm=min_dist_mm)
+                                                 min_dist_mm=min_dist_mm, pocket_eps=pocket_eps)
         else:
             cubics = fit_closed_beziers_contained(p, silhouette, c_fit=c_fit)
         if cubics and not capped:                 # snap p/ a dimensão real (exceto encaixe)
@@ -1372,7 +1373,7 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
 def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      smooth_mm=SMOOTH_MM, clearance=CLEARANCE_MM, symmetry="none",
                      deshadow=False, simplify_mm=ANCHOR_SIMPLIFY_MM, max_nodes=MAX_NODES,
-                     min_dist_mm=ANCHOR_MIN_DIST_MM,
+                     min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
                      overlay_path=None, overlay_svg_path=None, debug_dir=None,
                      return_silhouette=False):
     """Pipeline completo → lista de pontos (x,y) em mm. Usado pelos testes E pelo CLI.
@@ -1396,7 +1397,8 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
         # Mesmos Béziers que o .svg emite. No modo encaixe (teto) NÃO se faz o snap de
         # bbox (o pocket fica ≥ objeto p/ conter a peça); nos demais, snap p/ a dimensão real.
         cub = fit_closed_beziers_anchored(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
-                                          max_nodes=max_nodes, min_dist_mm=min_dist_mm)
+                                          max_nodes=max_nodes, min_dist_mm=min_dist_mm,
+                                          pocket_eps=pocket_eps)
         if cub and not (max_nodes and max_nodes > 0):
             cub = _scale_cubics_to_bbox(cub, *size(sil))
         write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
@@ -1483,6 +1485,10 @@ def main(argv=None):
                     help="gera também o overlay SVG EDITÁVEL `_overlay_<nome>.svg` (foto retificada "
                          "embutida + Béziers em camadas, no referencial mm) p/ ajuste fino no Inkscape "
                          "e export na escala real. PADRÃO off (só o overlay PNG de conferência sai sempre).")
+    ap.add_argument("--pocket-eps", dest="pocket_eps", type=float, default=POCKET_EPS_MM,
+                    help="penetração tolerada (mm) no modo POCKET: a curva pode tocar/cortar a "
+                         "peça até este valor. Menor = pocket mais justo p/ fora = 'contém' mais "
+                         "alto (→1.0); 0 = não corta a peça (contém ~1.0, encaixe mais folgado).")
     ap.add_argument("--min-dist", dest="min_dist", type=float, default=ANCHOR_MIN_DIST_MM,
                     help="distância MÍNIMA (mm) entre âncoras do MESMO QUADRANTE no pocket de "
                          "encaixe: ao adensar (8, 12…), o 2º/3º ponto de um quadrante só entra "
@@ -1511,7 +1517,7 @@ def main(argv=None):
                                     clearance=args.clearance, symmetry=args.symmetry,
                                     deshadow=(args.shadow == "remove"),
                                     simplify_mm=args.simplify, max_nodes=args.max_nodes,
-                                    min_dist_mm=args.min_dist,
+                                    min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps,
                                     overlay_path=overlay_path,
                                     overlay_svg_path=overlay_svg_path,
                                     debug_dir=args.debug_dir, return_silhouette=True)
@@ -1532,7 +1538,8 @@ def main(argv=None):
     svg = polygon_to_svg(guide, name=name, curves=not args.polyline, tol=args.fit_tol,
                          silhouette=floor, c_fit=args.c_fit, anchored=anchored,
                          smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
-                         max_nodes=args.max_nodes, min_dist_mm=args.min_dist)
+                         max_nodes=args.max_nodes, min_dist_mm=args.min_dist,
+                         pocket_eps=args.pocket_eps)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(svg)
     ow, oh = size(sil)                              # dimensão REAL medida pelos marcadores
@@ -1544,7 +1551,7 @@ def main(argv=None):
     elif anchored:
         cub = fit_closed_beziers_anchored(sil, smooth_mm=args.smooth_mm,
                                           simplify_mm=args.simplify, max_nodes=args.max_nodes,
-                                          min_dist_mm=args.min_dist)
+                                          min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps)
         if cub and not capped:                      # mesma geometria do SVG emitido
             cub = _scale_cubics_to_bbox(cub, *size(sil))
         cov = coverage(flatten_beziers(cub), sil)

@@ -148,10 +148,11 @@ PNGs for diagnosis).
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--smooth-mm` | `8.0` | low-pass window (mm) removing the jaggies; larger = smoother |
+| `--smooth-mm` | `8.0` | low-pass window (mm) removing the jaggies; larger = smoother. **Also the main lever for containment:** the containment floor is built from the *smoothed* silhouette, so a large window lets the raw part poke out — lower it (e.g. `2`) to push "contains the part" toward `1.0`, but too low (`≲1`) reintroduces jaggies |
 | `--simplify` | `2.0` | anchor density (mm): larger = fewer nodes; smaller = tighter |
-| `--max-nodes` | `4` | **curve cap of the fit pocket** (steps of 4); `0` = unlimited faithful mode. See §4.1 |
+| `--max-nodes` | `4` | **curve cap of the fit pocket** (steps of 4); `0` = unlimited faithful mode. See §4.1. Beyond ~300 the anchors saturate — it tightens the sides but does **not** raise containment |
 | `--min-dist` | `10` | min distance (mm) between same-quadrant anchors. See §4.1 |
+| `--pocket-eps` | `0.5` | tolerated penetration (mm) in pocket mode: how far the curve may touch/cut the part. Lower = the curve cuts the part less; `0` = doesn't cut at all. Small effect on containment (fine-tuning only — see `--smooth-mm` for the real lever) |
 | `--min-radius` | `1.5` | minimum corner radius (mm); avoids 90° corners / spikes |
 | `--guide` | (const) | smoothing budget (mm): larger = fewer Béziers, looser cavity |
 

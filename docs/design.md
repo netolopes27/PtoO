@@ -105,9 +105,15 @@ polui o contorno.
    entra **dentro do mesmo teto** (vagas de quadrante cedem, mantendo ≥ 4; só age com teto > 4).
    Entre âncoras, **1 cúbica suave por trecho** que **contém** a peça: ajuste por mínimos
    quadrados que **estufa p/ fora** (alonga handles, preservando G1) só se penetrar além de
-   `POCKET_EPS_MM` (`_one_cubic_contained`). Emite **≤ teto** Béziers, **sem snap de bbox** — o
-   pocket fica no tamanho real, ~objeto (mais pontos = mais justo); avisa se a cobertura cair
-   abaixo de `CONTAIN_COVERAGE`.
+   `POCKET_EPS_MM` (default, sobrescrito por `--pocket-eps`) (`_one_cubic_contained`). Emite
+   **≤ teto** Béziers, **sem snap de bbox** — o pocket fica no tamanho real, ~objeto (mais pontos
+   = mais justo); avisa se a cobertura cair abaixo de `CONTAIN_COVERAGE`.
+   **Lever da contenção = `--smooth-mm`, não o teto nem o eps.** O piso de contenção (`field`) é
+   construído sobre a silhueta **suavizada** (`clean`), enquanto a cobertura é medida contra a
+   silhueta crua; logo suavizar demais deixa a peça crua vazar por fora → `contém` cai. Baixar
+   `--smooth-mm` (8→2) aproxima o piso da peça e leva `contém`→~1.0 (≲1 reintroduz serrilhado).
+   `--max-nodes` acima de ~300 não sobe `contém` (âncoras saturam); `--pocket-eps` (0.5→0) tem
+   efeito sub-0.001 — é ajuste fino, não o lever.
    **Modo ilimitado/fiel (`--max-nodes 0`):** ancora nos pontos mais distantes (fecho convexo
    destilado por RDP `--simplify`), ajusta cúbicas **contidas** entre âncoras (maior tolerância
    sem penetrar além de `ANCHOR_EPS_MM`, via `distanceTransform`) e **fixa a bbox (snap, por

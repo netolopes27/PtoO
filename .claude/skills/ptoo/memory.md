@@ -1,7 +1,7 @@
 # ptoo memory  (manter < 100 linhas; ao exceder, podar a linha de cache mais antiga)
 
 ## start = melhor aposta atual  (NÃO é fixo — é a média/consenso do cache, recalculado a cada update)
-SEMPRE:      --shadow remove --min-dist 1 --smooth-mm 1.5 --pocket-eps 0
+SEMPRE:      --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical (n=1); desligar em peça assimétrica (distorce); trocar p/ horizontal se o eixo for outro
 <!-- cache ATUALIZADO (n=1). Ponto de partida p/ objeto NOVO; quando houver
      linha de cache do objeto, prefira a linha dele.
@@ -18,7 +18,7 @@ CONDICIONAL: --symmetry vertical (n=1); desligar em peça assimétrica (distorce
 
 ## cache último-bom (≤5 linhas; evicta a mais antiga; 1 linha por objeto)
 <!-- formato: - ~WxH mm | <params> | contém=0.NNNN clearance=+x/+y -->
-- ~68.12x71.00 mm | --shadow remove --min-dist 1 --smooth-mm 1.5 --pocket-eps 0 --symmetry vertical | contém=0.9999 clearance=-0.16/+0.01
+- ~67.62x70.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --symmetry vertical --mask-smooth-mm 2 | contém=1.0000 clearance=-0.08/+0.01
 
 ## heurísticas (sintoma → delta)  — estável, não duplicar
 - RAMPAS ADAPTATIVAS com INVERSÃO: 1ª --min-dist (piso 1, teto ~10) → 2ª --smooth-mm (piso ~2,

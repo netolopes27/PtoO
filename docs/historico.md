@@ -99,23 +99,27 @@ parâmetro**.
 
 - **Todo nó suave (G1):** `_anchor_tangents` compartilha a tangente em cada âncora entre os
   trechos vizinhos.
-- **Modo POCKET por quadrante (default):** o padrão virou a **cavidade de encaixe** —
-  `--max-nodes` divide a peça em quadrantes, ancora as extremidades das pontas p/ dentro
-  (`_quadrant_anchors`, ≥ `--min-dist` mm) e traça 1 cúbica suave por trecho que **contém** a peça
+- **Modo POCKET por quadrante (default):** o padrão virou a **cavidade de encaixe** — divide a
+  peça em 4 quadrantes, ancora as extremidades das pontas p/ dentro (`_quadrant_anchors`,
+  espaçadas a ≥ `--min-dist` mm) e traça 1 cúbica suave por trecho que **contém** a peça
   (`_one_cubic_contained`, estufa só além de `POCKET_EPS_MM`). Prioridade dupla: **cabe** e fica
-  **justa**. `4` = 1 ponto/quadrante (folgado); `8`,`12`,`16`… apertam; **`0`** = modo
-  fiel/ilimitado (fecho convexo + snap de bbox).
+  **justa**. A densidade é ditada **só por `--min-dist`** (menor = mais âncoras = mais justo); o
+  modo fiel/ilimitado (fecho convexo + snap de bbox) vem por **`--faithful`**.
+  - *Evolução:* o `--max-nodes` (teto de curvas em passos de 4, com cota por quadrante) foi
+    **removido** — era redundante com `--min-dist` (uma distância mínima já limita a contagem) e
+    obrigava a casar dois controles. Agora a contagem emerge do espaçamento; `--faithful`
+    substitui o antigo `--max-nodes 0`.
 - **Saliências locais (`_protrusion_anchors`):** pico convexo no meio de uma aresta (pega/botão)
-  ganha âncora se a proeminência ≥ `PROTRUSION_DEV_MM` (senão a curva arredondaria por cima);
-  dentro do mesmo teto, só com teto > 4.
+  ganha âncora se a proeminência ≥ `PROTRUSION_DEV_MM` (senão a curva arredondaria por cima).
 
 ## Estado de referência
 
-- **Suíte 67/67 verde.**
-- **`thermpro.jpg`** no default (POCKET teto 4): objeto ~67,9 × 71,4 mm; pocket contém a peça
-  (coverage ≥ 0,99) ≥ objeto. `--max-nodes 8` → folga ~+1,4 mm; `--max-nodes 0` (fiel) → ~18
-  Béziers, bbox = objeto. Com `--shadow remove` a borda arredondada entra dos dois lados e a
-  sombra de contato cinza fica de fora.
+- **Suíte 68/68 verde.**
+- **`thermpro.jpg`** no default (POCKET, `--min-dist 10`): pocket contém a peça (coverage ≥ 0,99)
+  ~ objeto. Apertando: `--shadow remove --min-dist 0.6 --smooth-mm 2 --symmetry vertical` → **305
+  Béziers, contém 0.9999**, folga −0,18 × −0,00 (flush). `--faithful` (fiel) → ~19 Béziers, bbox =
+  objeto. Com `--shadow remove` a borda arredondada entra dos dois lados e a sombra de contato
+  cinza fica de fora.
 
 ## Skill `/ptoo` — calibrador iterativo (camada de workflow)
 
@@ -137,11 +141,12 @@ overlay → ajustar flag → repetir). Virou uma **skill do Claude Code** em
 - **Modo `--debug`:** além de calibrar, gera diagnóstico crítico da CLI (prosa com `file:line` +
   patch proposto, **não** aplicado) e grava um plano da **próxima versão decimal** em
   `docs/melhorias/v<next>.md` (incrementa só o decimal; a parte inteira é decisão do usuário).
-- **Calibrado no thermpro:** alvo = pocket justo (clearance perto de 0). Aprendizados fixados na
-  memória/heurísticas: o teto prático de `contém` é ~**0.998** (`POCKET_EPS` deixa a curva
-  tocar/cortar ≤0.5 mm) — não exigir 0.999; a folga do **bbox** (cantos arredondados) só cede com
-  `--max-nodes` **alto** (saltar p/ 200–300, não ×2 — ×2 só aperta os lados/`contém`); e avaliar
-  **simetria no 1º passe** (`--symmetry vertical` levou o thermpro de 0.9980 → 0.9982).
+- **Calibrado no thermpro:** alvo = pocket justo (clearance perto de 0) com **contém ≥ 0.9999**
+  (gate rígido, a pedido do usuário). Aprendizados fixados na memória/heurísticas: a alavanca de
+  densidade/contém é **`--min-dist`** (rampa de cima p/ baixo; parar no MAIOR que cruza 0.9999 —
+  menos nós é melhor); `--smooth-mm` é só o lever fino e `--pocket-eps` quase não mexe;
+  contra-intuitivo, **min-dist grande** (poucos nós) deixa o pocket frouxo E com contém baixo
+  (Béziers longos arqueiam p/ dentro); e avaliar **simetria no 1º passe** (`--symmetry vertical`).
 
 ## Pendências / roadmap
 

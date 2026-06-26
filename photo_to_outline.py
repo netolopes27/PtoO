@@ -93,27 +93,22 @@ BEZIER_GUIDE_MM = 0.5      # folga do guia p/ o ajuste (contém a peça; bbox de
 CORNER_ANGLE_DEG = 40.0    # ângulo p/ marcar um canto (nó cusp entre curvas suaves)
 ANCHOR_SIMPLIFY_MM = 2.0   # RDP do fecho convexo: MAIOR = menos âncoras/nós (mais "hull"),
                             # MENOR = mais âncoras = contorno mais justo (porém mais nós)
-MAX_NODES = 4              # TETO RÍGIDO de CURVAS (Béziers suaves) do contorno; default 4.
-                            # >0 = teto real: o ajuste parte das âncoras dominantes (≤ teto),
-                            # 1 cúbica por trecho, e só subdivide o trecho de pior contenção
-                            # ENQUANTO sobra orçamento — nunca passa do teto (ver
-                            # _fit_anchored_capped). 0 = automático/ILIMITADO (subdivisão por
-                            # contenção sem teto: o caminho legado, justo porém com mais nós).
 ANCHOR_EPS_MM = 0.08       # penetração máx. (mm) tolerada no piso ao ajustar cada trecho (modo fiel)
 POCKET_EPS_MM = 0.5        # penetração tolerada (mm) no modo POCKET de encaixe: a curva pode
                             # TOCAR/cortar de leve a peça em vez de estufar p/ fora a span inteira
                             # por ruído sub-mm → pocket bem mais justo, ainda contendo ~0.998
-ANCHOR_MIN_DIST_MM = 10.0  # distância mínima (mm) entre âncoras DO MESMO QUADRANTE: ao adensar
-                            # (8, 12, 16…), o 2º/3º ponto de um quadrante só entra se ficar a
-                            # ≥ este valor dos já escolhidos ali → âncoras espaçadas, sem aglomerar
+ANCHOR_MIN_DIST_MM = 10.0  # distância mínima (mm) entre âncoras DO MESMO QUADRANTE — a ÚNICA
+                            # alavanca de densidade do pocket: cada quadrante recebe TODAS as
+                            # extremidades a ≥ este valor umas das outras (sem teto de nós).
+                            # MENOR = mais âncoras = pocket mais justo; MAIOR = menos = folgado
 PROTRUSION_DEV_MM = 0.8    # proeminência mín. (mm) de uma SALIÊNCIA local p/ virar âncora forçada:
                             # o seletor radial por quadrante ancora os CANTOS (mais externos ao
                             # centro) e ignora ressaltos no MEIO de uma aresta (pega lateral etc.).
                             # Um pico convexo que se ergue ≥ este valor acima da vizinhança ganha
-                            # âncora própria → a cúbica não arredonda por cima dele. Só vale com
-                            # teto > 4 (no teto 4 as 4 vagas são dos cantos). Ver _protrusion_anchors.
-CONTAIN_COVERAGE = 0.99    # encaixe mínimo p/ dar a peça por "contida"; abaixo disso, com
-                            # teto de curvas ativo, o CLI avisa p/ aumentar --max-nodes
+                            # âncora própria → a cúbica não arredonda por cima dele.
+                            # Ver _protrusion_anchors.
+CONTAIN_COVERAGE = 0.99    # encaixe mínimo p/ dar a peça por "contida"; abaixo disso, no modo
+                            # pocket, o CLI avisa p/ diminuir --min-dist (adensa as âncoras)
 RASTER_PPM = 16.0           # px/mm das operações raster (filete/IoU)
 OUTLINE_COLOR = "#ff00ff"      # cor BEM DESTACADA (magenta) do vetor de saída e do overlay
 OUTLINE_FILL_OPACITY = 0.25    # preenchimento quase transparente: sobrepõe TODO o objeto p/ conferir
@@ -1067,24 +1062,21 @@ def _anchor_segments(rp, anchors, tang):
     return segs
 
 
-def _quadrant_anchors(rp, budget, min_dist_mm=ANCHOR_MIN_DIST_MM):
+def _quadrant_anchors(rp, min_dist_mm=ANCHOR_MIN_DIST_MM):
     """Âncoras BALANCEADAS POR QUADRANTE p/ um pocket que CONTÉM a peça (encaixe num case
-    3D). Divide a peça em 4 quadrantes (sinal de x-cx, y-cy em torno do MEIO da bbox) e dá
-    a cada um uma cota de `budget//4` âncoras (o resto `budget%4` vai p/ os primeiros).
-    Em cada quadrante escolhe os pontos MAIS EXTERNOS (maior distância ao centro = as
-    extremidades que TÊM de caber), das pontas p/ dentro, com a RESTRIÇÃO de que âncoras
-    DO MESMO QUADRANTE fiquem a ≥ `min_dist_mm` umas das outras — assim a 1ª é a ponta, a
-    2ª/3ª caem ~`min_dist_mm` adiante (espalhadas pelas bordas, sem aglomerar na ponta).
-    `budget=4` → 1 ponto/quadrante (as 4 pontas); +4 = mais 1/quadrante. Devolve índices
-    em `rp` ordenados ao longo do contorno (sai < budget se a peça for pequena demais p/
-    caber a cota com o espaçamento)."""
+    3D). Divide a peça em 4 quadrantes (sinal de x-cx, y-cy em torno do MEIO da bbox) e, em
+    cada um, ancora os pontos MAIS EXTERNOS (maior distância ao centro = as extremidades que
+    TÊM de caber), das pontas p/ dentro, com a ÚNICA restrição de que âncoras DO MESMO
+    QUADRANTE fiquem a ≥ `min_dist_mm` umas das outras — assim a 1ª é a ponta, a 2ª/3ª caem
+    ~`min_dist_mm` adiante (espalhadas pelas bordas, sem aglomerar na ponta). NÃO há teto:
+    a quantidade de âncoras emerge só do espaçamento — `min_dist_mm` MENOR = mais âncoras
+    (pocket mais justo), MAIOR = menos (mais folgado). Devolve índices em `rp` ordenados ao
+    longo do contorno."""
     xs = [p[0] for p in rp]
     ys = [p[1] for p in rp]
     cx = 0.5 * (min(xs) + max(xs))               # centro = meio da bbox ("divide ao meio")
     cy = 0.5 * (min(ys) + max(ys))
     quads = [(True, True), (False, True), (False, False), (True, False)]
-    base, rem = divmod(max(1, budget), 4)        # cota por quadrante (soma = budget)
-    quota = {q: base + (1 if k < rem else 0) for k, q in enumerate(quads)}
     md2 = min_dist_mm * min_dist_mm
     kept = []
     for q in quads:
@@ -1092,9 +1084,7 @@ def _quadrant_anchors(rp, budget, min_dist_mm=ANCHOR_MIN_DIST_MM):
                        for i in range(len(rp)) if (rp[i][0] >= cx, rp[i][1] >= cy) == q),
                       reverse=True)                # mais externos primeiro
         sel = []
-        for _d2, i in cand:
-            if len(sel) >= quota[q]:
-                break
+        for _d2, i in cand:                        # TODOS os que respeitam o espaçamento
             if all((rp[i][0] - rp[k][0]) ** 2 + (rp[i][1] - rp[k][1]) ** 2 >= md2
                    for k in sel):                  # ≥ min_dist das já escolhidas do quadrante
                 sel.append(i)
@@ -1173,18 +1163,17 @@ def _one_cubic_contained(seg, field, eps):
     return best_bez
 
 
-def _fit_anchored_capped(rp, field, eps, budget, min_dist_mm=ANCHOR_MIN_DIST_MM):
-    """TETO RÍGIDO de `budget` curvas via âncoras BALANCEADAS POR QUADRANTE (ver
-    `_quadrant_anchors`): 1 extremidade por setor angular, com âncoras do mesmo quadrante
-    a ≥ `min_dist_mm` umas das outras, e entre âncoras UMA cúbica suave CONTIDA
-    (`_one_cubic_contained`, estufa p/ fora se preciso → a peça cabe). Emite ≤ `budget`
-    Béziers, todas G1. É o contorno de ENCAIXE: não busca fidelidade máxima, e sim um
-    pocket que contém a peça e fica mais justo a cada +4 pontos (mais 1 por quadrante)."""
+def _fit_anchored(rp, field, eps, min_dist_mm=ANCHOR_MIN_DIST_MM):
+    """Âncoras BALANCEADAS POR QUADRANTE (ver `_quadrant_anchors`): as extremidades de cada
+    setor angular, espaçadas a ≥ `min_dist_mm`, mais as âncoras de SALIÊNCIA local
+    (`_protrusion_anchors`); entre âncoras consecutivas UMA cúbica suave CONTIDA
+    (`_one_cubic_contained`, estufa p/ fora se preciso → a peça cabe). Todas G1. É o
+    contorno de ENCAIXE: não busca fidelidade máxima, e sim um pocket que contém a peça e
+    fica mais justo conforme `min_dist_mm` diminui (mais âncoras). SEM teto de nós."""
     n = len(rp)
     prot = _protrusion_anchors(rp, PROTRUSION_DEV_MM, span_mm=min_dist_mm)
-    prot = prot[:max(0, budget - 4)]                 # cabe no teto, deixando >=4 vagas radiais
-    radial = _quadrant_anchors(rp, max(4, budget - len(prot)), min_dist_mm=min_dist_mm)
-    anchors = sorted(set(radial) | set(prot))        # uniao <= budget (curvas <= teto)
+    radial = _quadrant_anchors(rp, min_dist_mm=min_dist_mm)
+    anchors = sorted(set(radial) | set(prot))        # densidade ditada só por min_dist
     if len(anchors) < 2:
         anchors = [0, n // 2]
     tang = _anchor_tangents(rp, anchors)
@@ -1194,19 +1183,20 @@ def _fit_anchored_capped(rp, field, eps, budget, min_dist_mm=ANCHOR_MIN_DIST_MM)
 
 def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
                                 simplify_mm=ANCHOR_SIMPLIFY_MM, eps=ANCHOR_EPS_MM,
-                                step=0.4, ppm=12.0, max_nodes=MAX_NODES,
+                                step=0.4, ppm=12.0, faithful=False,
                                 min_dist_mm=ANCHOR_MIN_DIST_MM,
                                 pocket_eps=POCKET_EPS_MM):
     """Ajuste com TODOS os nós SUAVES (G1), contendo a peça. Devolve lista de
     (p0,c1,c2,p3) no referencial da silhueta; o snap de bbox (depois) fixa a dimensão real.
 
     Dois regimes:
-    • `max_nodes > 0` (default): TETO RÍGIDO de CURVAS por QUADRANTE (ver
-      `_fit_anchored_capped`/`_quadrant_anchors`) — 1 extremidade por setor angular,
-      cúbicas contidas que ESTUFAM p/ fora se preciso. Contorno de ENCAIXE (a peça cabe),
-      mais justo a cada +4 pontos. Emite ≤ `max_nodes` Béziers, sempre.
-    • `max_nodes <= 0`: automático/ilimitado — ancora nas extremidades do fecho convexo
-      (RDP `simplify_mm`) e subdivide cada trecho por contenção até caber (mais nós, justo)."""
+    • POCKET de encaixe (default, `faithful=False`): âncoras por QUADRANTE (ver
+      `_fit_anchored`/`_quadrant_anchors`) — as extremidades de cada setor angular,
+      espaçadas a ≥ `min_dist_mm`, cúbicas contidas que ESTUFAM p/ fora se preciso.
+      Contorno de ENCAIXE (a peça cabe), mais justo conforme `min_dist_mm` diminui. SEM
+      teto de nós: a densidade emerge só do espaçamento.
+    • FIEL (`faithful=True`): ancora nas extremidades do fecho convexo (RDP `simplify_mm`)
+      e subdivide cada trecho por contenção até caber (mais nós, contorno fiel à peça)."""
     clean = ensure_ccw(lowpass_closed(resample_uniform(silhouette, 0.15, closed=True),
                                       win_mm=smooth_mm, step=0.15))
     rp = resample_uniform(clean, step, closed=True)
@@ -1214,9 +1204,9 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
     if n < 4:
         return []
     field = _floor_field(clean, 0.0, ppm)        # piso de contenção = peça denoisada
-    if max_nodes and max_nodes > 0:              # TETO RÍGIDO de curvas (por quadrante)
-        return _fit_anchored_capped(rp, field, pocket_eps, max_nodes, min_dist_mm=min_dist_mm)
-    # Automático/ilimitado: âncoras do fecho convexo + subdivisão por contenção (legado).
+    if not faithful:                             # POCKET de encaixe (âncoras por quadrante)
+        return _fit_anchored(rp, field, pocket_eps, min_dist_mm=min_dist_mm)
+    # FIEL/ilimitado: âncoras do fecho convexo + subdivisão por contenção (legado).
     anchors = hull_anchor_indices(rp, simplify_mm=simplify_mm)
     if len(anchors) < 2:
         anchors = [0, n // 2]
@@ -1241,7 +1231,7 @@ def _scale_cubics_to_bbox(cubics, target_w, target_h):
 
 def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                    silhouette=None, c_fit=0.3, anchored=True,
-                   smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, max_nodes=MAX_NODES,
+                   smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
                    min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM):
     """Estágio 5: SVG em mm — contorno + PREENCHIMENTO translúcido (`OUTLINE_COLOR` a
     `OUTLINE_FILL_OPACITY`, cor destacada quase transparente p/ sobrepor o objeto e
@@ -1249,27 +1239,27 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
       • `anchored` (padrão): ancora nas EXTREMIDADES e traça curvas contidas (ver
         fit_closed_beziers_anchored);
       • senão: mínimo de Béziers por contenção a partir do guia `pts_mm`.
-    No modo ENCAIXE (anchored + teto `max_nodes > 0`) NÃO se faz o snap de bbox: o pocket
-    fica no tamanho métrico real e ≥ objeto (contém a peça; folga mínima do encaixe). Nos
-    demais modos a bbox é fixada na dimensão real medida pela grade. Sem silhueta, ajusta
-    por tolerância `tol`. `curves=False` emite o polyline cru (`L`)."""
+    No modo ENCAIXE (anchored e não `faithful`) NÃO se faz o snap de bbox: o pocket fica no
+    tamanho métrico real e ≥ objeto (contém a peça; folga mínima do encaixe). Nos demais
+    modos a bbox é fixada na dimensão real medida pela grade. Sem silhueta, ajusta por
+    tolerância `tol`. `curves=False` emite o polyline cru (`L`)."""
     p = dedup_closing_point(pts_mm)
 
     def f(v):
         s = f"{v:.4f}".rstrip("0").rstrip(".")
         return "0" if s in ("-0", "") else s
 
-    capped = anchored and max_nodes and max_nodes > 0
+    pocket = anchored and not faithful           # modo ENCAIXE: sem snap de bbox
     if not curves:
         cubics = []
     elif silhouette is not None:
         if anchored:
             cubics = fit_closed_beziers_anchored(silhouette, smooth_mm=smooth_mm,
-                                                 simplify_mm=simplify_mm, max_nodes=max_nodes,
+                                                 simplify_mm=simplify_mm, faithful=faithful,
                                                  min_dist_mm=min_dist_mm, pocket_eps=pocket_eps)
         else:
             cubics = fit_closed_beziers_contained(p, silhouette, c_fit=c_fit)
-        if cubics and not capped:                 # snap p/ a dimensão real (exceto encaixe)
+        if cubics and not pocket:                 # snap p/ a dimensão real (exceto encaixe)
             tw, th = size(silhouette)
             cubics = _scale_cubics_to_bbox(cubics, tw, th)
     else:
@@ -1372,7 +1362,7 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
 
 def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      smooth_mm=SMOOTH_MM, clearance=CLEARANCE_MM, symmetry="none",
-                     deshadow=False, simplify_mm=ANCHOR_SIMPLIFY_MM, max_nodes=MAX_NODES,
+                     deshadow=False, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
                      min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
                      overlay_path=None, overlay_svg_path=None, debug_dir=None,
                      return_silhouette=False):
@@ -1394,12 +1384,12 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
         write_overlay(rect, mask, overlay_path)
     sil = extract_outline(mask, mmpp_x, mmpp_y, debug_dir=debug_dir)
     if overlay_svg_path:
-        # Mesmos Béziers que o .svg emite. No modo encaixe (teto) NÃO se faz o snap de
-        # bbox (o pocket fica ≥ objeto p/ conter a peça); nos demais, snap p/ a dimensão real.
+        # Mesmos Béziers que o .svg emite. No modo encaixe (pocket) NÃO se faz o snap de
+        # bbox (o pocket fica ≥ objeto p/ conter a peça); no modo fiel, snap p/ a dimensão real.
         cub = fit_closed_beziers_anchored(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
-                                          max_nodes=max_nodes, min_dist_mm=min_dist_mm,
+                                          faithful=faithful, min_dist_mm=min_dist_mm,
                                           pocket_eps=pocket_eps)
-        if cub and not (max_nodes and max_nodes > 0):
+        if cub and faithful:
             cub = _scale_cubics_to_bbox(cub, *size(sil))
         write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
     out = process_for_print(sil, min_radius=min_radius, smooth_mm=smooth_mm, clearance=clearance)
@@ -1464,12 +1454,11 @@ def main(argv=None):
     ap.add_argument("--simplify", dest="simplify", type=float, default=ANCHOR_SIMPLIFY_MM,
                     help="densidade das âncoras (mm): MAIOR = menos nós (mais 'hull'), "
                          "MENOR = contorno mais justo (mais nós)")
-    ap.add_argument("--max-nodes", dest="max_nodes", type=int, default=MAX_NODES,
-                    help="TETO de CURVAS do POCKET de encaixe (Béziers suaves), em passos de 4. "
-                         "Divide a peça em QUADRANTES e ancora a extremidade de cada setor; as "
-                         "curvas CONTÊM a peça. PADRÃO 4 = 1 ponto/quadrante (folgado); 8,12,16… = "
-                         "mais 1/quadrante (mais justo). Se o pocket não contiver a peça, a tool "
-                         "AVISA. 0 = modo FIEL ilimitado (bbox = objeto, com snap).")
+    ap.add_argument("--faithful", dest="faithful", action="store_true",
+                    help="modo FIEL: contorno EXATO da peça (bbox = objeto, com snap de dimensão), "
+                         "em vez do POCKET de encaixe. Ancora em todas as extremidades do fecho "
+                         "convexo e subdivide por contenção. Substitui o antigo '--max-nodes 0'. "
+                         "Ignorado se --tol-fit (este já escolhe o ajuste por tolerância).")
     ap.add_argument("--fit-tol", dest="fit_tol", type=float, default=FIT_TOL_MM,
                     help="tolerância (mm) do ajuste por tolerância (só com --tol-fit)")
     ap.add_argument("--c-fit", dest="c_fit", type=float, default=0.0,
@@ -1516,7 +1505,7 @@ def main(argv=None):
                                     min_radius=args.min_radius, smooth_mm=args.smooth_mm,
                                     clearance=args.clearance, symmetry=args.symmetry,
                                     deshadow=(args.shadow == "remove"),
-                                    simplify_mm=args.simplify, max_nodes=args.max_nodes,
+                                    simplify_mm=args.simplify, faithful=args.faithful,
                                     min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps,
                                     overlay_path=overlay_path,
                                     overlay_svg_path=overlay_svg_path,
@@ -1538,32 +1527,32 @@ def main(argv=None):
     svg = polygon_to_svg(guide, name=name, curves=not args.polyline, tol=args.fit_tol,
                          silhouette=floor, c_fit=args.c_fit, anchored=anchored,
                          smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
-                         max_nodes=args.max_nodes, min_dist_mm=args.min_dist,
+                         faithful=args.faithful, min_dist_mm=args.min_dist,
                          pocket_eps=args.pocket_eps)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(svg)
     ow, oh = size(sil)                              # dimensão REAL medida pelos marcadores
     undercontained = False
-    capped = anchored and args.max_nodes > 0        # modo ENCAIXE (pocket por quadrante)
+    pocket = anchored and not args.faithful         # modo ENCAIXE (pocket por quadrante)
     obj_line = f"    objeto (medido pela base) = {ow:.2f} x {oh:.2f} mm  [= dimensão do SVG]"
     if args.polyline:
         nodes = "polyline"
     elif anchored:
         cub = fit_closed_beziers_anchored(sil, smooth_mm=args.smooth_mm,
-                                          simplify_mm=args.simplify, max_nodes=args.max_nodes,
+                                          simplify_mm=args.simplify, faithful=args.faithful,
                                           min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps)
-        if cub and not capped:                      # mesma geometria do SVG emitido
+        if cub and not pocket:                      # mesma geometria do SVG emitido
             cub = _scale_cubics_to_bbox(cub, *size(sil))
         cov = coverage(flatten_beziers(cub), sil)
-        if capped:
+        if pocket:
             pw, ph = size(flatten_beziers(cub))     # pocket = ≥ objeto (contém a peça)
-            nodes = (f"{len(cub)} Béziers — POCKET de encaixe (âncoras por quadrante), nós "
-                     f"suaves, teto {args.max_nodes}; contém a peça {cov:.4f}")
+            nodes = (f"{len(cub)} Béziers — POCKET de encaixe (âncoras por quadrante a "
+                     f"≥ {args.min_dist:g} mm); contém a peça {cov:.4f}")
             obj_line = (f"    objeto (medido) = {ow:.2f} x {oh:.2f} mm  |  pocket (SVG, ≥ objeto, "
                         f"folga +{pw - ow:.2f} x +{ph - oh:.2f}) = {pw:.2f} x {ph:.2f} mm")
             undercontained = cov < CONTAIN_COVERAGE
         else:
-            nodes = f"{len(cub)} Béziers (ancorado nas extremidades, nós suaves; encaixe {cov:.4f})"
+            nodes = f"{len(cub)} Béziers — FIEL (ancorado no fecho convexo, nós suaves; encaixe {cov:.4f})"
     elif floor is not None:
         cub = fit_closed_beziers_contained(dedup_closing_point(guide), sil, c_fit=args.c_fit)
         cov = coverage(flatten_beziers(cub), sil)
@@ -1582,8 +1571,8 @@ def main(argv=None):
         print(f"    simetria imposta: {args.symmetry} (espelho + média das metades)")
     print(f"    {nodes}")
     if undercontained:
-        print(f"    AVISO: mesmo com {args.max_nodes} curvas o pocket não contém 100% a peça "
-              f"(encaixe < {CONTAIN_COVERAGE:.2f}); aumente --max-nodes.", file=sys.stderr)
+        print(f"    AVISO: o pocket não contém 100% a peça (encaixe < {CONTAIN_COVERAGE:.2f}); "
+              f"diminua --min-dist (adensa as âncoras).", file=sys.stderr)
     return 0
 
 

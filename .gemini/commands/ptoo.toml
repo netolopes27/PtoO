@@ -1,0 +1,45 @@
+description = "Calibrador iterativo do photo_to_outline.py: de uma foto rumo a um POCKET de encaixe justo (contém >= 0.9999). Uso: /ptoo <foto.jpg> --pass N [--debug]"
+
+prompt = '''
+Você vai executar a skill **/ptoo** deste repositório no Gemini CLI: o calibrador iterativo da
+CLI `photo_to_outline.py` que, a partir de uma foto sobre a base de calibração ArUco, busca um
+POCKET de encaixe justo. Critério de aceite (gate RÍGIDO): `contém a peça` >= 0.9999.
+
+## Argumentos desta invocação
+{{args}}
+
+Formato esperado: `<foto.jpg> --pass N [--debug]`.
+- `<foto>`: 1º argumento; se for nome simples, resolva na raiz do repo (`C:\PtoO\<foto>`).
+- `--pass N`: teto rígido de tentativas de calibração (default 3 se omitido).
+- `--debug`: ativa o modo crítico (descrito no SKILL.md) ALÉM de calibrar.
+
+## Instruções autoritativas (siga à risca)
+O procedimento completo do laço (rodar → inspecionar o overlay com zoom → ajustar UM/DOIS flags →
+repetir), as heurísticas e o critério de parada estão no **SKILL.md**; a memória de calibração
+(start dinâmico, cache último-bom, heurísticas, notas de aceite) está na **memory.md**; e a
+referência operacional de cada flag está em **docs/manual.md**. Os três são injetados abaixo —
+leia-os e EXECUTE o laço você mesmo com as ferramentas do Gemini CLI (shell + leitura/escrita de
+arquivos). Se por algum motivo o conteúdo não aparecer injetado, ABRA estes arquivos você mesmo:
+`.claude/skills/ptoo/SKILL.md`, `.claude/skills/ptoo/memory.md`, `docs/manual.md`.
+
+### SKILL.md (procedimento + heurísticas)
+@{.claude/skills/ptoo/SKILL.md}
+
+### memory.md (start/cache; ATUALIZE-A ao final, como manda o SKILL.md)
+@{.claude/skills/ptoo/memory.md}
+
+### docs/manual.md (efeito de cada parâmetro — leia antes de calibrar)
+@{docs/manual.md}
+
+## Adaptações para o Gemini CLI (onde o SKILL.md pressupõe o ambiente do Claude)
+- **NÃO existe a "Skill tool" do Claude aqui.** Apenas siga o procedimento do SKILL.md diretamente.
+- **Read/Edit/Write:** use as ferramentas equivalentes do Gemini CLI; rode comandos via shell.
+- **Python:** SEMPRE o do venv — `.venv/Scripts/python` (Windows). Trabalhe a partir de `C:\PtoO`.
+- **Tiles de zoom:** o SKILL.md manda gravar num "scratchpad" próprio do Claude. Aqui grave em
+  `_debug/ptoo_tiles/<name>/` (ignorado pelo git) e gere os zooms com
+  `.venv/Scripts/python .claude/skills/ptoo/scripts/zoom.py --overlay-svg _overlay_<name>.svg`
+  `--seg-overlay _overlay_<name>.png --out-dir _debug/ptoo_tiles/<name>`.
+- **Atualizar a memória:** ao final do laço, edite `.claude/skills/ptoo/memory.md` exatamente como
+  o SKILL.md descreve (acrescente/substitua a linha do objeto no cache e RECOMPUTE o `start`),
+  mantendo o arquivo < 100 linhas. É a MESMA memória usada pela versão Claude da skill.
+'''

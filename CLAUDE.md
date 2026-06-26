@@ -4,8 +4,9 @@ Guia para o Claude Code (claude.ai/code) neste repositório.
 
 > **Docs autoritativos** (não duplique conteúdo entre eles): [README.md](README.md) — uso dos
 > CLIs (em **inglês**); [docs/design.md](docs/design.md) — arquitetura, API, pipeline,
-> constantes, decisões, testes; [docs/historico.md](docs/historico.md) — evolução e roadmap.
-> Consulte-os ao mexer no comportamento.
+> constantes, decisões, testes; [docs/manual.md](docs/manual.md) — referência operacional de
+> **cada flag** (o que faz, default, quando mexer); [docs/historico.md](docs/historico.md) —
+> evolução e roadmap. Consulte-os ao mexer no comportamento.
 >
 > **Skill `/ptoo`** (`.claude/skills/ptoo/`, doc própria no `SKILL.md`): calibrador iterativo que
 > dirige a CLI a partir de uma foto rumo a um pocket justo, inspecionando o contorno com zoom.
@@ -36,7 +37,7 @@ O fluxo termina no SVG; levar para OpenSCAD é trabalho de um exportador externo
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt   # Windows; Linux/Mac: .venv/bin/python
 
-# Suíte completa (esperado: 67 testes, OK)
+# Suíte completa (esperado: 68 testes, OK)
 .venv/Scripts/python tests/run_image_tests.py
 
 # Um único teste (sempre com o venv)
@@ -47,7 +48,7 @@ python -m venv .venv
 
 # Rodar a tool (comando de referência)
 .venv/Scripts/python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
-    --shadow remove --max-nodes 300 --min-dist 0.5 --inkscape --symmetry vertical
+    --shadow remove --min-dist 0.6 --smooth-mm 2 --inkscape --symmetry vertical
 ```
 
 > Nota: `requirements.txt` menciona caminhos `tools/` de uma estrutura antiga — **ignore**;
@@ -66,8 +67,8 @@ Três módulos na raiz (detalhe completo em [docs/design.md](docs/design.md)):
 **Pipeline (foto → SVG):** retificar por homografia ArUco (sai a dimensão real) →
 normalizar luz + segmentar → extrair contorno → suavizar p/ impressão → ajustar Béziers
 + emitir SVG. **Modo padrão = POCKET de encaixe**: não busca fidelidade, busca uma cavidade
-que **contém** a peça e fica justa (mais `--max-nodes` = mais justo; `--max-nodes 0` = modo
-fiel, bbox = objeto). Todos os nós são suaves (G1). Constantes-chave no topo de
+que **contém** a peça e fica justa (menor `--min-dist` = mais justo, sem teto de nós; `--faithful`
+= modo fiel, bbox = objeto). Todos os nós são suaves (G1). Constantes-chave no topo de
 `photo_to_outline.py`. Ver [docs/design.md](docs/design.md) para estágios, API e constantes.
 
 ## Testes

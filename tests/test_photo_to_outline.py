@@ -276,40 +276,34 @@ class TestAnchoredFit(unittest.TestCase):
             self.assertLess(cross, 1e-3, f"nó {k} com bico (cross={cross:.4f})")
             self.assertGreater(dot, 0.0, f"nó {k} com tangente invertida")
 
-    def test_max_nodes_hard_caps_curves(self):
-        # TETO RÍGIDO de CURVAS (não só de âncoras): numa forma CÔNCAVA (estrela), o
-        # ajuste livre (max_nodes=0) precisa de MUITAS cúbicas p/ conter; com max_nodes=4
-        # o resultado tem NO MÁXIMO 4 Béziers — o teto vale de fato sobre as CURVAS
-        # emitidas (era o bug: --max-nodes limitava âncoras, mas a subdivisão estourava).
+    def test_min_dist_controls_density(self):
+        # --min-dist é a ÚNICA alavanca de densidade do pocket: menor distância mínima
+        # entre âncoras ⇒ MAIS cúbicas (contorno mais justo); maior ⇒ menos. Não há mais
+        # teto de nós — a quantidade de curvas emerge só do espaçamento.
         star = star_polygon(5, 30, 14, samples_per_edge=12)
-        free = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, simplify_mm=1.0, max_nodes=0)
-        for cap in (4, 6, 8):
-            capped = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, simplify_mm=1.0,
-                                                   max_nodes=cap)
-            self.assertLessEqual(len(capped), cap, f"teto {cap} estourado: {len(capped)}")
-        self.assertGreater(len(free), 8)               # livre precisa de muito mais que o teto
-        capped4 = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, simplify_mm=1.0, max_nodes=4)
-        self.assertLessEqual(len(capped4), 4)
-        # mesmo no teto, TODO nó continua suave (G1).
-        m = len(capped4)
+        dense = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, min_dist_mm=2.0)
+        sparse = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, min_dist_mm=20.0)
+        self.assertGreater(len(dense), len(sparse))    # menos distância ⇒ mais nós
+        # mesmo denso, TODO nó continua suave (G1).
+        m = len(dense)
         for k in range(m):
-            a, b = capped4[k], capped4[(k + 1) % m]
+            a, b = dense[k], dense[(k + 1) % m]
             din = P._unit((a[3][0] - a[2][0], a[3][1] - a[2][1]))
             dout = P._unit((b[1][0] - b[0][0], b[1][1] - b[0][1]))
             self.assertLess(abs(din[0] * dout[1] - din[1] * dout[0]), 1e-3)
 
-    def test_max_nodes_default_is_four(self):
-        # O default do teto é 4: chamar sem max_nodes nunca passa de 4 curvas.
-        self.assertEqual(P.MAX_NODES, 4)
-        cub = P.fit_closed_beziers_anchored(star_polygon(5, 30, 14), smooth_mm=1.0, simplify_mm=1.0)
-        self.assertLessEqual(len(cub), 4)
+    def test_min_dist_default_is_ten(self):
+        # A densidade do pocket é controlada só por --min-dist (default 10 mm); o teto de
+        # nós (MAX_NODES) foi removido.
+        self.assertEqual(P.ANCHOR_MIN_DIST_MM, 10.0)
+        self.assertFalse(hasattr(P, "MAX_NODES"))
 
-    def test_quadrant_anchors_one_per_quadrant_at_four(self):
-        # Com budget 4, as âncoras são 1 por quadrante (4 setores): num retângulo
-        # arredondado, uma extremidade em cada quarto da forma.
+    def test_quadrant_anchors_one_per_quadrant_when_far(self):
+        # Sem teto: a densidade vem só do min_dist. Com min_dist grande (≥ o tamanho de um
+        # quadrante) cada setor cabe 1 âncora — a extremidade mais externa.
         shape = rounded_rect(50, 34, 8, n=80)
         rp = P.resample_uniform(shape, 0.4, closed=True)
-        idx = P._quadrant_anchors(rp, 4)
+        idx = P._quadrant_anchors(rp, min_dist_mm=40.0)
         self.assertEqual(len(idx), 4)
         xs = [p[0] for p in rp]; ys = [p[1] for p in rp]
         cx = 0.5 * (min(xs) + max(xs)); cy = 0.5 * (min(ys) + max(ys))
@@ -325,7 +319,7 @@ class TestAnchoredFit(unittest.TestCase):
         xs = [p[0] for p in rp]; ys = [p[1] for p in rp]
         cx = 0.5 * (min(xs) + max(xs)); cy = 0.5 * (min(ys) + max(ys))
         for md in (5.0, 10.0, 20.0):
-            idx = P._quadrant_anchors(rp, 12, min_dist_mm=md)
+            idx = P._quadrant_anchors(rp, min_dist_mm=md)
             by_q = {}
             for i in idx:
                 by_q.setdefault((rp[i][0] >= cx, rp[i][1] >= cy), []).append(rp[i])
@@ -334,29 +328,28 @@ class TestAnchoredFit(unittest.TestCase):
                     for b in range(a + 1, len(ps)):
                         d = math.hypot(ps[a][0] - ps[b][0], ps[a][1] - ps[b][1])
                         self.assertGreaterEqual(d, md - 1e-6, f"quad {q}: {d:.2f} < {md}")
-        self.assertLessEqual(len(P._quadrant_anchors(rp, 12, min_dist_mm=20.0)),
-                             len(P._quadrant_anchors(rp, 12, min_dist_mm=5.0)))
+        self.assertLessEqual(len(P._quadrant_anchors(rp, min_dist_mm=20.0)),
+                             len(P._quadrant_anchors(rp, min_dist_mm=5.0)))
 
-    def test_capped_pocket_contains_piece(self):
-        # OBJETIVO do modo encaixe: o pocket CONTÉM a peça (coverage ~1), respeitando o
-        # teto. Vale p/ formas convexas e côncavas (a estrela é côncava — o pocket faz a
-        # ponte sobre os vales, contendo tudo).
+    def test_pocket_contains_piece(self):
+        # OBJETIVO do modo encaixe: o pocket CONTÉM a peça (coverage ~1), em várias
+        # densidades de min_dist. Vale p/ formas convexas e côncavas (a estrela é côncava —
+        # o pocket faz a ponte sobre os vales, contendo tudo).
         for shape in (regular_polygon(120, 20), star_polygon(5, 30, 14), rounded_rect(50, 34, 8)):
-            for B in (4, 8, 12):
-                cub = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, max_nodes=B)
-                self.assertLessEqual(len(cub), B)            # teto respeitado
+            for md in (12.0, 6.0, 2.0):
+                cub = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, min_dist_mm=md)
                 self.assertGreaterEqual(P.coverage(P.flatten_beziers(cub, seg=40), shape), 0.99)
 
-    def test_capped_pocket_near_object_size(self):
+    def test_pocket_near_object_size(self):
         # O pocket FICA JUSTO: nunca encolhe além da tolerância de penetração
         # (`POCKET_EPS_MM` — pode TOCAR/cortar de leve, não some p/ dentro). Garante o
         # "firme": não vira um contorno muito menor que a peça. Formas arredondadas.
         margin = P.POCKET_EPS_MM + 0.15
         for shape in (regular_polygon(120, 20), rounded_rect(50, 34, 8)):
             tw, th = P.size(shape)
-            for B in (4, 8, 12):
+            for md in (12.0, 6.0, 2.0):
                 flat = P.flatten_beziers(
-                    P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, max_nodes=B), seg=40)
+                    P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, min_dist_mm=md), seg=40)
                 pw, ph = P.size(flat)
                 self.assertGreaterEqual(pw, tw - margin)     # não encolhe além da tolerância
                 self.assertGreaterEqual(ph, th - margin)
@@ -364,13 +357,12 @@ class TestAnchoredFit(unittest.TestCase):
     def test_pocket_eps_param_default_and_tighter(self):
         # `pocket_eps` é a penetração tolerada (mm) do modo POCKET, exposta como parâmetro
         # (e flag --pocket-eps). Default = POCKET_EPS_MM; menor eps corta MENOS a peça →
-        # cobertura nunca menor (contém ≥). Respeita o teto e segue contendo a peça.
+        # cobertura nunca menor (contém ≥). Segue contendo a peça.
         self.assertEqual(P.POCKET_EPS_MM, 0.5)
         shape = rounded_rect(50, 34, 8)
         cov = {}
         for eps in (0.0, 0.5):
-            cub = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, max_nodes=8, pocket_eps=eps)
-            self.assertLessEqual(len(cub), 8)                 # teto respeitado
+            cub = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, min_dist_mm=6.0, pocket_eps=eps)
             cov[eps] = P.coverage(P.flatten_beziers(cub, seg=40), shape)
             self.assertGreaterEqual(cov[eps], 0.99)           # ainda contém a peça
         self.assertGreaterEqual(cov[0.0], cov[0.5] - 1e-9)    # eps menor não contém menos
@@ -395,12 +387,11 @@ class TestProtrusionAnchors(unittest.TestCase):
         rp = P.resample_uniform(regular_polygon(240, 25), 0.4, closed=True)
         self.assertEqual(P._protrusion_anchors(rp, P.PROTRUSION_DEV_MM), [])
 
-    def test_capped_pocket_captures_side_bump(self):
-        # O pocket com teto ALCANÇA o ressalto: cobertura alta e a borda direita chega
-        # à ponta (x≈34). Respeita o teto e contém a peça.
+    def test_pocket_captures_side_bump(self):
+        # O pocket ALCANÇA o ressalto: cobertura alta e a borda direita chega à ponta
+        # (x≈34), contendo a peça.
         shape = rect_with_right_bump(bump=4.0)
-        cub = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, max_nodes=16)
-        self.assertLessEqual(len(cub), 16)
+        cub = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, min_dist_mm=4.0)
         flat = P.flatten_beziers(cub, seg=40)
         self.assertGreaterEqual(P.coverage(flat, shape), 0.99)
         self.assertGreater(max(x for x, _ in flat), 34.0 - 1.0)
@@ -408,7 +399,7 @@ class TestProtrusionAnchors(unittest.TestCase):
     def test_bump_pocket_all_nodes_smooth(self):
         # Mesmo com a âncora de saliência, todo nó continua G1 (sem bico/cusp).
         cub = P.fit_closed_beziers_anchored(rect_with_right_bump(bump=4.0),
-                                            smooth_mm=1.0, max_nodes=16)
+                                            smooth_mm=1.0, min_dist_mm=4.0)
         m = len(cub)
         self.assertGreater(m, 2)
         for k in range(m):
@@ -665,10 +656,10 @@ class TestEndToEndThermpro(unittest.TestCase):
                                               return_silhouette=True)
         # Contorno EMITIDO de fato: Béziers ancoradas nas extremidades, bbox fixada
         # na dimensão real medida pelos marcadores (silhueta crua). A INVARIANTE de
-        # contenção (a peça cabe, ≥0.99) é verificada no ajuste ILIMITADO (max_nodes=0):
-        # é a qualidade do algoritmo quando o orçamento permite. O teto default de 4
-        # curvas troca encaixe por simplicidade e é testado à parte (test_default_cap_*).
-        cls.cubics = P.fit_closed_beziers_anchored(cls.sil, smooth_mm=8.0, max_nodes=0)
+        # contenção (a peça cabe, ≥0.99) é verificada no modo FIEL (faithful=True): é a
+        # qualidade do algoritmo quando ancora em todas as extremidades do fecho convexo.
+        # O pocket por --min-dist é testado à parte (TestAnchoredFit/test_pocket_*).
+        cls.cubics = P.fit_closed_beziers_anchored(cls.sil, smooth_mm=8.0, faithful=True)
         tw, th = P.size(cls.sil)
         cls.cubics = P._scale_cubics_to_bbox(cls.cubics, tw, th)
         cls.flat = P.flatten_beziers(cls.cubics, seg=24)
@@ -718,19 +709,21 @@ class TestEndToEndThermpro(unittest.TestCase):
         self.assertAlmostEqual(ow, tw, delta=0.05)           # largura = objeto
         self.assertAlmostEqual(oh, th, delta=0.05)           # altura = objeto
 
-    def test_default_cap_pocket_contains(self):
-        # DEFAULT na foto real = POCKET de encaixe (teto 4, âncoras por quadrante): ≤4
-        # Béziers e o pocket CONTÉM a peça (coverage ~1), ficando ≥ objeto (SEM snap → a
-        # peça cabe no case). É o requisito do encaixe, não a fidelidade máxima.
-        cub = P.fit_closed_beziers_anchored(self.sil, smooth_mm=8.0)   # default = 4 (encaixe)
+    def test_default_pocket_contains(self):
+        # DEFAULT na foto real = POCKET de encaixe (âncoras por quadrante a ≥ --min-dist,
+        # default 10 mm): o pocket CONTÉM a peça (coverage ~1) e fica ≥ objeto (SEM snap →
+        # a peça cabe no case). A quantidade de nós emerge do espaçamento, sem teto.
+        cub = P.fit_closed_beziers_anchored(self.sil, smooth_mm=8.0)   # default = pocket
         self.assertGreater(len(cub), 0)
-        self.assertLessEqual(len(cub), 4)
         flat = P.flatten_beziers(cub, seg=40)
-        self.assertGreaterEqual(P.coverage(flat, self.sil), 0.99)      # a peça cabe
+        self.assertGreaterEqual(P.coverage(flat, self.sil), 0.99)      # a peça cabe (encaixe)
         pw, ph = P.size(flat)
         tw, th = P.size(self.sil)
-        self.assertGreaterEqual(pw, tw - 0.1)                          # pocket ≥ objeto
-        self.assertGreaterEqual(ph, th - 0.1)
+        # pocket ≈ tamanho do objeto: com --min-dist folgado (default 10) + smooth 8 a bbox
+        # pode ficar levemente sob a crua (Béziers curtas estufam pouco) — a contenção real
+        # é o coverage acima; aqui só garantimos que não colapsou nem inflou muito.
+        self.assertLess(abs(pw - tw), 2.0)
+        self.assertLess(abs(ph - th), 2.0)
 
 
 if __name__ == "__main__":

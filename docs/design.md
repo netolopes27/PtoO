@@ -96,28 +96,29 @@ polui o contorno.
    → decimação `approxPolyDP`. Fechado, CCW, sem auto-interseção. **Sem ganho:** default
    `--clearance 0` → tamanho REAL; a folga é aplicada **a jusante**.
 5. **Ajustar curvas + emitir SVG (`polygon_to_svg`).** Só **Béziers cúbicas**, poucos nós,
-   contendo a peça. **Modo padrão — POCKET por quadrante** (`fit_closed_beziers_anchored`, teto
-   `--max-nodes > 0`, default 4): divide a peça em 4 quadrantes em torno do meio da bbox, dá a
-   cada um a cota `N//4` e ancora os pontos **mais externos** das pontas p/ dentro, com âncoras
-   do **mesmo quadrante a ≥ `--min-dist` mm** (`_quadrant_anchors`). Além disso **força uma
-   âncora em cada saliência local** (`_protrusion_anchors`): pico convexo no meio de uma aresta
-   (pega/botão) com **proeminência ≥ `PROTRUSION_DEV_MM`** que o seletor radial ignoraria —
-   entra **dentro do mesmo teto** (vagas de quadrante cedem, mantendo ≥ 4; só age com teto > 4).
-   Entre âncoras, **1 cúbica suave por trecho** que **contém** a peça: ajuste por mínimos
-   quadrados que **estufa p/ fora** (alonga handles, preservando G1) só se penetrar além de
-   `POCKET_EPS_MM` (default, sobrescrito por `--pocket-eps`) (`_one_cubic_contained`). Emite
-   **≤ teto** Béziers, **sem snap de bbox** — o pocket fica no tamanho real, ~objeto (mais pontos
-   = mais justo); avisa se a cobertura cair abaixo de `CONTAIN_COVERAGE`.
-   **Lever da contenção = `--smooth-mm`, não o teto nem o eps.** O piso de contenção (`field`) é
-   construído sobre a silhueta **suavizada** (`clean`), enquanto a cobertura é medida contra a
-   silhueta crua; logo suavizar demais deixa a peça crua vazar por fora → `contém` cai. Baixar
-   `--smooth-mm` (8→2) aproxima o piso da peça e leva `contém`→~1.0 (≲1 reintroduz serrilhado).
-   `--max-nodes` acima de ~300 não sobe `contém` (âncoras saturam); `--pocket-eps` (0.5→0) tem
-   efeito sub-0.001 — é ajuste fino, não o lever.
-   **Modo ilimitado/fiel (`--max-nodes 0`):** ancora nos pontos mais distantes (fecho convexo
-   destilado por RDP `--simplify`), ajusta cúbicas **contidas** entre âncoras (maior tolerância
-   sem penetrar além de `ANCHOR_EPS_MM`, via `distanceTransform`) e **fixa a bbox (snap, por
-   eixo) na dimensão real** (`_scale_cubics_to_bbox`).
+   contendo a peça. **Modo padrão — POCKET por quadrante** (`fit_closed_beziers_anchored`, default
+   `faithful=False`): divide a peça em 4 quadrantes em torno do meio da bbox e ancora, em cada um,
+   **todos** os pontos **mais externos** das pontas p/ dentro, com âncoras do **mesmo quadrante a
+   ≥ `--min-dist` mm** (`_quadrant_anchors`) — **sem teto**: a densidade emerge só do espaçamento
+   (menor `--min-dist` = mais âncoras = mais justo). Além disso **força uma âncora em cada
+   saliência local** (`_protrusion_anchors`): pico convexo no meio de uma aresta (pega/botão) com
+   **proeminência ≥ `PROTRUSION_DEV_MM`** que o seletor radial ignoraria. Entre âncoras, **1
+   cúbica suave por trecho** que **contém** a peça: ajuste por mínimos quadrados que **estufa p/
+   fora** (alonga handles, preservando G1) só se penetrar além de `POCKET_EPS_MM` (default,
+   sobrescrito por `--pocket-eps`) (`_one_cubic_contained`). **Sem snap de bbox** — o pocket fica
+   no tamanho real, ~objeto (mais âncoras = mais justo); avisa se a cobertura cair abaixo de
+   `CONTAIN_COVERAGE`.
+   **Lever da contenção = `--min-dist`** (alavanca principal de densidade): menor `--min-dist` =
+   mais âncoras = pocket mais justo e `contém` mais alto; pare no MAIOR `--min-dist` que cruza o
+   alvo. **Lever fino = `--smooth-mm`:** o piso de contenção (`field`) é construído sobre a
+   silhueta **suavizada** (`clean`), enquanto a cobertura é medida contra a silhueta crua; logo
+   suavizar demais deixa a peça crua vazar por fora → `contém` cai. Baixar `--smooth-mm` (8→2)
+   aproxima o piso da peça e raspa o último 0.0x (≲1 reintroduz serrilhado). `--pocket-eps`
+   (0.5→0) tem efeito sub-0.001 — ajuste fino, não o lever.
+   **Modo fiel (`--faithful`):** ancora nos pontos mais distantes (fecho convexo destilado por
+   RDP `--simplify`), ajusta cúbicas **contidas** entre âncoras (maior tolerância sem penetrar
+   além de `ANCHOR_EPS_MM`, via `distanceTransform`) e **fixa a bbox (snap, por eixo) na dimensão
+   real** (`_scale_cubics_to_bbox`).
    **Todo nó é SUAVE (G1)** nos dois modos: a tangente em cada âncora é **compartilhada** entre
    os trechos vizinhos (`_anchor_tangents`) → sem bico, fácil de editar no Inkscape. Saída =
    contorno + preenchimento translúcido (`OUTLINE_COLOR` a `OUTLINE_FILL_OPACITY`, sobrepõe o
@@ -144,10 +145,10 @@ polui o contorno.
   `_fit_one_cubic` (mínimos quadrados, tangentes fixas), `_fit_cubic_recursive` (split no maior
   erro).
 - **Pocket ancorado (modo padrão):** `fit_closed_beziers_anchored(silhouette, smooth_mm,
-  simplify_mm, eps, max_nodes=MAX_NODES, min_dist_mm)`; helpers `_quadrant_anchors`,
-  `_protrusion_anchors`, `_fit_anchored_capped`, `_one_cubic_contained`, `_anchor_tangents`
-  (tangente compartilhada → nó G1), `_anchor_segments`. Modo ilimitado: `hull_anchor_indices`
-  (fecho convexo via RDP) + `_fit_segment_contained`.
+  simplify_mm, eps, faithful=False, min_dist_mm)`; helpers `_quadrant_anchors`,
+  `_protrusion_anchors`, `_fit_anchored`, `_one_cubic_contained`, `_anchor_tangents`
+  (tangente compartilhada → nó G1), `_anchor_segments`. Modo fiel (`faithful=True`):
+  `hull_anchor_indices` (fecho convexo via RDP) + `_fit_segment_contained`.
 - **Mínimo por contenção (`--tol-fit`):** `fit_closed_beziers_contained(guide, silhouette,
   c_fit, eps)`; `_floor_field` (profundidade via `distanceTransform`),
   `_max_penetration`/`_beziers_max_penetration`.
@@ -174,14 +175,14 @@ Orquestrador `main(argv)`.
 python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
     [--dict DICT_4X4_50] [--min-radius 1.5] [--smooth-mm 8] [--clearance 0] \
     [--shadow off|remove] [--symmetry none|vertical|horizontal|both] [--inkscape] \
-    [--simplify 2.0] [--max-nodes 4] [--min-dist 10] \
+    [--simplify 2.0] [--min-dist 10] [--faithful] \
     [--tol-fit --fit-tol 0.2 --guide 0.5 --c-fit 0] [--polyline] \
     [--name thermpro] [--debug-dir _debug]
 ```
 Imprima `base.svg` em A4 a 100%, apoie a peça no centro branco, fotografe perto do nadir.
-`--dict` deve casar com a base impressa. `--max-nodes` = teto do pocket (`0` = modo fiel com
-snap); `--min-dist` espaça as âncoras do mesmo quadrante; `--simplify` controla a densidade no
-modo fiel. `--shadow remove` = histerese de borda; `--symmetry` = espelho + média. **A cada
+`--dict` deve casar com a base impressa. `--min-dist` = densidade do pocket (menor = mais justo,
+**sem teto de nós**); `--faithful` = modo fiel com snap (bbox = objeto); `--simplify` controla a
+densidade no modo fiel. `--shadow remove` = histerese de borda; `--symmetry` = espelho + média. **A cada
 execução** sai, antes do `.svg`, o overlay PNG `_overlay_<nome>.png` (contorno em vermelho sobre
 a foto retificada); `--inkscape` gera também `_overlay_<nome>.svg` editável. `--debug-dir` grava
 intermediários. Marcadores insuficientes → aborta com mensagem clara. (Guia de flags completo:
@@ -195,9 +196,9 @@ fundo) · `SEG_VAL_WEAK_FRAC = 0.65` / `SEG_WEAK_SAT_MIN = 35` / `SEG_SHADOW_GRO
 (histerese do `--shadow remove`) · `SEG_HUE_MARGIN = 25` / `SEG_HUE_SAT_MIN = 60` (matiz) ·
 `ILLUM_SCALE = 0.125` / `ILLUM_KERNEL_FRAC = 0.9` / `ILLUM_MAX_GAIN = 3.0` (flat-field) ·
 `SYM_SEARCH_MM = 4.0` · `MIN_RADIUS_MM = 1.5` · `SMOOTH_MM = 8.0` · `CLEARANCE_MM = 0.0` (sem
-ganho) · `ANCHOR_SIMPLIFY_MM = 2.0` · `MAX_NODES = 4` (0 = fiel) · `ANCHOR_EPS_MM = 0.08` (fiel)
-· `POCKET_EPS_MM = 0.5` (penetração tolerada) · `ANCHOR_MIN_DIST_MM = 10.0` ·
-`PROTRUSION_DEV_MM = 0.8` (proeminência mín.; teto > 4) · `CONTAIN_COVERAGE = 0.99` (abaixo,
+ganho) · `ANCHOR_SIMPLIFY_MM = 2.0` (modo fiel) · `ANCHOR_EPS_MM = 0.08` (fiel)
+· `POCKET_EPS_MM = 0.5` (penetração tolerada) · `ANCHOR_MIN_DIST_MM = 10.0` (densidade do pocket) ·
+`PROTRUSION_DEV_MM = 0.8` (proeminência mín.) · `CONTAIN_COVERAGE = 0.99` (abaixo,
 avisa) · `FIT_TOL_MM = 0.2` · `BEZIER_GUIDE_MM = 0.5` · `CORNER_ANGLE_DEG = 40.0` ·
 `RASTER_PPM = 16.0` · `OUTLINE_COLOR = "#ff00ff"` / `OUTLINE_FILL_OPACITY = 0.25`.
 
@@ -211,7 +212,7 @@ borda). **Traçado padrão = POCKET por quadrante** (ideia do usuário): em vez 
 fiel, a **cavidade onde a peça encaixa** — prioridade dupla, **cabe** (pocket ≥ objeto) e fica
 **justo** (mais pontos = mais apertado); saliências locais ganham âncora p/ a curva não
 arredondar por cima. **Sem ganho na etapa 1** (`--clearance 0`): tamanho real, folga **a
-jusante**. No **modo fiel** (`--max-nodes 0`) a bbox é snapeada na dimensão medida. **Paralaxe
+jusante**. No **modo fiel** (`--faithful`) a bbox é snapeada na dimensão medida. **Paralaxe
 pela altura** nenhuma base corrige — só mede e avisa. SVG = só contorno + preenchimento
 translúcido. Sem referência desenhada à mão. **Objetivo:** alimentar **gridfinity
 personalizável** a partir do contorno medido.

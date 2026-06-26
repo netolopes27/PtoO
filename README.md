@@ -77,15 +77,15 @@ Minimal: `photo_to_outline.py --in thermpro.jpg` (SVG takes the photo's name).
 
 ```bash
 .venv/Scripts/python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
-    --shadow remove --max-nodes 300 --min-dist 0.5 --inkscape --symmetry vertical
+    --shadow remove --min-dist 0.6 --smooth-mm 2 --inkscape --symmetry vertical
 ```
 
-`--shadow remove` recovers the rounded edge; `--max-nodes 300` + `--min-dist 0.5` make the
-**pocket very tight** (many anchors, spaced 0.5 mm); `--symmetry vertical` denoises a symmetric
-part; `--inkscape` also emits the editable overlay. With this command the sample comes out:
-measured object **68.12 × 71.00 mm**, pocket **67.69 × 70.93 mm** (clearance +0.43 × +0.07),
-**300 smooth Béziers**, **contains the part 0.9982** — practically flush. For a **faithful**
-outline use `--max-nodes 0`; for a looser pocket lower the cap. See §4.1.
+`--shadow remove` recovers the rounded edge; `--min-dist 0.6` makes the **pocket very tight**
+(anchors spaced 0.6 mm — smaller `--min-dist` = more anchors = tighter); `--symmetry vertical`
+denoises a symmetric part; `--inkscape` also emits the editable overlay. With this command the
+sample comes out: measured object **68.12 × 71.00 mm**, pocket **67.94 × 71.00 mm** (clearance
+−0.18 × −0.00), **305 smooth Béziers**, **contains the part 0.9999** — practically flush. For a
+**faithful** outline use `--faithful`; for a looser pocket raise `--min-dist`. See §4.1.
 
 ### Generated outputs
 
@@ -98,38 +98,41 @@ outline use `--max-nodes 0`; for a looser pocket lower the cap. See §4.1.
 > The `_` prefix marks overlays as git-ignored drafts. Always look at the `_overlay_*.png`
 > first: if the red segmentation leaks or eats into the part, adjust flags before using the SVG.
 
-### 4.1 The fit POCKET mode (`--max-nodes`)
+### 4.1 The fit POCKET mode (`--min-dist`)
 
 By default the tool produces **not** the most faithful outline but a **fit pocket**: the cavity
 where the part rests (e.g. a recess in a 3D-printed case). Twofold priority: the part **fits**
 (pocket never smaller) and sits **snug**. How:
 
-1. **Quadrants.** Splits the part into `--max-nodes` equal angular sectors around its center
-   (`4` → one per quadrant).
+1. **Quadrants.** Splits the part into 4 angular sectors around its center.
 2. **Extremities.** In each sector it anchors the **outermost tips** with smooth-curve nodes
    and traces curves that **contain** the part (touching/cutting ≤ ~0.5 mm, `POCKET_EPS_MM`, so
    sub-mm noise doesn't inflate it).
-3. **Progression 4 → 8 → 12…** Each `+4` adds **one point per quadrant**, tighter pocket.
-4. **Spacing (`--min-dist`, default 10 mm).** Extra points within the **same quadrant** stay
-   that far apart, spread over the edges instead of clustering at the tip. If the part is too
-   small for the quota at that spacing, fewer points come out.
-5. **Side protrusions (auto, cap > 4).** A **bump in the middle of an edge** (grip, side
-   button) isn't "outermost", so the smooth curve would round over it. The pocket **forces an
-   anchor at each local protrusion** whose prominence exceeds `PROTRUSION_DEV_MM` (0.8 mm).
-   Smooth/uniform curvature (a circle) doesn't trigger it. They count within the same cap (the
-   quadrant slots yield, always keeping ≥ 4).
+3. **Density (`--min-dist`, default 10 mm) — the one tightness lever.** There is **no node
+   cap**: each quadrant takes **all** the outermost points that stay ≥ `--min-dist` apart, so the
+   anchor count emerges purely from the spacing. **Smaller `--min-dist` = more anchors = tighter
+   pocket and higher containment.** Lower it (e.g. `1`, `0.6`) until "contains the part" crosses
+   your target; stop at the **largest `--min-dist` that still crosses** (fewer nodes is better).
+4. **Side protrusions (auto).** A **bump in the middle of an edge** (grip, side button) isn't
+   "outermost", so the smooth curve would round over it. The pocket **forces an anchor at each
+   local protrusion** whose prominence exceeds `PROTRUSION_DEV_MM` (0.8 mm). Smooth/uniform
+   curvature (a circle) doesn't trigger it.
 
-| `--max-nodes` | points/quadrant | result (thermpro) |
-|---|---|---|
-| `4` (default) | 1 | contains the part, still **loose** on the sides (~+5 mm) |
-| `8` | 2 | **snug** (clearance ~+1.4 mm) |
-| `12`, `16`, … | 3, 4, … | tighter and tighter |
-| `0` | — | **faithful mode** (no cap/quadrants): tight outline, bbox = object |
+| `--min-dist` | result (thermpro) |
+|---|---|
+| `10` (default) | contains the part, **loose** on the sides |
+| `1` | snug (~201 Béziers, contains 0.9998) |
+| `0.6` | flush (305 Béziers, **contains 0.9999**) |
+| `--faithful` | **faithful mode** (no quadrants): tight outline, bbox = object |
 
+> **Counter-intuitive:** a **large** `--min-dist` (few anchors) makes the pocket **both looser
+> and less contained** — sparse anchors give long Béziers that bow **inward** at rounded corners,
+> cutting the part. To contain more, **lower** `--min-dist`.
+>
 > In pocket mode the SVG comes out **close to the part's size** (the output reports the
-> clearance). The curve may **lightly touch/cut** the part (up to `POCKET_EPS_MM`); the real
-> fit is guaranteed by the print clearance you apply downstream (see `--clearance`). For the
-> part's **exact** outline (bbox = measured size), use `--max-nodes 0`.
+> clearance). The curve may **lightly touch/cut** the part (up to `POCKET_EPS_MM`); the real fit
+> is guaranteed by the print clearance you apply downstream (see `--clearance`). For the part's
+> **exact** outline (bbox = measured size), use `--faithful`.
 
 ### Flags
 
@@ -148,13 +151,13 @@ PNGs for diagnosis).
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--smooth-mm` | `8.0` | low-pass window (mm) removing the jaggies; larger = smoother. **Also the main lever for containment:** the containment floor is built from the *smoothed* silhouette, so a large window lets the raw part poke out — lower it (e.g. `2`) to push "contains the part" toward `1.0`, but too low (`≲1`) reintroduces jaggies |
-| `--simplify` | `2.0` | anchor density (mm): larger = fewer nodes; smaller = tighter |
-| `--max-nodes` | `4` | **curve cap of the fit pocket** (steps of 4); `0` = unlimited faithful mode. See §4.1. Beyond ~300 the anchors saturate — it tightens the sides but does **not** raise containment |
-| `--min-dist` | `10` | min distance (mm) between same-quadrant anchors. See §4.1 |
-| `--pocket-eps` | `0.5` | tolerated penetration (mm) in pocket mode: how far the curve may touch/cut the part. Lower = the curve cuts the part less; `0` = doesn't cut at all. Small effect on containment (fine-tuning only — see `--smooth-mm` for the real lever) |
+| `--min-dist` | `10` | **the pocket tightness lever** (mm): min distance between same-quadrant anchors. **No node cap** — smaller `--min-dist` = more anchors = tighter pocket and higher containment. See §4.1 |
+| `--smooth-mm` | `8.0` | low-pass window (mm) removing the jaggies; larger = smoother. **Fine lever for containment:** the floor is built from the *smoothed* silhouette, so a large window lets the raw part poke out — lower it (e.g. `2`) to scrape the last 0.0x once `--min-dist` is close, but too low (`≲1`) reintroduces jaggies |
+| `--faithful` | off | **faithful mode**: exact outline of the part (bbox = object, with snap) instead of the fit pocket. Replaces the old `--max-nodes 0`. Ignored if `--tol-fit` |
+| `--simplify` | `2.0` | anchor density (mm) in **faithful** mode: larger = fewer nodes; smaller = tighter |
+| `--pocket-eps` | `0.5` | tolerated penetration (mm) in pocket mode: how far the curve may touch/cut the part. Lower = the curve cuts the part less; `0` = doesn't cut at all. Small effect on containment (fine-tuning only — see `--min-dist` for the real lever) |
 | `--min-radius` | `1.5` | minimum corner radius (mm); avoids 90° corners / spikes |
-| `--guide` | (const) | smoothing budget (mm): larger = fewer Béziers, looser cavity |
+| `--guide` | `0.5` | smoothing budget (mm) for `--tol-fit`: larger = fewer Béziers, looser cavity |
 
 **Clearance/size:** `--clearance` (`0` = REAL size; apply fit clearance downstream) ·
 `--c-fit` (`0.0`, clearance baked into the SVG).
@@ -178,9 +181,9 @@ outline (smooth G1 Béziers) an **editable layer**, already in mm. Adjust nodes 
 | **Rounded edge** (black top / colored rim) disappearing | `--shadow remove` |
 | **Symmetric** part, noisy outline | `--symmetry vertical` (or `horizontal`/`both`) |
 | **Jagged** outline | raise `--smooth-mm` (e.g. `12`) |
-| Pocket **too loose** | raise `--max-nodes`: `8`, `12`, `16`… |
-| Want the **faithful outline** (bbox = object) | `--max-nodes 0` |
-| WARNING "pocket does not contain the part" | raise `--max-nodes` (rare) |
+| Pocket **too loose** | lower `--min-dist`: `2`, `1`, `0.5`… |
+| Want the **faithful outline** (bbox = object) | `--faithful` |
+| WARNING "pocket does not contain the part" | lower `--min-dist` |
 | **Diagnose** the segmentation | `--debug-dir debug/` and look at the PNGs |
 | **Hand-edit** afterwards | `--inkscape` |
 

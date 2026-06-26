@@ -18,26 +18,44 @@ o que, com a densidade ditada por `--min-dist`, significa o **MAIOR `--min-dist`
 clearance é só desempate secundário. A folga real vem do `--clearance` aplicado a jusante. Limite
 de tentativas = `--pass N`.
 
-> **A alavanca de densidade/contém é `--min-dist` — rampa de CIMA p/ BAIXO.** NÃO existe mais
-> `--max-nodes`: a quantidade de nós emerge só do espaçamento entre âncoras. Comece folgado
-> (ex.: `--min-dist 4`) e **baixe** (4 → 2 → 1 → 0.5 …) até cruzar `contém ≥ 0.9999`; pare no
-> **MAIOR `--min-dist` que ainda cruza** (menos nós = melhor, SVG mais simples). Atenção ao
-> mecanismo contra-intuitivo: com `--min-dist` **grande** (poucas âncoras) o pocket fica ao mesmo
-> tempo MAIS FROUXO (âncoras esparsas → Béziers longos arqueiam p/ dentro nos cantos e cortam a
-> peça) **e** com `contém` menor — então min-dist grande costuma travar `contém` em ~0.998. Para
-> conter mais, **diminua** `--min-dist`.
+> **Todas as rampas são adaptativas com INVERSÃO de direção.** A partir do cache/start, ande numa
+> direção enquanto o resultado melhorar; quando parar de melhorar, **inverta a direção**; se piorar
+> também na direção invertida, **volte ao melhor encontrado** e passe p/ a próxima rampa.
 >
-> **O lever fino do `contém` é `--smooth-mm`, NÃO `--pocket-eps`.** O piso de contenção é
-> construído sobre a silhueta *suavizada*; suavizar demais deixa a peça crua "vazar" por fora.
-> Baixar `--smooth-mm` (ex.: 8→2) aproxima o piso da peça crua e empurra `contém` p/ cima — use-o
-> p/ raspar os últimos 0.0x quando a rampa de `--min-dist` encostar em 0.9999. `--pocket-eps`
-> (penetração tolerada, default 0.5) quase não mexe no `contém`. Cuidado: `--smooth-mm` ≲1
-> reintroduz serrilhado — fique em ~2.
+> **"Melhor" = composto:** (1) cruza `contém ≥ 0.9999` vence quem não cruza; (2) entre quem cruza,
+> **menos nós** (Béziers) vence; (3) entre quem não cruza, **maior contém** vence; (4) empate
+> final → menor clearance.
+>
+> **Estratégia por rampa:**
+> 1. Rode com o valor do cache/start, anote (contém, nós) → é o **melhor atual**.
+> 2. Escolha a direção padrão **↓** (baixar o parâmetro → tipicamente sobe contém).
+> 3. Dê um passo nessa direção. Compare com o melhor atual:
+>    - **Melhorou** → atualize o melhor, continue na mesma direção.
+>    - **Não melhorou** (estagnou ou piorou) → **inverta a direção** (↑) a partir do start.
+> 4. Na direção invertida, dê um passo. Compare com o melhor:
+>    - **Melhorou** → atualize o melhor, continue na direção invertida.
+>    - **Não melhorou** → esta rampa esgotou. Guarde o melhor e passe p/ a rampa seguinte.
+> 5. Pare também ao atingir **piso** ou **teto** da rampa.
+>
+> **1ª rampa: `--min-dist`** · piso **1 mm** · teto **~10** · direção padrão **↓**
+> Alavanca principal. NÃO existe `--max-nodes`: nós emergem do espaçamento. Contra-intuitivo:
+> min-dist GRANDE = âncoras esparsas → Béziers longos arqueiam p/ dentro → contém MENOR.
+>
+> **2ª rampa: `--smooth-mm`** · piso **~2** · teto **~10** · direção padrão **↓**
+> Engaja quando min-dist esgotou. Baixar aproxima o piso da peça crua e sobe contém; subir tira
+> serrilhado. Abaixo de ~2 reintroduz serrilha.
+>
+> **3ª rampa: `--pocket-eps`** · piso **0** · teto **0.5** · direção padrão **↓**
+> Engaja quando as duas primeiras esgotaram. Efeito pequeno por degrau (~+0.0001–0.0003).
+> Degraus típicos: 0.5, 0.3, 0.1, 0.
+>
+> Se esgotarem **todas** as rampas sem cruzar 0.9999, entregue o melhor resultado obtido e reporte
+> explicitamente o que faltou.
 >
 > **Conheça TODOS os flags:** antes de calibrar, leia o [manual de parâmetros](../../../docs/manual.md)
 > (`docs/manual.md`) — detecção (`--shadow`, `--symmetry`), suavização, modos (`--faithful`,
-> `--tol-fit`) etc. Depois de bater o gate com `--min-dist`, **explore os demais** (um por passe)
-> rumo a uma "quase default" por peça (ver "Cada passe").
+> `--tol-fit`) etc. Depois de bater o gate, **explore os demais** (um por passe) rumo a uma
+> "quase default" por peça (ver "Cada passe").
 
 ## Invocação
 
@@ -92,25 +110,27 @@ de tentativas = `--pass N`.
    de heurísticas da [memory.md](memory.md). Mapa rápido:
    | sintoma | ação |
    |---|---|
-   | **contém < 0.9999** (alavanca principal) | ↓`--min-dist` (de cima p/ baixo: 4→2→1→0.5 …) até cruzar 0.9999; pare no MAIOR que cruza. Se a rampa encostar mas não cruzar, raspe com ↓`--smooth-mm` (4→2) |
-   | clearance grande / pocket frouxo | sintoma de `--min-dist` **alto** (Béziers longos arqueiam p/ dentro): **baixe** `--min-dist` — aperta os lados E sobe `contém`. Mas só o necessário p/ bater 0.9999 (maior min-dist = menos nós = melhor) |
-   | escadinha/serrilhado no amarelo | ↑`--smooth-mm` (+1..2) — conflita com o `contém`; ache o equilíbrio (~2) |
+   | **contém < 0.9999** | Rampas adaptativas com **inversão**: 1ª `--min-dist` (piso 1, teto ~10) → 2ª `--smooth-mm` (piso ~2, teto ~10) → 3ª `--pocket-eps` (piso 0, teto 0.5). Em cada rampa: direção padrão ↓ enquanto melhorar; parou → inverte p/ ↑; piorou na invertida → volta ao melhor e próxima rampa |
+   | **resultado melhorou** | Continue na mesma direção da rampa atual |
+   | **parou de melhorar** | Inverta a direção; se a invertida também piora, rampa esgotou → próxima |
+   | clearance grande / pocket frouxo | sintoma de `--min-dist` **alto** → direção ↓ |
+   | escadinha/serrilhado no amarelo | direção ↑ em `--smooth-mm` (+1..2) — conflita com contém |
    | segmentado come a peça / borda arredondada some | `--shadow remove` |
    | peça simétrica e contorno ruidoso/torto | `--symmetry vertical\|horizontal` |
    | bico/canto vivo | ↑`--min-radius` (+0.5) |
-   | curva corta/encosta de leve na peça (ajuste fino) | ↓`--pocket-eps` (default 0.5→0); efeito pequeno no `contém`, útil só p/ o último 0.0x |
    | quero o contorno EXATO (não pocket) | `--faithful` (bbox = objeto, com snap) |
    | vermelho vaza p/ fundo ou peça clara some no branco | limite de segmentação — sem flag que
      resolva; anote p/ `--debug` |
 
    Consulte o [manual](../../../docs/manual.md) p/ o efeito completo de cada flag. **Depois de
-   cruzar o gate com `--min-dist`**, gaste os passes restantes **explorando os demais parâmetros**
-   (um por passe — `--smooth-mm`, `--pocket-eps`, `--min-radius`, `--shadow`, `--symmetry`),
-   registrando o efeito, rumo a uma "quase default" por peça que você grava na memória.
+   esgotar uma rampa**, gaste os passes restantes na rampa seguinte ou **explorando os demais
+   parâmetros** (um por passe — `--min-radius`, `--shadow`, `--symmetry`), registrando o efeito,
+   rumo a uma "quase default" por peça que você grava na memória.
 
 5. **Pontue e guarde o melhor.** Aceitável exige **contém ≥ 0.9999** e nenhum leak/come visível;
-   entre aceitáveis, vence o de **MENOS nós (Béziers)** = o de **MAIOR `--min-dist`** que ainda
-   cruza; empate → menor `max(clearance_x, clearance_y)` (clearance levemente negativo é OK — é o
+   entre aceitáveis, vence o de **MENOS nós (Béziers)** — i.e., o de MAIOR valor nas rampas
+   (maior min-dist, ou maior smooth-mm, ou maior pocket-eps) que ainda cruza;
+   empate → menor `max(clearance_x, clearance_y)` (clearance levemente negativo é OK — é o
    flush). Guarde o melhor `.svg` e seus params; **descarte** overlays/tiles do passe pior.
 
 6. **Pare** SÓ quando `contém` ≥ **0.9999** (sem leak/come visível) ou quando os passes

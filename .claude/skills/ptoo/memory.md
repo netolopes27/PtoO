@@ -1,34 +1,38 @@
 # ptoo memory  (manter < 100 linhas; ao exceder, podar a linha de cache mais antiga)
 
 ## start = melhor aposta atual  (NÃO é fixo — é a média/consenso do cache, recalculado a cada update)
-SEMPRE:      --shadow remove --min-dist 10 --symmetry vertical
-CONDICIONAL: desligar --symmetry em peça assimétrica (distorce); trocar p/ horizontal se o eixo for outro
-<!-- Semente inicial definida pelo usuário; cache VAZIO (n=0, skill ainda não rodada). Ponto de
-     partida p/ objeto NOVO; quando houver linha de cache do objeto, prefira a linha dele.
-     --min-dist é a ALAVANCA de densidade (não existe --max-nodes): RAMPA de CIMA p/ BAIXO —
-     comece em 10 e BAIXE (10→4→2→1→0.5; bissecte) até contém≥0.9999; pare no MAIOR que cruza
-     (maior min-dist = menos nós = melhor). smooth-mm: sem valor na semente → usa o default do CLI
-     (8); baixe (→2) só como lever fino se a rampa de min-dist encostar mas não cruzar.
-     Demais derivados (RECALCULAR ao mexer no cache, quando houver linhas):
-     - numéricos (min-dist, smooth-mm): MEDIANA das linhas do cache.
+SEMPRE:      --shadow remove --min-dist 1 --smooth-mm 1.5 --pocket-eps 0
+CONDICIONAL: --symmetry vertical (n=1); desligar em peça assimétrica (distorce); trocar p/ horizontal se o eixo for outro
+<!-- cache ATUALIZADO (n=1). Ponto de partida p/ objeto NOVO; quando houver
+     linha de cache do objeto, prefira a linha dele.
+     TODAS as rampas são ADAPTATIVAS com INVERSÃO: direção padrão ↓, enquanto melhorar continue;
+     parou de melhorar → inverta p/ ↑; piorou na invertida → volte ao melhor e próxima rampa.
+     "Melhor" = cruza 0.9999 vence não-cruza; entre cruzas, menos nós vence; entre não-cruzas,
+     maior contém vence; empate → menor clearance.
+     1ª --min-dist (piso 1, teto ~10)  2ª --smooth-mm (piso ~2, teto ~10)  3ª --pocket-eps (piso 0,
+     teto 0.5). Se esgotou uma rampa, passe p/ a seguinte.
+     Demais derivados (RECALCULAR ao mexer no cache):
+     - numéricos (min-dist, smooth-mm, pocket-eps): MEDIANA das linhas do cache.
      - categóricos (shadow): o valor que venceu na MAIORIA → entra no SEMPRE.
-     - symmetry: por-peça; avaliar no passe 1 (a semente liga vertical por escolha do usuário). -->
+     - symmetry: por-peça; avaliar no passe 1. -->
 
 ## cache último-bom (≤5 linhas; evicta a mais antiga; 1 linha por objeto)
 <!-- formato: - ~WxH mm | <params> | contém=0.NNNN clearance=+x/+y -->
-<!-- (vazio — nenhum objeto calibrado ainda) -->
+- ~68.12x71.00 mm | --shadow remove --min-dist 1 --smooth-mm 1.5 --pocket-eps 0 --symmetry vertical | contém=0.9999 clearance=-0.16/+0.01
 
 ## heurísticas (sintoma → delta)  — estável, não duplicar
-- contém < 0.9999 (LEVER PRIMÁRIO = RAMPA de --min-dist, de CIMA p/ BAIXO) → ↓min-dist (10→4→2→1→0.5,
-  bissecte) até cruzar 0.9999; pare no MAIOR que cruza (maior min-dist = menos nós = melhor).
-  NÃO existe --max-nodes: a densidade emerge só do espaçamento. CONTRA-INTUITIVO: min-dist GRANDE
-  (poucos nós) NÃO contém mais — âncoras esparsas fazem os Béziers longos arquearem p/ dentro nos
-  cantos, cortando a peça; daí min-dist grande = pocket frouxo E contém travado ~0.998.
-- smooth-mm é o LEVER FINO do contém (não o primário): baixar (8→2) aproxima o piso da silhueta
-  crua e raspa os últimos 0.0x quando a rampa de min-dist encosta mas não cruza. Fique em ~2 (≲1
-  serrilha).
-- pocket-eps (penetração tolerada, default 0.5) quase não mexe no contém (eps 0.5→0 ≈ +0.0001).
-  Use só p/ ajuste fino do último 0.0x quando a curva encosta/corta de leve.
+- RAMPAS ADAPTATIVAS com INVERSÃO: 1ª --min-dist (piso 1, teto ~10) → 2ª --smooth-mm (piso ~2,
+  teto ~10) → 3ª --pocket-eps (piso 0, teto 0.5). Em cada rampa, a partir do start/cache:
+  • Direção padrão ↓ (baixar parâmetro → tipicamente sobe contém). Continue enquanto melhorar.
+  • Parou de melhorar → inverta a direção (↑) a partir do start.
+  • Piorou também na invertida → volte ao melhor encontrado, rampa esgotou → próxima.
+  "Melhor" = cruza 0.9999 > não-cruza; entre cruzas: menos nós; entre não-cruzas: maior contém.
+  CONTRA-INTUITIVO: min-dist GRANDE = âncoras esparsas → Béziers longos arqueiam p/ dentro nos
+  cantos → contém MENOR (pocket frouxo E contém ~0.998).
+- smooth-mm: baixar aproxima o piso da silhueta crua e sobe contém; subir tira serrilhado. Abaixo
+  de ~2 reintroduz serrilha.
+- pocket-eps: baixar reduz penetração tolerada e sobe contém (~+0.0001–0.0003/degrau). Degraus
+  típicos: 0.5, 0.3, 0.1, 0.
 - serrilhado/escadinha → ↑smooth-mm (+1..2). CONFLITA com o contém: ache o equilíbrio (smooth ~2).
 - borda arredondada some / segmentação come a peça → --shadow remove
 - SEMPRE avaliar simetria no passe 1 (pelo overview): se a peça tem eixo de espelho claro, ligar
@@ -43,5 +47,5 @@ CONDICIONAL: desligar --symmetry em peça assimétrica (distorce); trocar p/ hor
 
 ## notas de aceite
 - ALVO RÍGIDO: só parar com contém ≥ 0.9999 (gate mantido). A folga real vem do --clearance a jusante.
-- DESEMPATE: entre resultados que batem 0.9999, vence MENOS nós (Béziers) = MAIOR --min-dist;
-  empate → menor clearance.
+- DESEMPATE: entre resultados que batem 0.9999, vence MENOS nós (Béziers) = MAIOR valor dos
+  parâmetros de rampa que ainda cruza; empate → menor clearance.

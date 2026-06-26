@@ -65,16 +65,17 @@ quantidade de Béziers emerge só do espaçamento.
 - **Contra-intuitivo:** `--min-dist` **grande** (poucas âncoras) deixa o pocket **mais folgado E
   com contém MENOR** — âncoras esparsas geram Béziers longas que **arqueiam para dentro** nos
   cantos arredondados, cortando a peça. Para **conter** mais, **diminua** `--min-dist`.
-- **Como achar o ponto:** ramp de cima para baixo; pare no **MAIOR** `--min-dist` que ainda cruza
-  o alvo de contém (menos nós é melhor).
+- **Rampa adaptativa (1º lever):** direção padrão ↓; enquanto melhorar, continue; parou de
+  melhorar → inverta p/ ↑; piorou na invertida → volte ao melhor e passe p/ a 2ª rampa.
+  Piso = 1 mm; teto ~10.
 
 ### `--pocket-eps <mm>`  · default `0.5`
 Penetração **tolerada** no modo POCKET: a curva pode tocar/cortar a peça até este valor (em vez de
 estufar para fora a span inteira por ruído sub-mm → pocket bem mais justo, ainda contendo ~0.998).
 - **Menor (0.5 → 0):** corta MENOS a peça → contém um pouco mais alto, pocket levemente mais
-  folgado. Efeito **pequeno** no contém (≈ +0.0001).
-- **Quando usar:** ajuste fino do último 0.0x quando a curva encosta/corta de leve. Não é o lever
-  principal — para mover o contém de verdade, use `--min-dist`.
+  folgado. Efeito **pequeno** por degrau (~+0.0001–0.0003).
+- **Rampa adaptativa (3º lever do contém):** mesma lógica de inversão. Direção padrão ↓. Piso = 0,
+  teto = 0.5. Engaja quando min-dist (1ª) e smooth-mm (2ª) esgotaram.
 
 ### `--simplify <mm>`  · default `2.0`  ·  *(modo FIEL)*
 Densidade das âncoras do **fecho convexo** no modo `--faithful` (RDP): **MAIOR** = menos nós (mais
@@ -89,13 +90,13 @@ Béziers, cavidade mais folgada. Sem efeito no pocket padrão nem no `--faithful
 
 ## 3. Suavização e dimensão
 
-### `--smooth-mm <mm>`  · default `8.0`  ·  **lever fino do contém**
+### `--smooth-mm <mm>`  · default `8.0`  ·  **lever fino do contém (2ª rampa)**
 Janela do low-pass que remove o serrilhado da silhueta. O piso de contenção é construído sobre a
 silhueta **suavizada**:
-- **Baixar (8 → 2):** aproxima o piso da peça crua → **empurra o contém para cima**. Use para
-  raspar os últimos 0.0x quando a rampa de `--min-dist` encosta mas não cruza.
+- **Baixar (8 → 2):** aproxima o piso da peça crua → **empurra o contém para cima**.
 - **Subir (+1..2):** tira escadinha/serrilhado — **conflita** com o contém (suaviza para dentro).
-- **Equilíbrio:** ~2 mm. Abaixo de ~1 mm reintroduz serrilha.
+- **Rampa adaptativa (2º lever):** mesma lógica de inversão. Direção padrão ↓. Piso ~2 (abaixo
+  de ~1 reintroduz serrilha); teto ~10. Engaja quando min-dist (1ª) esgotou.
 
 ### `--clearance <mm>`  · default `0.0`
 Folga **externa** aplicada ao contorno. **Padrão 0 = tamanho REAL** (sem ganho). A folga de
@@ -142,8 +143,8 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 
 | Sintoma observado | Ação |
 |---|---|
-| **contém < alvo** (pocket não cobre 100%) | ↓`--min-dist` (adensa âncoras) — alavanca principal |
-| contém encosta no alvo mas não cruza | ↓`--smooth-mm` (8→2) para raspar o último 0.0x; ou ↓`--pocket-eps` |
+| **contém < alvo** (pocket não cobre 100%) | Rampas **adaptativas com inversão**: 1ª `--min-dist` → 2ª `--smooth-mm` → 3ª `--pocket-eps`. Direção padrão ↓; parou de melhorar → inverte; piorou na invertida → volta ao melhor e próxima rampa |
+| resultado parou de melhorar | Inverta a direção da rampa atual; se a invertida também piora, rampa esgotou → próxima |
 | pocket **folgado demais** / clearance grande | sintoma de `--min-dist` alto → **baixe** `--min-dist` (Béziers longas arqueiam p/ dentro) |
 | escadinha/serrilhado no contorno | ↑`--smooth-mm` (+1..2) — conflita com o contém; ache o equilíbrio (~2) |
 | borda arredondada some / segmentação come a peça | `--shadow remove` |

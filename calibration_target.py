@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # =============================================================================
-# calibration_target.py — layout do alvo de calibração (Spec 12, Etapa B)
+# calibration_target.py — layout do alvo de calibração
 # -----------------------------------------------------------------------------
-# Define a GEOMETRIA do alvo "moldura ArUco + centro branco" (Opção B): uma
-# faixa de marcadores ArUco ao redor da borda de uma folha A4, com miolo branco
-# liso onde o objeto é apoiado e fotografado.
+# Define a GEOMETRIA do alvo "moldura ArUco + centro branco": uma faixa de
+# marcadores ArUco ao redor da borda de uma folha A4, com miolo branco liso
+# onde o objeto é apoiado e fotografado.
 #
 # Este módulo é PURO (sem OpenCV): só descreve onde cada marcador fica, em mm.
 # É a ÚNICA fonte da verdade do layout — tanto o renderizador SVG
-# (make_calibration_target.py) quanto o futuro detector (photo_to_outline.py)
+# (make_calibration_target.py) quanto o detector (photo_to_outline.py)
 # importam daqui, garantindo que "o que é impresso == o que o detector assume".
 #
 # Convenção de coordenadas: mm, origem no canto superior-esquerdo da folha,
@@ -134,7 +134,7 @@ def target_layout(page=A4_LANDSCAPE, page_margin=10.0, marker_mm=16.0,
 def homography_correspondences(layout):
     """Lista [(id, [4 cantos mm na ordem ArUco]), ...] para casar com os cantos
     detectados na imagem e resolver a homografia imagem→mm. É o contrato que o
-    detector da Etapa B vai consumir."""
+    detector (photo_to_outline.py) consome."""
     return [(m.id, m.corners_mm()) for m in layout["markers"]]
 
 

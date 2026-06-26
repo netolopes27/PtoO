@@ -1,28 +1,27 @@
 #!/usr/bin/env python3
 # =============================================================================
-# photo_to_outline.py — foto da ferramenta → SVG de contorno em mm (Spec 12)
+# photo_to_outline.py — foto do objeto → SVG de contorno em mm
 # -----------------------------------------------------------------------------
-# Recebe uma FOTO de uma ferramenta apoiada sobre a BASE DE CALIBRAÇÃO impressa
+# Recebe uma FOTO de um objeto apoiado sobre a BASE DE CALIBRAÇÃO impressa
 # (moldura de marcadores ArUco + miolo branco — gerada por make_calibration_target
-# → tools/base.svg) e emite um SVG em MILÍMETROS — contorno + preenchimento translúcido
+# → base.svg) e emite um SVG em MILÍMETROS — contorno + preenchimento translúcido
 # numa cor destacada (sobrepõe o objeto p/ conferir cobertura) — com o contorno EXTERNO
 # da peça, corrigido de perspectiva/inclinação pelos
 # marcadores e SUAVIZADO para impressão 3D (sem cantos de 90°, sem bicos afiados).
-# A saída alimenta tools/svg_to_scad.py → ItemPoly → gridfinity_itemholder (Spec 11).
+# Objetivo final: traçar objetos para gerar gridfinity personalizável (a cavidade
+# onde a peça encaixa); o fluxo aqui termina no SVG.
 #
 # Pipeline (5 estágios): rectify (homografia ArUco → miolo branco em mm) →
 # segment_tool (objeto sobre branco) → [symmetrize_mask, opcional] → extract_outline
 # → process_for_print → polygon_to_svg. O estágio de simetria (--symmetry) espelha a
 # máscara e tira a MÉDIA das duas metades (duas amostras do mesmo contorno → menos
 # ruído) quando o objeto é simétrico. Funções puras de polígono/escala ficam separadas da I/O para
-# serem testáveis sem imagem (tools/tests/). A GEOMETRIA da base vem de
+# serem testáveis sem imagem (tests/). A GEOMETRIA da base vem de
 # calibration_target.py (fonte única, compartilhada com o renderizador do alvo).
 #
-# Roda no venv isolado tools/.venv (numpy + opencv-python); a suíte OpenSCAD
-# segue stdlib-pura. Uso:
-#   tools/.venv/Scripts/python tools/photo_to_outline.py --in tools/thermpro.jpg \
-#       --out tools/thermpro.svg
-# (imprima tools/base.svg em A4 a 100%, apoie a peça no centro branco e
+# Roda no venv isolado .venv (numpy + opencv-python). Uso:
+#   .venv/Scripts/python photo_to_outline.py --in thermpro.jpg --out thermpro.svg
+# (imprima base.svg em A4 a 100%, apoie a peça no centro branco e
 #  fotografe de cima — o mais próximo do nadir, mirando pelo anel-guia.)
 # =============================================================================
 
@@ -37,7 +36,7 @@ import numpy as np
 try:
     import cv2
 except ImportError:  # mensagem amigável fora do venv
-    print("ERRO: opencv ausente. Use o Python do venv: tools/.venv/Scripts/python", file=sys.stderr)
+    print("ERRO: opencv ausente. Use o Python do venv: .venv/Scripts/python", file=sys.stderr)
     raise
 
 import calibration_target as CT
@@ -50,7 +49,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 # -----------------------------------------------------------------------------
-# Constantes / defaults (ver specs/12-foto-para-contorno.md)
+# Constantes / defaults (ver docs/design.md)
 # -----------------------------------------------------------------------------
 PX_PER_MM = 8.0            # resolução do canvas métrico retificado (px/mm)
 DICT_NAME = "DICT_4X4_50"  # dicionário ArUco da base; DEVE casar com a impressa
@@ -87,7 +86,7 @@ SYM_SEARCH_MM = 4.0         # busca do eixo de simetria em torno do centroide (�
 MIN_RADIUS_MM = 1.5
 SMOOTH_MM = 8.0             # janela do low-pass que remove o serrilhado (≪ features reais)
 CLEARANCE_MM = 0.0          # ETAPA 1 SEM GANHO: contorno no tamanho REAL; a folga é aplicada
-                            # depois (gridfinity_itemholder clearance, ou à mão). Ver Manual.
+                            # depois (a jusante no OpenSCAD/gridfinity, ou escalando à mão).
 DP_EPSILON_MM = 0.4
 FIT_TOL_MM = 0.2            # tolerância do ajuste de Bézier (Schneider): passa pela média
 BEZIER_GUIDE_MM = 0.5      # folga do guia p/ o ajuste (contém a peça; bbox depois é fixada ao objeto)
@@ -518,7 +517,7 @@ def rectify(img, dict_name=DICT_NAME, ppmm=PX_PER_MM, layout=None, debug_dir=Non
     if n < MIN_MARKERS:
         raise GridDetectionError(
             f"só {n} marcadores ArUco detectados (mínimo {MIN_MARKERS}) — confira a "
-            f"base impressa (tools/base.svg), o foco e a iluminação")
+            f"base impressa (base.svg), o foco e a iluminação")
     H, _m = cv2.findHomography(img_pts, mm_pts, cv2.RANSAC, 3.0)   # imagem → mm
     if H is None:
         raise GridDetectionError("homografia ArUco falhou (marcadores degenerados)")
@@ -746,7 +745,7 @@ def process_for_print(pts_mm, min_radius=MIN_RADIUS_MM, smooth_mm=SMOOTH_MM, cle
     #    foto, preservando as features reais da peça (todas ≫ smooth_mm).
     if smooth_mm and smooth_mm > 0:
         p = lowpass_closed(p, win_mm=smooth_mm, step=0.15)
-    # 3) Decima pontos redundantes (desvio ≤ ~0,02 mm) p/ um poly leve no ItemPoly.
+    # 3) Decima pontos redundantes (desvio ≤ ~0,02 mm) p/ um polígono leve.
     if len(p) >= 3:
         c = cv2.approxPolyDP(np.array(p, np.float32).reshape(-1, 1, 2), 0.02, True)
         p = [(float(q[0][0]), float(q[0][1])) for q in c]
@@ -1297,7 +1296,7 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
         npts = len(pp)
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
-        f'<!-- GERADO por tools/photo_to_outline.py — contorno de {name} (mm), {npts} nós -->\n'
+        f'<!-- GERADO por photo_to_outline.py — contorno de {name} (mm), {npts} nós -->\n'
         f'<svg xmlns="http://www.w3.org/2000/svg" version="1.1"\n'
         f'     width="{f(w)}mm" height="{f(h)}mm" viewBox="0 0 {f(w)} {f(h)}">\n'
         f'  <path d="{d}"\n'
@@ -1347,7 +1346,7 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
         d += " Z"
     svg = (
         '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
-        '<!-- OVERLAY EDITÁVEL (foto retificada + contorno) — tools/photo_to_outline.py.\n'
+        '<!-- OVERLAY EDITÁVEL (foto retificada + contorno) — photo_to_outline.py.\n'
         '     Ajuste os nós do contorno sobre a foto no Inkscape, apague a camada "foto" e exporte. -->\n'
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"\n'
         '     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"\n'
@@ -1440,13 +1439,13 @@ def main(argv=None):
     ap.add_argument("--in", "-i", dest="in_path", required=True)
     ap.add_argument("--out", "-o", dest="out_path")
     ap.add_argument("--dict", dest="dict_name", default=DICT_NAME,
-                    help="dicionário ArUco da base impressa (deve casar com tools/base.svg)")
+                    help="dicionário ArUco da base impressa (deve casar com base.svg)")
     ap.add_argument("--min-radius", type=float, default=MIN_RADIUS_MM)
     ap.add_argument("--smooth-mm", dest="smooth_mm", type=float, default=SMOOTH_MM,
                     help="janela do low-pass (mm) que remove o serrilhado")
     ap.add_argument("--clearance", type=float, default=CLEARANCE_MM,
                     help="folga externa (mm). PADRÃO 0 = tamanho REAL (sem ganho); "
-                         "a folga de encaixe é aplicada DEPOIS (gridfinity_itemholder)")
+                         "a folga de encaixe é aplicada DEPOIS (a jusante no OpenSCAD, ou à mão)")
     ap.add_argument("--shadow", dest="shadow", default="off",
                     choices=["off", "remove"],
                     help="'remove' liga a HISTERESE de borda: cresce os núcleos preto E colorido "
@@ -1464,15 +1463,16 @@ def main(argv=None):
                     help="densidade das âncoras (mm): MAIOR = menos nós (mais 'hull'), "
                          "MENOR = contorno mais justo (mais nós)")
     ap.add_argument("--max-nodes", dest="max_nodes", type=int, default=MAX_NODES,
-                    help="TETO RÍGIDO de CURVAS (Béziers suaves) do contorno. PADRÃO 4: "
-                         "começa com 4 curvas suaves e só subdivide o pior trecho ENQUANTO "
-                         "sobra orçamento — nunca passa do teto. Se 4 não contiver a peça, a "
-                         "tool AVISA; aumente o teto p/ um contorno mais justo. 0 = ilimitado.")
+                    help="TETO de CURVAS do POCKET de encaixe (Béziers suaves), em passos de 4. "
+                         "Divide a peça em QUADRANTES e ancora a extremidade de cada setor; as "
+                         "curvas CONTÊM a peça. PADRÃO 4 = 1 ponto/quadrante (folgado); 8,12,16… = "
+                         "mais 1/quadrante (mais justo). Se o pocket não contiver a peça, a tool "
+                         "AVISA. 0 = modo FIEL ilimitado (bbox = objeto, com snap).")
     ap.add_argument("--fit-tol", dest="fit_tol", type=float, default=FIT_TOL_MM,
                     help="tolerância (mm) do ajuste por tolerância (só com --tol-fit)")
     ap.add_argument("--c-fit", dest="c_fit", type=float, default=0.0,
                     help="folga embutida no SVG (mm); 0 = traço mínimo encostando na peça "
-                         "(o gridfinity_itemholder adiciona a folga de impressão ao furar)")
+                         "(a folga de impressão é adicionada a jusante, no OpenSCAD)")
     ap.add_argument("--guide", dest="guide", type=float, default=BEZIER_GUIDE_MM,
                     help="orçamento de suavização (mm): maior = MENOS Béziers, cavidade mais folgada")
     ap.add_argument("--tol-fit", dest="tol_fit", action="store_true",
@@ -1517,7 +1517,7 @@ def main(argv=None):
                                     debug_dir=args.debug_dir, return_silhouette=True)
     except GridDetectionError as e:
         print(f"ERRO: retificação pela base ArUco falhou — {e}", file=sys.stderr)
-        print("      imprima tools/base.svg em A4 a 100%, apoie a peça no centro branco e "
+        print("      imprima base.svg em A4 a 100%, apoie a peça no centro branco e "
               "fotografe de cima; use --debug-dir p/ inspecionar.", file=sys.stderr)
         return 3
 

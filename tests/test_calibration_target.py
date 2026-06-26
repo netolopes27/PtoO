@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # =============================================================================
-# test_calibration_target.py — suíte TDD do alvo de calibração (Spec 12, Etapa B)
+# test_calibration_target.py — suíte TDD do alvo de calibração
 # -----------------------------------------------------------------------------
-# Alvo "moldura ArUco + centro branco" (Opção B). Dois níveis:
+# Alvo "moldura ArUco + centro branco". Dois níveis:
 #   A. Layout puro — geometria em mm (calibration_target.py), sem OpenCV.
 #   B. Detecção sintética — renderiza os marcadores num "foto" numpy, roda o
 #      detector ArUco do OpenCV e recupera a homografia imagem→mm. Prova que o
 #      alvo é detectável e métrico ANTES de imprimir, inclusive sob perspectiva.
 #
-# Rodar: tools/.venv/Scripts/python tools/tests/run_image_tests.py
+# Rodar: .venv/Scripts/python tests/run_image_tests.py
 # =============================================================================
 
 import os

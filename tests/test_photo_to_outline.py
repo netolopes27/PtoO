@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # =============================================================================
-# test_photo_to_outline.py — suíte TDD do tooling foto → contorno (Spec 12)
+# test_photo_to_outline.py — suíte TDD do tooling foto → contorno
 # -----------------------------------------------------------------------------
-# Três níveis (ver specs/12-foto-para-contorno.md):
+# Três níveis (ver docs/design.md):
 #   A. Unidade  — funções puras de polígono/escala/homografia (sem imagem).
 #   B. Sintético — cena ArUco gerada por numpy; rectify() retifica em mm/aborta.
 #   C. Ponta-a-ponta — contorno tirado DIRETAMENTE de thermpro.jpg (foto na base
 #      ArUco, sem referência à mão): escala via marcadores, encaixe/limpeza/curvas.
 #
-# Rodar: tools/.venv/Scripts/python tools/tests/run_image_tests.py
+# Rodar: .venv/Scripts/python tests/run_image_tests.py
 # =============================================================================
 
 import math
@@ -18,16 +18,15 @@ import unittest
 
 import numpy as np
 
-# Importa o módulo sob teste (tools/photo_to_outline.py).
+# Importa o módulo sob teste (photo_to_outline.py).
 THIS = os.path.dirname(os.path.abspath(__file__))
-TOOLS = os.path.dirname(THIS)
-ROOT = os.path.dirname(TOOLS)
-sys.path.insert(0, TOOLS)
+ROOT = os.path.dirname(THIS)   # raiz do projeto (pai de tests/)
+sys.path.insert(0, ROOT)
 
 import photo_to_outline as P  # noqa: E402
 import calibration_target as CT  # noqa: E402
 
-THERMPRO_JPG = os.path.join(TOOLS, "thermpro.jpg")
+THERMPRO_JPG = os.path.join(ROOT, "thermpro.jpg")
 
 
 # -----------------------------------------------------------------------------
@@ -646,7 +645,7 @@ class TestEndToEndThermpro(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Etapa 1 SEM GANHO: clearance=0 → o contorno sai no tamanho REAL da peça
-        # (a folga é aplicada depois, no gridfinity_itemholder ou à mão).
+        # (a folga é aplicada depois, a jusante no OpenSCAD ou à mão).
         cls.out, cls.sil = P.generate_outline(THERMPRO_JPG, min_radius=1.5,
                                               smooth_mm=8.0, clearance=0.0,
                                               return_silhouette=True)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # =============================================================================
-# make_calibration_target.py — gera o alvo de calibração SVG (Spec 12, Etapa B)
+# make_calibration_target.py — gera o alvo de calibração SVG
 # -----------------------------------------------------------------------------
-# Renderiza o alvo "moldura ArUco + centro branco" (Opção B) como SVG vetorial
+# Renderiza o alvo "moldura ArUco + centro branco" como SVG vetorial
 # pronto para imprimir em A4. A GEOMETRIA vem de calibration_target.py (fonte
 # única da verdade, compartilhada com o detector). Aqui só desenhamos:
 #   - fundo branco da folha (com margem branca para impressão sem sangria);
@@ -11,7 +11,7 @@
 #   - instrução de impressão a 100%.
 #
 # Uso:
-#   tools/.venv/Scripts/python tools/make_calibration_target.py --out tools/base.svg
+#   .venv/Scripts/python make_calibration_target.py --out base.svg
 # =============================================================================
 
 import argparse
@@ -65,7 +65,7 @@ def render_svg(layout):
         f'width="{_fmt(W)}mm" height="{_fmt(H)}mm" '
         f'viewBox="0 0 {_fmt(W)} {_fmt(H)}" version="1.1">')
     parts.append(
-        f'  <!-- Alvo de calibracao Gridfinity_AI (Spec 12, Opcao B). '
+        f'  <!-- Alvo de calibracao PtoO (moldura ArUco + centro branco). '
         f'Dict {layout["dict"]}, lado {_fmt(layout["marker_mm"])}mm, '
         f'margem {_fmt(layout["page_margin"])}mm, {len(layout["markers"])} marcadores. -->')
     # Fundo branco da folha.
@@ -119,7 +119,7 @@ def render_svg(layout):
     parts.append(
         f'  <text x="{_fmt(W / 2)}" y="{_fmt(H - layout["page_margin"] * 0.35)}" '
         f'font-family="sans-serif" font-size="3.2" fill="#999999" '
-        f'text-anchor="middle">Gridfinity_AI base.svg  -  imprima em A4 a 100% '
+        f'text-anchor="middle">PtoO base.svg  -  imprima em A4 a 100% '
         f'(sem "ajustar a pagina")  -  objeto no centro branco</text>')
 
     parts.append('</svg>')
@@ -128,7 +128,7 @@ def render_svg(layout):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Gera o alvo de calibracao SVG (Opcao B).")
-    ap.add_argument("--out", default="tools/base.svg")
+    ap.add_argument("--out", default="base.svg")
     ap.add_argument("--orientation", choices=["landscape", "portrait"], default="landscape")
     ap.add_argument("--page-margin", type=float, default=10.0)
     ap.add_argument("--marker-mm", type=float, default=16.0)

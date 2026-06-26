@@ -114,12 +114,28 @@ parâmetro**.
 
 ## Estado de referência
 
-- **Suíte 68/68 verde.**
+- **Suíte 71/71 verde.**
 - **`thermpro.jpg`** no default (POCKET, `--min-dist 10`): pocket contém a peça (coverage ≥ 0,99)
   ~ objeto. Apertando: `--shadow remove --min-dist 0.6 --smooth-mm 2 --symmetry vertical` → **305
-  Béziers, contém 0.9999**, folga −0,18 × −0,00 (flush). `--faithful` (fiel) → ~19 Béziers, bbox =
-  objeto. Com `--shadow remove` a borda arredondada entra dos dois lados e a sombra de contato
-  cinza fica de fora.
+  Béziers, contém 0.9999**, folga −0,18 × −0,00 (flush). Somando `--mask-smooth-mm 2` (regulariza a
+  silhueta) → **303 Béziers, contém 1.0000** com a borda PRETA lisa (some a ondulação). `--faithful`
+  (fiel) → ~19 Béziers, bbox = objeto. Com `--shadow remove` a borda arredondada entra dos dois
+  lados e a sombra de contato cinza fica de fora.
+
+## Regularização da silhueta + refator (eficiência/tokens)
+
+- **Ondulação da borda PRETA = problema de MÁSCARA, não de curva.** Onde o objeto preto quase se
+  funde com a sombra, a segmentação serrilha; o `--smooth-mm` (low-pass da curva) é calibrado p/
+  não comer features e deixa passar a ondulação de média amplitude. Decisão: limpar a forma **na
+  fonte** com `regularize_silhouette` (borra o campo de distância com sinal e re-corta em 0 —
+  reusa `_signed_distance` da simetria), atrás da flag `--mask-smooth-mm` (default 0). É um lever
+  **ortogonal** ao `--smooth-mm`/gate: some com saliências/ondulações de raio < valor sem rebaixar
+  o `contém` nem arredondar os cantos macro. No thermpro, `2` mm zerou a ondulação mantendo 1.0000.
+- **Refator p/ tokens:** stdout do CLI compactado p/ 3 linhas parseáveis (chaves estáveis
+  `obj`/`pocket`/`folga`/`contém`/`encaixe`); formatador de número SVG unificado em
+  `calibration_target.fmt_mm` (fonte única dos 3 lugares); construção do `d` das cúbicas extraída
+  p/ `_cubics_to_path_d`; o ajuste ancorado (passo mais caro) agora é **memoizado**
+  (`fit_anchored_cached`) — antes recalculava até 3×/run.
 
 ## Skill `/ptoo` — calibrador iterativo (camada de workflow)
 

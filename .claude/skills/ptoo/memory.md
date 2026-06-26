@@ -34,6 +34,8 @@ CONDICIONAL: --symmetry vertical (n=1); desligar em peça assimétrica (distorce
 - pocket-eps: baixar reduz penetração tolerada e sobe contém (~+0.0001–0.0003/degrau). Degraus
   típicos: 0.5, 0.3, 0.1, 0.
 - serrilhado/escadinha → ↑smooth-mm (+1..2). CONFLITA com o contém: ache o equilíbrio (smooth ~2).
+- ondulações/saliências na borda PRETA (baixo contraste, mesmo com contém ok) → --mask-smooth-mm
+  ~1.5-2: regulariza a SILHUETA na fonte, ORTOGONAL ao contém (não é rampa; não mexe no gate).
 - borda arredondada some / segmentação come a peça → --shadow remove
 - SEMPRE avaliar simetria no passe 1 (pelo overview): se a peça tem eixo de espelho claro, ligar
   --symmetry vertical|horizontal (eixo do objeto). Limpa ruído e sobe contém. NÃO usar em peça

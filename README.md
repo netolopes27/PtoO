@@ -84,8 +84,9 @@ Minimal: `photo_to_outline.py --in thermpro.jpg` (SVG takes the photo's name).
 (anchors spaced 0.6 mm — smaller `--min-dist` = more anchors = tighter); `--symmetry vertical`
 denoises a symmetric part; `--inkscape` also emits the editable overlay. With this command the
 sample comes out: measured object **68.12 × 71.00 mm**, pocket **67.94 × 71.00 mm** (clearance
-−0.18 × −0.00), **305 smooth Béziers**, **contains the part 0.9999** — practically flush. For a
-**faithful** outline use `--faithful`; for a looser pocket raise `--min-dist`. See §4.1.
+−0.18 × −0.00), **305 smooth Béziers**, **contains the part 0.9999** — practically flush. Adding
+`--mask-smooth-mm 2` smooths the wavy **black** edge at the source → **303 Béziers, contains 1.0000**.
+For a **faithful** outline use `--faithful`; for a looser pocket raise `--min-dist`. See §4.1.
 
 ### Generated outputs
 
@@ -146,6 +147,7 @@ PNGs for diagnosis).
 |------|---------|--------------|
 | `--shadow` | `off` | `remove` turns on **edge hysteresis**: recovers the rounded edge curving toward the base (black bevel on top, desaturated orange toe at the bottom), growing only through chroma pixels and **stopping at the gray contact shadow** |
 | `--symmetry` | `none` | `vertical`/`horizontal`/`both`: mirrors the mask and **averages the halves** (less noise). Use on symmetric parts |
+| `--mask-smooth-mm` | `0.0` (off) | **regularizes the silhouette** before tracing: blurs the signed-distance field and re-thresholds, removing bumps/waviness smaller than the radius from the **mask** itself. Use when a low-contrast **black** edge comes out wavy even at high containment; `~1.5–2` cleans it without rounding macro corners. Orthogonal to `--smooth-mm` (which acts on the curve) and to containment |
 
 **Outline shape:**
 

@@ -83,6 +83,11 @@ SEG_HUE_SAT_MIN = 60       # saturação mínima p/ aceitar um pixel SÓ pelo ma
                            # saturação abaixo do corte de `colored` mas continua com matiz quente,
                            # bem longe do fundo azulado — sem isso o realce virava uma "mossa".
 SYM_SEARCH_MM = 4.0         # busca do eixo de simetria em torno do centroide (± mm), maximizando IoU
+MASK_SMOOTH_MM = 0.0        # regularização da SILHUETA (raio mm): borra o campo de distância com
+                            # sinal e re-corta em 0, removendo saliências/ondulações de amplitude
+                            # < este valor na borda da MÁSCARA (típicas na carcaça PRETA, de baixo
+                            # contraste) sem arredondar os cantos macro. 0 = desligado. Ortogonal
+                            # ao SMOOTH_MM (que age na curva); aqui a forma é limpa na FONTE.
 MIN_RADIUS_MM = 1.5
 SMOOTH_MM = 8.0             # janela do low-pass que remove o serrilhado (≪ features reais)
 CLEARANCE_MM = 0.0          # ETAPA 1 SEM GANHO: contorno no tamanho REAL; a folga é aplicada
@@ -110,9 +115,11 @@ PROTRUSION_DEV_MM = 0.8    # proeminência mín. (mm) de uma SALIÊNCIA local p/
 CONTAIN_COVERAGE = 0.99    # encaixe mínimo p/ dar a peça por "contida"; abaixo disso, no modo
                             # pocket, o CLI avisa p/ diminuir --min-dist (adensa as âncoras)
 RASTER_PPM = 16.0           # px/mm das operações raster (filete/IoU)
+PEN_SAMPLE_MM = 0.25        # passo (mm) ao amostrar a cúbica p/ medir penetração no piso
 OUTLINE_COLOR = "#ff00ff"      # cor BEM DESTACADA (magenta) do vetor de saída e do overlay
 OUTLINE_FILL_OPACITY = 0.25    # preenchimento quase transparente: sobrepõe TODO o objeto p/ conferir
                                # de relance se o contorno o cobre (qualquer parte de fora = contorno curto)
+SVG_HAIRLINE_MM = 0.264583     # traço fino do contorno = 1 px CSS (1/96") em mm (não-escalável)
 
 
 class GridDetectionError(RuntimeError):
@@ -711,6 +718,24 @@ def symmetrize_mask(mask, axis, ppmm=PX_PER_MM, search_mm=SYM_SEARCH_MM, debug_d
     return out
 
 
+def regularize_silhouette(mask, radius_mm, ppmm=PX_PER_MM, debug_dir=None):
+    """Suaviza a SILHUETA da máscara borrando o campo de distância com sinal (reusa
+    `_signed_distance`) e re-cortando em 0. Remove saliências e reentrâncias de amplitude
+    < `radius_mm` de forma ISOTRÓPICA — some com as ondulações da borda serrilhada (típicas
+    na carcaça PRETA, onde o contraste contra a sombra é baixo) SEM arredondar os cantos
+    macro (raio ≫ radius_mm). É ortogonal ao `--smooth-mm` (que age na curva já extraída):
+    aqui a forma é limpa na FONTE, antes de extrair o contorno. `radius_mm` ≤ 0 = no-op."""
+    if not radius_mm or radius_mm <= 0:
+        return mask
+    sdf = _signed_distance(mask)
+    sdf = cv2.GaussianBlur(sdf, (0, 0), sigmaX=radius_mm * ppmm)
+    out = (sdf >= 0.0).astype(np.uint8) * 255
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(debug_dir, "02c_regularized.png"), out)
+    return out
+
+
 def extract_outline(mask, mm_per_px_x, mm_per_px_y=None, debug_dir=None):
     """Estágio 3: maior contorno externo → pontos em mm (escala X/Y separada, Y
     invertido p/ impressão). `mm_per_px_y` default = `mm_per_px_x` (grade quadrada)."""
@@ -955,7 +980,7 @@ def _beziers_max_penetration(cubics, field):
         rough = (math.hypot(bez[1][0] - bez[0][0], bez[1][1] - bez[0][1]) +
                  math.hypot(bez[2][0] - bez[1][0], bez[2][1] - bez[1][1]) +
                  math.hypot(bez[3][0] - bez[2][0], bez[3][1] - bez[2][1]))
-        pen, _ = _max_penetration(bez, field, max(12, int(rough / 0.25)))
+        pen, _ = _max_penetration(bez, field, max(12, int(rough / PEN_SAMPLE_MM)))
         if pen > worst:
             worst = pen
     return worst
@@ -1229,6 +1254,40 @@ def _scale_cubics_to_bbox(cubics, target_w, target_h):
             for bez in cubics]
 
 
+def _cubics_to_path_d(cubics, tx):
+    """String 'd' do SVG (M…C…Z) de uma lista de cúbicas, aplicando o transform de
+    coordenada `tx` a cada ponto. Fonte única usada pelo .svg e pelo overlay editável."""
+    f = CT.fmt_mm
+    start = tx(cubics[0][0])
+    d = f"M {f(start[0])},{f(start[1])}"
+    for (_p0, c1, c2, p3) in cubics:
+        a, b, e = tx(c1), tx(c2), tx(p3)
+        d += f" C {f(a[0])},{f(a[1])} {f(b[0])},{f(b[1])} {f(e[0])},{f(e[1])}"
+    return d + " Z"
+
+
+# A mesma silhueta + parâmetros são ajustados até 3× por execução (overlay SVG, .svg final
+# e estatística do CLI). Memoiza o ÚLTIMO resultado (mantém só 1 entrada): o ajuste ancorado
+# é o passo mais caro do pipeline. _scale_cubics_to_bbox não muta a lista, então é seguro
+# compartilhar o resultado entre os consumidores.
+_ANCHORED_CACHE = {}
+
+
+def fit_anchored_cached(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
+                        faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM):
+    """Wrapper memoizado de `fit_closed_beziers_anchored` (mesma assinatura/retorno)."""
+    key = (tuple(map(tuple, sil)), round(smooth_mm, 6), round(simplify_mm, 6),
+           bool(faithful), round(min_dist_mm, 6), round(pocket_eps, 6))
+    cached = _ANCHORED_CACHE.get(key)
+    if cached is None:
+        cached = fit_closed_beziers_anchored(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
+                                             faithful=faithful, min_dist_mm=min_dist_mm,
+                                             pocket_eps=pocket_eps)
+        _ANCHORED_CACHE.clear()
+        _ANCHORED_CACHE[key] = cached
+    return cached
+
+
 def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                    silhouette=None, c_fit=0.3, anchored=True,
                    smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
@@ -1244,19 +1303,16 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
     modos a bbox é fixada na dimensão real medida pela grade. Sem silhueta, ajusta por
     tolerância `tol`. `curves=False` emite o polyline cru (`L`)."""
     p = dedup_closing_point(pts_mm)
-
-    def f(v):
-        s = f"{v:.4f}".rstrip("0").rstrip(".")
-        return "0" if s in ("-0", "") else s
+    f = CT.fmt_mm
 
     pocket = anchored and not faithful           # modo ENCAIXE: sem snap de bbox
     if not curves:
         cubics = []
     elif silhouette is not None:
         if anchored:
-            cubics = fit_closed_beziers_anchored(silhouette, smooth_mm=smooth_mm,
-                                                 simplify_mm=simplify_mm, faithful=faithful,
-                                                 min_dist_mm=min_dist_mm, pocket_eps=pocket_eps)
+            cubics = fit_anchored_cached(silhouette, smooth_mm=smooth_mm,
+                                         simplify_mm=simplify_mm, faithful=faithful,
+                                         min_dist_mm=min_dist_mm, pocket_eps=pocket_eps)
         else:
             cubics = fit_closed_beziers_contained(p, silhouette, c_fit=c_fit)
         if cubics and not pocket:                 # snap p/ a dimensão real (exceto encaixe)
@@ -1274,12 +1330,7 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
         return (pt[0] - min_x, max_y - pt[1])
 
     if cubics:
-        start = tx(cubics[0][0])
-        d = f"M {f(start[0])},{f(start[1])}"
-        for (_p0, c1, c2, p3) in cubics:
-            a, b, e = tx(c1), tx(c2), tx(p3)
-            d += f" C {f(a[0])},{f(a[1])} {f(b[0])},{f(b[1])} {f(e[0])},{f(e[1])}"
-        d += " Z"
+        d = _cubics_to_path_d(cubics, tx)
         npts = len(cubics)
     else:
         pp = [tx(q) for q in p]
@@ -1292,7 +1343,7 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
         f'     width="{f(w)}mm" height="{f(h)}mm" viewBox="0 0 {f(w)} {f(h)}">\n'
         f'  <path d="{d}"\n'
         f'        style="fill:{OUTLINE_COLOR};fill-opacity:{OUTLINE_FILL_OPACITY};'
-        f'stroke:{OUTLINE_COLOR};stroke-width:0.264583;vector-effect:non-scaling-stroke"/>\n'
+        f'stroke:{OUTLINE_COLOR};stroke-width:{f(SVG_HAIRLINE_MM)};vector-effect:non-scaling-stroke"/>\n'
         f'</svg>\n'
     )
 
@@ -1320,21 +1371,12 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
     _ok, buf = cv2.imencode(".png", rect)
     b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
-    def f(v):
-        s = f"{v:.4f}".rstrip("0").rstrip(".")
-        return "0" if s in ("-0", "") else s
+    f = CT.fmt_mm
 
     def tx(pt):                      # mm (x≥0, y≤0) → frame da foto (Y p/ baixo)
         return (pt[0], -pt[1])
 
-    d = ""
-    if cubics:
-        start = tx(cubics[0][0])
-        d = f"M {f(start[0])},{f(start[1])}"
-        for (_p0, c1, c2, p3) in cubics:
-            a, b, e = tx(c1), tx(c2), tx(p3)
-            d += f" C {f(a[0])},{f(a[1])} {f(b[0])},{f(b[1])} {f(e[0])},{f(e[1])}"
-        d += " Z"
+    d = _cubics_to_path_d(cubics, tx) if cubics else ""
     svg = (
         '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
         '<!-- OVERLAY EDITÁVEL (foto retificada + contorno) — photo_to_outline.py.\n'
@@ -1364,6 +1406,7 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      smooth_mm=SMOOTH_MM, clearance=CLEARANCE_MM, symmetry="none",
                      deshadow=False, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
                      min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
+                     mask_smooth_mm=MASK_SMOOTH_MM,
                      overlay_path=None, overlay_svg_path=None, debug_dir=None,
                      return_silhouette=False):
     """Pipeline completo → lista de pontos (x,y) em mm. Usado pelos testes E pelo CLI.
@@ -1380,15 +1423,17 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     mask = segment_tool(flat, deshadow=deshadow, debug_dir=debug_dir)
     if symmetry and symmetry != "none":
         mask = symmetrize_mask(mask, symmetry, ppmm=1.0 / mmpp_x, debug_dir=debug_dir)
+    if mask_smooth_mm and mask_smooth_mm > 0:
+        mask = regularize_silhouette(mask, mask_smooth_mm, ppmm=1.0 / mmpp_x, debug_dir=debug_dir)
     if overlay_path:
         write_overlay(rect, mask, overlay_path)
     sil = extract_outline(mask, mmpp_x, mmpp_y, debug_dir=debug_dir)
     if overlay_svg_path:
         # Mesmos Béziers que o .svg emite. No modo encaixe (pocket) NÃO se faz o snap de
         # bbox (o pocket fica ≥ objeto p/ conter a peça); no modo fiel, snap p/ a dimensão real.
-        cub = fit_closed_beziers_anchored(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
-                                          faithful=faithful, min_dist_mm=min_dist_mm,
-                                          pocket_eps=pocket_eps)
+        cub = fit_anchored_cached(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
+                                  faithful=faithful, min_dist_mm=min_dist_mm,
+                                  pocket_eps=pocket_eps)
         if cub and faithful:
             cub = _scale_cubics_to_bbox(cub, *size(sil))
         write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
@@ -1482,6 +1527,11 @@ def main(argv=None):
                     help="distância MÍNIMA (mm) entre âncoras do MESMO QUADRANTE no pocket de "
                          "encaixe: ao adensar (8, 12…), o 2º/3º ponto de um quadrante só entra "
                          "se ficar a ≥ este valor dos já escolhidos ali (evita aglomerar). PADRÃO 10.")
+    ap.add_argument("--mask-smooth-mm", dest="mask_smooth_mm", type=float, default=MASK_SMOOTH_MM,
+                    help="regulariza a SILHUETA (raio mm) antes de extrair o contorno: remove "
+                         "saliências/ondulações de amplitude < este valor na borda da máscara "
+                         "(carcaça PRETA de baixo contraste) sem arredondar os cantos. Ortogonal "
+                         "ao --smooth-mm. PADRÃO 0 (off); ~1.5-2 limpa a borda preta do thermpro.")
     ap.add_argument("--name", dest="name")
     ap.add_argument("--debug-dir", dest="debug_dir")
     args = ap.parse_args(argv)
@@ -1507,6 +1557,7 @@ def main(argv=None):
                                     deshadow=(args.shadow == "remove"),
                                     simplify_mm=args.simplify, faithful=args.faithful,
                                     min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps,
+                                    mask_smooth_mm=args.mask_smooth_mm,
                                     overlay_path=overlay_path,
                                     overlay_svg_path=overlay_svg_path,
                                     debug_dir=args.debug_dir, return_silhouette=True)
@@ -1531,48 +1582,42 @@ def main(argv=None):
                          pocket_eps=args.pocket_eps)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(svg)
+    # Saída COMPACTA e parseável (a skill /ptoo lê isto a cada passo): uma linha de status,
+    # uma de overlays e uma de métricas com as chaves estáveis `obj`/`pocket`/`contém`/`encaixe`.
     ow, oh = size(sil)                              # dimensão REAL medida pelos marcadores
     undercontained = False
     pocket = anchored and not args.faithful         # modo ENCAIXE (pocket por quadrante)
-    obj_line = f"    objeto (medido pela base) = {ow:.2f} x {oh:.2f} mm  [= dimensão do SVG]"
+    obj = f"obj {ow:.2f}x{oh:.2f}"
     if args.polyline:
-        nodes = "polyline"
+        metrics = f"polyline | {obj}"
     elif anchored:
-        cub = fit_closed_beziers_anchored(sil, smooth_mm=args.smooth_mm,
-                                          simplify_mm=args.simplify, faithful=args.faithful,
-                                          min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps)
+        cub = fit_anchored_cached(sil, smooth_mm=args.smooth_mm,
+                                  simplify_mm=args.simplify, faithful=args.faithful,
+                                  min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps)
         if cub and not pocket:                      # mesma geometria do SVG emitido
             cub = _scale_cubics_to_bbox(cub, *size(sil))
         cov = coverage(flatten_beziers(cub), sil)
         if pocket:
             pw, ph = size(flatten_beziers(cub))     # pocket = ≥ objeto (contém a peça)
-            nodes = (f"{len(cub)} Béziers — POCKET de encaixe (âncoras por quadrante a "
-                     f"≥ {args.min_dist:g} mm); contém a peça {cov:.4f}")
-            obj_line = (f"    objeto (medido) = {ow:.2f} x {oh:.2f} mm  |  pocket (SVG, ≥ objeto, "
-                        f"folga +{pw - ow:.2f} x +{ph - oh:.2f}) = {pw:.2f} x {ph:.2f} mm")
+            metrics = (f"POCKET {len(cub)} Béziers | {obj} | pocket {pw:.2f}x{ph:.2f} "
+                       f"(folga {pw - ow:+.2f}/{ph - oh:+.2f}) | contém {cov:.4f}")
             undercontained = cov < CONTAIN_COVERAGE
         else:
-            nodes = f"{len(cub)} Béziers — FIEL (ancorado no fecho convexo, nós suaves; encaixe {cov:.4f})"
+            metrics = f"FIEL {len(cub)} Béziers | {obj} | encaixe {cov:.4f}"
     elif floor is not None:
         cub = fit_closed_beziers_contained(dedup_closing_point(guide), sil, c_fit=args.c_fit)
-        cov = coverage(flatten_beziers(cub), sil)
-        nodes = f"{len(cub)} Béziers (mínimo p/ a peça caber; encaixe {cov:.4f})"
+        metrics = (f"{len(cub)} Béziers (mín. contenção) | {obj} | "
+                   f"encaixe {coverage(flatten_beziers(cub), sil):.4f}")
     else:
-        nodes = f"{len(fit_closed_beziers(dedup_closing_point(pts), tol=args.fit_tol))} Béziers (por tolerância)"
+        n = len(fit_closed_beziers(dedup_closing_point(pts), tol=args.fit_tol))
+        metrics = f"{n} Béziers (por tolerância) | {obj}"
+    overlays = f"overlay {overlay_path}" + (f" | inkscape {overlay_svg_path}" if overlay_svg_path else "")
     print(f"OK  {args.in_path}  ->  {out_path}")
-    print(f"    overlay PNG (conferência): {overlay_path}")
-    if overlay_svg_path:
-        print(f"    overlay SVG (editável no Inkscape): {overlay_svg_path}")
-    print(obj_line)
-    if args.shadow == "remove":
-        print("    sombra: histerese de borda ligada (bisel preto do topo + toe laranja do "
-              "fundo recuperados; sombra de contato cinza barrada)")
-    if args.symmetry != "none":
-        print(f"    simetria imposta: {args.symmetry} (espelho + média das metades)")
-    print(f"    {nodes}")
+    print(f"    {overlays}")
+    print(f"    {metrics}")
     if undercontained:
-        print(f"    AVISO: o pocket não contém 100% a peça (encaixe < {CONTAIN_COVERAGE:.2f}); "
-              f"diminua --min-dist (adensa as âncoras).", file=sys.stderr)
+        print(f"    AVISO: pocket não contém 100% (contém < {CONTAIN_COVERAGE:.2f}); "
+              f"diminua --min-dist.", file=sys.stderr)
     return 0
 
 

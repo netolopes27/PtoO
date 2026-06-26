@@ -91,11 +91,11 @@ de tentativas = `--pass N`.
      passes; reporte ao usuário que é problema da foto (imprimir base.svg em A4 100%, refotografar
      perto do nadir, marcadores visíveis, dict casando).
 
-2. **Parseie o stdout** (números que guiam a decisão):
-   - `objeto (medido) = W x H mm`
-   - `pocket (SVG, ≥ objeto, folga +x x +y) = W x H mm`  → **clearance** = (+x, +y)
-   - `… contém a peça 0.NNNN`  → **contém**
-   - contagem de Béziers; `AVISO: … pocket não contém 100% a peça` (stderr).
+2. **Parseie o stdout** (linha compacta de métricas `key valor | …`):
+   - `obj W x H`  → objeto medido (mm)
+   - `pocket W x H (folga ±x/±y)`  → **clearance** = (±x, ±y)
+   - `contém 0.NNNN`  → **contém** (no `--faithful`/contenção a chave é `encaixe`)
+   - nº de Béziers no início da linha; `AVISO: pocket não contém 100%` (stderr).
 
 3. **Gere os zooms** e olhe:
    ```
@@ -115,6 +115,7 @@ de tentativas = `--pass N`.
    | **parou de melhorar** | Inverta a direção; se a invertida também piora, rampa esgotou → próxima |
    | clearance grande / pocket frouxo | sintoma de `--min-dist` **alto** → direção ↓ |
    | escadinha/serrilhado no amarelo | direção ↑ em `--smooth-mm` (+1..2) — conflita com contém |
+   | ondulações/saliências na borda PRETA (baixo contraste) | `--mask-smooth-mm` (~1.5-2): regulariza a silhueta na fonte SEM mexer no contém (ortogonal ao smooth-mm) |
    | segmentado come a peça / borda arredondada some | `--shadow remove` |
    | peça simétrica e contorno ruidoso/torto | `--symmetry vertical\|horizontal` |
    | bico/canto vivo | ↑`--min-radius` (+0.5) |

@@ -29,8 +29,7 @@ def _marker_modules(dict_name, marker_id):
     return cv2.aruco.generateImageMarker(dic, marker_id, mods)
 
 
-def _fmt(v):
-    return f"{v:.4f}".rstrip("0").rstrip(".")
+_fmt = CT.fmt_mm                         # fonte única do formato (ver calibration_target.fmt_mm)
 
 
 def _marker_rects(mk, dict_name):

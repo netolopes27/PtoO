@@ -410,6 +410,64 @@ class TestProtrusionAnchors(unittest.TestCase):
                             f"nó {k} com bico")
 
 
+class TestRegularizeSilhouette(unittest.TestCase):
+    """Regularização da silhueta no domínio da MÁSCARA (remove ondulações da borda
+    preta de baixo contraste sem arredondar os cantos macro)."""
+
+    @staticmethod
+    def _mask_from_poly(poly_px, pad=12):
+        import cv2
+        pts = np.array(poly_px, np.float32)
+        pts = pts - pts.min(0) + pad
+        w = int(math.ceil(pts[:, 0].max())) + pad
+        h = int(math.ceil(pts[:, 1].max())) + pad
+        m = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(m, [np.round(pts).astype(np.int32)], 255)
+        return m
+
+    @staticmethod
+    def _sawtooth_circle(r=80.0, teeth_amp=6.0, n=720, cx=160.0, cy=160.0):
+        poly = []
+        for k in range(n):
+            ang = 2 * math.pi * k / n
+            rr = r + (teeth_amp if (k // 12) % 2 else -teeth_amp)   # dente-de-serra ~8px
+            poly.append((cx + rr * math.cos(ang), cy + rr * math.sin(ang)))
+        return poly
+
+    @staticmethod
+    def _perimeter(pts):
+        n = len(pts)
+        return sum(math.hypot(pts[(i + 1) % n][0] - pts[i][0],
+                              pts[(i + 1) % n][1] - pts[i][1]) for i in range(n))
+
+    def test_regularize_removes_waviness(self):
+        # Borda dente-de-serra (ondulação ~0.75 mm): o perímetro cru é ~2.4× o ideal; após
+        # regularizar com raio 2 mm ele cai p/ perto do círculo liso, mantendo ~toda a área.
+        mask = self._mask_from_poly(self._sawtooth_circle())
+        ideal = 2 * math.pi * (80.0 / P.PX_PER_MM)             # círculo liso de raio 10 mm
+        raw = self._perimeter(P.extract_outline(mask, 1.0 / P.PX_PER_MM))
+        reg = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM)
+        smo = self._perimeter(P.extract_outline(reg, 1.0 / P.PX_PER_MM))
+        self.assertGreater(raw, 1.5 * ideal)                   # a borda crua é bem ondulada
+        self.assertLess(smo, 1.25 * ideal)                     # regularizada ≈ círculo liso
+        self.assertGreaterEqual(np.count_nonzero(reg) / np.count_nonzero(mask), 0.95)
+
+    def test_regularize_keeps_macro_size(self):
+        # Num disco liso GRANDE (raio macro ≫ raio de regularização) o encolhimento por
+        # curvatura é desprezível — não rói a forma real (≈ caso do contorno do thermpro).
+        disk = [(260 + 200 * math.cos(2 * math.pi * k / 720),
+                 260 + 200 * math.sin(2 * math.pi * k / 720)) for k in range(720)]
+        mask = self._mask_from_poly(disk)
+        before = int(np.count_nonzero(mask))
+        after = int(np.count_nonzero(P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM)))
+        self.assertLess(abs(after - before) / before, 0.03)
+
+    def test_regularize_noop_when_zero(self):
+        mask = self._mask_from_poly([(10, 10), (120, 14), (118, 122), (14, 118)])
+        out = P.regularize_silhouette(mask, 0.0, ppmm=P.PX_PER_MM)
+        self.assertTrue(np.array_equal(out, mask))
+
+
 class TestScaleAndHomography(unittest.TestCase):
     def test_px_per_mm(self):
         self.assertAlmostEqual(P.px_per_mm(45.0, 10.0), 4.5, places=6)

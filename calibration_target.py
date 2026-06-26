@@ -18,6 +18,14 @@
 
 from dataclasses import dataclass
 
+
+def fmt_mm(v):
+    """Formata um número (mm) para SVG: 4 casas, sem zeros/ponto à direita, '-0'→'0'.
+    Fonte ÚNICA do formato — usada pelo renderizador do alvo E pelo photo_to_outline."""
+    s = f"{v:.4f}".rstrip("0").rstrip(".")
+    return "0" if s in ("-0", "") else s
+
+
 # A4 em mm (paisagem é o padrão — foi o que o usuário já imprimiu).
 A4_LANDSCAPE = (297.0, 210.0)
 A4_PORTRAIT = (210.0, 297.0)

@@ -98,6 +98,16 @@ silhueta **suavizada**:
 - **Rampa adaptativa (2º lever):** mesma lógica de inversão. Direção padrão ↓. Piso ~2 (abaixo
   de ~1 reintroduz serrilha); teto ~10. Engaja quando min-dist (1ª) esgotou.
 
+### `--mask-smooth-mm <mm>`  · default `0.0` (off)  ·  **regulariza a SILHUETA (não a curva)**
+Suaviza a forma da **máscara** ANTES de extrair o contorno: borra o campo de distância com sinal
+e re-corta em 0, removendo **saliências e ondulações** de amplitude menor que este raio. Atua na
+**fonte** — diferente do `--smooth-mm`, que age na curva já extraída.
+- **Quando usar:** borda **PRETA** de baixo contraste (carcaça/borracha) que sai **ondulada** mesmo
+  com o contém em 0.9999 — a segmentação serrilha onde o objeto quase se funde com a sombra.
+- **Valor:** `~1.5–2` limpa o thermpro sem arredondar os cantos macro (raio ≫ valor). `0` = desligado.
+- **Ortogonal ao contém:** não é um lever das rampas; some com a ondulação **mantendo** o contém
+  (a peça continua contida; o pocket ainda dilata a folga). Não mexa nas rampas por causa disto.
+
 ### `--clearance <mm>`  · default `0.0`
 Folga **externa** aplicada ao contorno. **Padrão 0 = tamanho REAL** (sem ganho). A folga de
 encaixe da impressão é aplicada **depois** (a jusante no OpenSCAD, ou à mão). Mexa só se quiser

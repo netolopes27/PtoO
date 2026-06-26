@@ -6,6 +6,10 @@ Guia para o Claude Code (claude.ai/code) neste repositório.
 > CLIs (em **inglês**); [docs/design.md](docs/design.md) — arquitetura, API, pipeline,
 > constantes, decisões, testes; [docs/historico.md](docs/historico.md) — evolução e roadmap.
 > Consulte-os ao mexer no comportamento.
+>
+> **Skill `/ptoo`** (`.claude/skills/ptoo/`, doc própria no `SKILL.md`): calibrador iterativo que
+> dirige a CLI a partir de uma foto rumo a um pocket justo, inspecionando o contorno com zoom.
+> Invocação: `/ptoo <foto.jpg> --pass N [--debug]`. Não altera a CLI (o `--debug` só *propõe*).
 
 ## O que é
 

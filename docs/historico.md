@@ -117,6 +117,32 @@ parâmetro**.
   Béziers, bbox = objeto. Com `--shadow remove` a borda arredondada entra dos dois lados e a
   sombra de contato cinza fica de fora.
 
+## Skill `/ptoo` — calibrador iterativo (camada de workflow)
+
+Acertar os parâmetros para um **pocket justo** exigia tentativa-e-erro manual (rodar → olhar o
+overlay → ajustar flag → repetir). Virou uma **skill do Claude Code** em
+`.claude/skills/ptoo/` (não toca na CLI; só a dirige). Invocação: `/ptoo <foto.jpg> --pass N
+[--debug]`. Doc própria no `SKILL.md`; aqui só o registro da evolução.
+
+- **Laço automático:** por passe roda a CLI (`--inkscape --debug-dir`), parseia as métricas do
+  stdout (objeto, pocket, clearance, contém) e **inspeciona o contorno emitido com zoom** sobre a
+  foto retificada, lado a lado com o segmentado (`scripts/zoom.py`, helper cv2 que rasteriza os
+  Béziers do overlay editável — não há rasterizador SVG no ambiente). Diagnostica por uma tabela
+  de heurísticas (sintoma → Δparâmetro) e recalibra em até `--pass N` tentativas.
+- **Memória pequena** (`memory.md`, < 100 linhas): um **`start` dinâmico** = a melhor aposta atual
+  (não um valor fixo — é o consenso/média recomputado do cache: mediana dos numéricos, maioria dos
+  categóricos) + cache "último-bom" por objeto (≤5, evicta o mais antigo) + heurísticas. Começa
+  perto do alvo em runs futuros: objeto conhecido parte da sua linha de cache; objeto novo, do
+  `start`. Quanto mais objetos no cache, melhor a aposta.
+- **Modo `--debug`:** além de calibrar, gera diagnóstico crítico da CLI (prosa com `file:line` +
+  patch proposto, **não** aplicado) e grava um plano da **próxima versão decimal** em
+  `docs/melhorias/v<next>.md` (incrementa só o decimal; a parte inteira é decisão do usuário).
+- **Calibrado no thermpro:** alvo = pocket justo (clearance perto de 0). Aprendizados fixados na
+  memória/heurísticas: o teto prático de `contém` é ~**0.998** (`POCKET_EPS` deixa a curva
+  tocar/cortar ≤0.5 mm) — não exigir 0.999; a folga do **bbox** (cantos arredondados) só cede com
+  `--max-nodes` **alto** (saltar p/ 200–300, não ×2 — ×2 só aperta os lados/`contém`); e avaliar
+  **simetria no 1º passe** (`--symmetry vertical` levou o thermpro de 0.9980 → 0.9982).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) pode confundir-se com o miolo branco — uma

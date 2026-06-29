@@ -783,6 +783,83 @@ class TestEndToEndThermpro(unittest.TestCase):
         self.assertLess(abs(pw - tw), 2.0)
         self.assertLess(abs(ph - th), 2.0)
 
+    def test_dense_pocket_contour_is_simple(self):
+        # REGRESSÃO v0.4 (de-loop): com âncoras DENSAS (--min-dist pequeno) os handles
+        # estufados se ultrapassavam → o contorno emitido cruzava a si mesmo (8 cruzamentos
+        # medidos). O contorno fechado tem de ser SIMPLES (dentro/fora bem definido p/ o
+        # boolean a jusante). Aqui a foto real, antes quebrada, sai sem auto-interseção.
+        cub = P.fit_closed_beziers_anchored(self.sil, smooth_mm=2.0, min_dist_mm=0.6)
+        self.assertGreater(len(cub), 50)                       # de fato densa
+        self.assertEqual(P._self_intersecting_indices(cub), set())
+        # E a peça continua contida (de-loop só encurta handles → não expõe a peça).
+        self.assertGreaterEqual(P.coverage(P.flatten_beziers(cub, seg=40), self.sil), 0.99)
+
+
+class TestSelfIntersectionGuard(unittest.TestCase):
+    """v0.4 Etapa 0 — contorno SIMPLES (sem auto-sobreposição). Um caminho fechado que se
+    cruza tem dentro/fora ambíguo → pocket inválido p/ o boolean a jusante."""
+    LOOP = ((0.0, 0.0), (6.0, 2.0), (-4.0, 2.0), (2.0, 0.0))   # handles cruzados → laço
+    ARC = ((0.0, 0.0), (1.0, 2.0), (3.0, 2.0), (4.0, 0.0))     # arco simples
+
+    def test_cubic_is_simple_detects_loop(self):
+        self.assertFalse(P._cubic_is_simple(self.LOOP))
+        self.assertTrue(P._cubic_is_simple(self.ARC))
+
+    def test_cap_handles_removes_loop(self):
+        # Limitar o handle a 0.40·corda já desfaz o laço do ajuste base.
+        self.assertTrue(P._cubic_is_simple(P._cap_handles(self.LOOP)))
+
+    def test_shrink_keeps_endpoints_and_tangent_direction(self):
+        # Encurtar handles preserva pontas (p0,p3) e a DIREÇÃO da tangente (mantém G1).
+        b = P._shrink_handles(self.ARC, 0.5)
+        self.assertEqual((b[0], b[3]), (self.ARC[0], self.ARC[3]))
+        v0 = (self.ARC[1][0] - self.ARC[0][0], self.ARC[1][1] - self.ARC[0][1])
+        v1 = (b[1][0] - b[0][0], b[1][1] - b[0][1])
+        self.assertAlmostEqual(v0[0] * v1[1] - v0[1] * v1[0], 0.0, places=9)  # colineares
+        self.assertLess(math.hypot(*v1), math.hypot(*v0))                     # mais curto
+
+    def test_repair_removes_crossings(self):
+        # Contorno fechado CONECTADO (pontas encadeadas) com um trecho laçado fica SIMPLES
+        # após o reparo global — os demais lados são retas e não se cruzam.
+        def lin(p0, p3):
+            return (p0, (p0[0] + (p3[0] - p0[0]) / 3, p0[1] + (p3[1] - p0[1]) / 3),
+                    (p0[0] + 2 * (p3[0] - p0[0]) / 3, p0[1] + 2 * (p3[1] - p0[1]) / 3), p3)
+        cubics = [self.LOOP, lin((2, 0), (2, -4)), lin((2, -4), (0, -4)), lin((0, -4), (0, 0))]
+        self.assertIn(0, P._self_intersecting_indices(cubics))   # laço presente antes
+        fixed = P._repair_self_intersections(cubics)
+        self.assertEqual(P._self_intersecting_indices(fixed), set())
+
+
+class TestValFrac(unittest.TestCase):
+    """v0.4 Etapa 1 — --val-frac captura CORPO CINZA-NEUTRO de baixo contraste."""
+    @staticmethod
+    def _gray_body_scene():
+        # Fundo branco; corpo cinza neutro grande (V≈0.67·fundo, sem croma) e um NÚCLEO
+        # escuro pequeno (V baixo) no meio — réplica do caso da trena (carcaça cinza + botão).
+        import cv2
+        H, W = 480, 400
+        hsv = np.zeros((H, W, 3), np.uint8)
+        hsv[:, :, 0] = 15
+        hsv[:, :, 2] = 240                                  # fundo branco
+        hsv[140:340, 120:280, 1] = 12                       # corpo: cinza dessaturado
+        hsv[140:340, 120:280, 2] = 160                      #        V ≈ 0.67·fundo
+        hsv[220:260, 180:220, 1] = 12                       # núcleo escuro (botão)
+        hsv[220:260, 180:220, 2] = 40
+        return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+    def test_default_misses_gray_body_high_captures_it(self):
+        scene = self._gray_body_scene()
+        lo = int((P.segment_tool(scene, val_frac=0.30) > 0).sum())   # só o núcleo
+        hi = int((P.segment_tool(scene, val_frac=0.75) > 0).sum())   # corpo inteiro
+        self.assertGreater(hi, 5 * lo)
+
+    def test_default_param_is_seg_val_frac(self):
+        # Default inalterado → zero regressão nas peças cromáticas (thermpro).
+        scene = self._gray_body_scene()
+        a = P.segment_tool(scene)
+        b = P.segment_tool(scene, val_frac=P.SEG_VAL_FRAC)
+        self.assertTrue(bool((a == b).all()))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

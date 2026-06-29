@@ -146,9 +146,16 @@ polui o contorno.
   erro).
 - **Pocket ancorado (modo padrão):** `fit_closed_beziers_anchored(silhouette, smooth_mm,
   simplify_mm, eps, faithful=False, min_dist_mm)`; helpers `_quadrant_anchors`,
-  `_protrusion_anchors`, `_fit_anchored`, `_one_cubic_contained`, `_anchor_tangents`
+  `_protrusion_anchors`, `_fit_anchored`, `_one_cubic_contained` (estufa p/ conter, com
+  **guarda de simplicidade**: handle ≤ `ANCHOR_HANDLE_CAP`·corda via `_cap_handles` e rejeição
+  de candidatos que se auto-cruzam por `_cubic_is_simple`), `_anchor_tangents`
   (tangente compartilhada → nó G1), `_anchor_segments`. Modo fiel (`faithful=True`):
   `hull_anchor_indices` (fecho convexo via RDP) + `_fit_segment_contained`.
+- **De-loop (contorno simples):** após montar/espelhar as cúbicas, `_repair_self_intersections`
+  encurta (`_shrink_handles`) os handles das cúbicas que se cruzam — laço próprio ou com vizinha
+  a ≤ janela de índice (`_self_intersecting_indices`, base `_segments_cross`) — até o caminho
+  fechado ficar **sem auto-sobreposição** (dentro/fora bem definido p/ o boolean a jusante).
+  Handle só encurta → a curva anda p/ dentro, mantendo a contenção.
 - **Mínimo por contenção (`--tol-fit`):** `fit_closed_beziers_contained(guide, silhouette,
   c_fit, eps)`; `_floor_field` (profundidade via `distanceTransform`),
   `_max_penetration`/`_beziers_max_penetration`.
@@ -192,12 +199,13 @@ intermediários. Marcadores insuficientes → aborta com mensagem clara. (Guia d
 
 `PX_PER_MM = 8.0` (resolução do canvas) · `DICT_NAME = "DICT_4X4_50"` · `MIN_MARKERS = 8` ·
 `TILT_WARN_DEG = 5.0` · `SEG_SAT_MARGIN = 45` / `SEG_VAL_FRAC = 0.30` (colorido OU escuro vs
-fundo) · `SEG_VAL_WEAK_FRAC = 0.65` / `SEG_WEAK_SAT_MIN = 35` / `SEG_SHADOW_GROW_MM = 3.0`
+fundo; default do `--val-frac`, suba p/ corpo cinza-neutro) · `SEG_VAL_WEAK_FRAC = 0.65` / `SEG_WEAK_SAT_MIN = 35` / `SEG_SHADOW_GROW_MM = 3.0`
 (histerese do `--shadow remove`) · `SEG_HUE_MARGIN = 25` / `SEG_HUE_SAT_MIN = 60` (matiz) ·
 `ILLUM_SCALE = 0.125` / `ILLUM_KERNEL_FRAC = 0.9` / `ILLUM_MAX_GAIN = 3.0` (flat-field) ·
 `SYM_SEARCH_MM = 4.0` · `MIN_RADIUS_MM = 1.5` · `SMOOTH_MM = 8.0` · `CLEARANCE_MM = 0.0` (sem
 ganho) · `ANCHOR_SIMPLIFY_MM = 2.0` (modo fiel) · `ANCHOR_EPS_MM = 0.08` (fiel)
-· `POCKET_EPS_MM = 0.5` (penetração tolerada) · `ANCHOR_MIN_DIST_MM = 10.0` (densidade do pocket) ·
+· `POCKET_EPS_MM = 0.5` (penetração tolerada) · `ANCHOR_HANDLE_CAP = 0.40` (teto do handle =
+fração da corda, anti-laço) · `ANCHOR_MIN_DIST_MM = 10.0` (densidade do pocket) ·
 `PROTRUSION_DEV_MM = 0.8` (proeminência mín.) · `CONTAIN_COVERAGE = 0.99` (abaixo,
 avisa) · `FIT_TOL_MM = 0.2` · `BEZIER_GUIDE_MM = 0.5` · `CORNER_ANGLE_DEG = 40.0` ·
 `RASTER_PPM = 16.0` · `OUTLINE_COLOR = "#ff00ff"` / `OUTLINE_FILL_OPACITY = 0.25`.

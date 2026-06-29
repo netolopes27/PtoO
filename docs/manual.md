@@ -33,6 +33,21 @@ cinza** (que fica de fora, sem afrouxar o pocket).
 - **Efeito:** sobe a fidelidade da silhueta → pocket mais correto. Quase sempre `remove` em peças
   reais fotografadas.
 
+### `--val-frac <f>`  · default `0.30`
+Corte de **valor** do predicado "escuro" da segmentação: um pixel é objeto se `V ≤ f × fundo`.
+- **O que faz:** `0.30` (default) exclui a **sombra de contato** em peças **cromáticas** (a cor já
+  entra pela saturação/matiz, então o corte escuro só precisa pegar o miolo preto real).
+- **Quando subir (~0.7–0.8):** **corpo cinza-neutro** de baixo contraste (carcaça plástica que vive
+  em `V≈0.6–0.7×fundo` e **sem croma** → não passa por `colored`/`chromatic` nem pelo corte
+  default). Foi o caso da `trena`: em `0.30` só o botão metálico central era segmentado; em `0.75`
+  a carcaça inteira aparece.
+- **Cuidado:** acima do nível que pega o corpo, a **sombra de contato** (também cinza) pode **vazar**
+  → pocket inflado em fotos de fundo sujo. Pareie com `--mask-smooth-mm` p/ limpar a borda
+  corpo↔sombra; em fundo muito claro funciona bem. O caminho robusto p/ peça cinza é **refotografar
+  sobre fundo escuro/contrastante** (aí o corpo vira `dark` no default).
+- **Interação:** ortogonal a `--shadow` (a histerese cresce por **croma**, não ajuda em cinza; em
+  peça cinza costuma-se usar `--shadow off`).
+
 ### `--symmetry {none,vertical,horizontal,both}`  · default `none`
 Impõe a simetria do objeto: **espelha e faz a MÉDIA das duas metades** (duas amostras do mesmo
 contorno → menos ruído). `vertical` = eixo vertical (metades esq./dir.), `horizontal` = topo/baixo,

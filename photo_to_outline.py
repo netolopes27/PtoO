@@ -56,10 +56,14 @@ DICT_NAME = "DICT_4X4_50"  # dicionário ArUco da base; DEVE casar com a impress
 MIN_MARKERS = 8            # mínimo de marcadores detectados p/ homografia confiável
 TILT_WARN_DEG = 5.0        # avisa se a câmera passou disto do nadir (paralaxe cresce)
 SEG_SAT_MARGIN = 45        # saturação ACIMA do fundo (branco) → pixel colorido = objeto
-SEG_VAL_FRAC = 0.30        # brilho ABAIXO de SEG_VAL_FRAC × fundo → pixel escuro = objeto.
-                           # 0.30 (não 0.5): exclui a SOMBRA DE CONTATO (faixa fofa V≈90-130
-                           # na base da peça) mantendo o corpo preto real (V≈30-50) — sem ela
-                           # o teste de escuro abocanhava a sombra e serrilhava a base.
+SEG_VAL_FRAC = 0.30        # DEFAULT do corte escuro (flag --val-frac): brilho ABAIXO de
+                           # SEG_VAL_FRAC × fundo → pixel escuro = objeto. 0.30 (não 0.5): exclui
+                           # a SOMBRA DE CONTATO (faixa fofa V≈90-130 na base da peça) mantendo o
+                           # corpo preto real (V≈30-50) — sem ela o teste de escuro abocanhava a
+                           # sombra e serrilhava a base. SUBA (~0.7-0.8) p/ capturar CORPOS
+                           # CINZA-NEUTROS de baixo contraste (V≈0.6-0.7·fundo, sem croma p/ os
+                           # outros predicados); aí pareie com --mask-smooth-mm e atente que a
+                           # sombra de contato pode vazar. Ver docs/melhorias/v0.4.md.
 SEG_VAL_WEAK_FRAC = 0.65   # corte FRACO da histerese de borda (--shadow): V abaixo disto (não é
                            # papel claro) E com croma continua sendo objeto. Cresce a borda
                            # arredondada (bisel preto no topo, toe laranja no fundo) pela rampa até
@@ -102,6 +106,10 @@ ANCHOR_EPS_MM = 0.08       # penetração máx. (mm) tolerada no piso ao ajustar
 POCKET_EPS_MM = 0.5        # penetração tolerada (mm) no modo POCKET de encaixe: a curva pode
                             # TOCAR/cortar de leve a peça em vez de estufar p/ fora a span inteira
                             # por ruído sub-mm → pocket bem mais justo, ainda contendo ~0.998
+ANCHOR_HANDLE_CAP = 0.40   # teto do comprimento de cada handle = fração da corda do trecho. Acima
+                           # da "regra de 1/3" (0.333), folgado p/ não engessar a curvatura útil,
+                           # mas abaixo do ponto onde um handle longo demais faz a cúbica laçar
+                           # sozinha (auto-cruzamento). Ver _cap_handles / _one_cubic_contained.
 ANCHOR_MIN_DIST_MM = 10.0  # distância mínima (mm) entre âncoras DO MESMO QUADRANTE — a ÚNICA
                             # alavanca de densidade do pocket: cada quadrante recebe TODAS as
                             # extremidades a ≥ este valor umas das outras (sem teto de nós).
@@ -577,7 +585,7 @@ def normalize_illumination(img, scale=ILLUM_SCALE, kernel_frac=ILLUM_KERNEL_FRAC
     return out
 
 
-def segment_tool(img, deshadow=False, debug_dir=None):
+def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None):
     """Estágio 2: máscara da ferramenta sobre o miolo BRANCO da base. O fundo é
     branco conhecido e o objeto está centrado, então a MOLDURA da borda do canvas é
     fundo puro — amostrada p/ modelar o branco (auto-adapta ao balanço de branco e à
@@ -610,7 +618,7 @@ def segment_tool(img, deshadow=False, debug_dir=None):
     dh = np.minimum(dh, 180 - dh)                 # distância CIRCULAR de matiz (0..90)
     colored = S >= bg_s + SEG_SAT_MARGIN          # laranja/colorido saturado
     chromatic = (dh >= SEG_HUE_MARGIN) & (S >= SEG_HUE_SAT_MIN)  # matiz quente ≠ fundo (borda c/ realce)
-    dark = V <= SEG_VAL_FRAC * bg_v               # núcleo preto/escuro certo
+    dark = V <= val_frac * bg_v                   # núcleo escuro (default 0.30; --val-frac sobe p/ cinza)
     if deshadow:
         # Histerese (estilo Canny) p/ recuperar a BORDA arredondada do objeto, dos DOIS
         # lados, com o MESMO separador físico (croma). A borda vira p/ a base e cai no VÃO
@@ -791,6 +799,64 @@ def bezier_point(bez, t):
     c0, c1, c2, c3 = _bernstein3(t)
     return (c0 * b0[0] + c1 * b1[0] + c2 * b2[0] + c3 * b3[0],
             c0 * b0[1] + c1 * b1[1] + c2 * b2[1] + c3 * b3[1])
+
+
+def _segments_cross(p1, p2, p3, p4):
+    """True se os segmentos abertos p1p2 e p3p4 se cruzam ESTRITAMENTE (sem contar
+    toque nas pontas) — usado p/ detectar auto-sobreposição de polilinhas/cúbicas."""
+    d = (p2[0] - p1[0]) * (p4[1] - p3[1]) - (p2[1] - p1[1]) * (p4[0] - p3[0])
+    if abs(d) < 1e-12:
+        return False
+    t = ((p3[0] - p1[0]) * (p4[1] - p3[1]) - (p3[1] - p1[1]) * (p4[0] - p3[0])) / d
+    u = ((p3[0] - p1[0]) * (p2[1] - p1[1]) - (p3[1] - p1[1]) * (p2[0] - p1[0])) / d
+    return 1e-6 < t < 1 - 1e-6 and 1e-6 < u < 1 - 1e-6
+
+
+def _cubic_is_simple(bez, nsamp=16):
+    """True se a cúbica NÃO se auto-cruza (sem laço/cusp) em t∈(0,1). Amostra a curva e
+    testa cruzamento de cordas não adjacentes — handles longos demais (estufamento p/
+    conter) ou tangentes que discordam da corda criam um laço; aqui ele é rejeitado.
+    O par de pontas compartilhadas (1ª×última corda) é ignorado: tocam-se só nos nós."""
+    pts = [bezier_point(bez, k / nsamp) for k in range(nsamp + 1)]
+    for i in range(len(pts) - 1):
+        for j in range(i + 2, len(pts) - 1):
+            if i == 0 and j == len(pts) - 2:
+                continue
+            if _segments_cross(pts[i], pts[i + 1], pts[j], pts[j + 1]):
+                return False
+    return True
+
+
+def _shrink_handles(bez, factor):
+    """Puxa os DOIS handles em direção à corda (alpha·factor), mantendo a DIREÇÃO das
+    tangentes (preserva G1) — só encurta, então a curva anda p/ DENTRO, nunca expõe a
+    peça. `factor=1` é a cúbica original; `factor→0` tende à reta da corda."""
+    p0, c1, c2, p3 = bez
+    return (p0,
+            (p0[0] + (c1[0] - p0[0]) * factor, p0[1] + (c1[1] - p0[1]) * factor),
+            (p3[0] + (c2[0] - p3[0]) * factor, p3[1] + (c2[1] - p3[1]) * factor),
+            p3)
+
+
+def _cap_handles(bez, cap=None):
+    """Limita o comprimento de cada handle a `cap`·corda (regra de 1/3 folgada): um handle
+    longo demais p/ a corda já produz laço antes mesmo do estufamento. Só ENCURTA handles
+    que excedem o teto, mantendo a direção das tangentes (G1)."""
+    cap = ANCHOR_HANDLE_CAP if cap is None else cap
+    p0, c1, c2, p3 = bez
+    L = math.hypot(p3[0] - p0[0], p3[1] - p0[1])
+    if L < 1e-9:
+        return bez
+
+    def clamp(anchor, ctrl):
+        vx, vy = ctrl[0] - anchor[0], ctrl[1] - anchor[1]
+        d = math.hypot(vx, vy)
+        if d > cap * L and d > 1e-9:
+            s = cap * L / d
+            return (anchor[0] + vx * s, anchor[1] + vy * s)
+        return ctrl
+
+    return (p0, clamp(p0, c1), clamp(p3, c2), p3)
 
 
 def _unit(v):
@@ -1117,6 +1183,132 @@ def _quadrant_anchors(rp, min_dist_mm=ANCHOR_MIN_DIST_MM):
     return sorted(kept)
 
 
+def cubic_roots(A, B, C, D):
+    roots = []
+    if abs(A) < 1e-9:
+        if abs(B) < 1e-9:
+            if abs(C) > 1e-9:
+                t = -D / C
+                if 0 <= t <= 1: roots.append(t)
+            return roots
+        det = C*C - 4*B*D
+        if det >= 0:
+            t1 = (-C + math.sqrt(det)) / (2*B)
+            t2 = (-C - math.sqrt(det)) / (2*B)
+            for t in (t1, t2):
+                if 0 <= t <= 1: roots.append(t)
+        return roots
+        
+    p = (3*A*C - B*B) / (3*A*A)
+    q = (2*B*B*B - 9*A*B*C + 27*A*A*D) / (27*A*A*A)
+    det = (q*q)/4 + (p*p*p)/27
+    
+    if det > 0:
+        u1 = -q/2 + math.sqrt(det)
+        u1 = math.copysign(abs(u1)**(1/3), u1)
+        u2 = -q/2 - math.sqrt(det)
+        u2 = math.copysign(abs(u2)**(1/3), u2)
+        t = u1 + u2 - B/(3*A)
+        roots.append(t)
+    elif det == 0:
+        u = math.copysign(abs(-q/2)**(1/3), -q/2)
+        roots.append(2*u - B/(3*A))
+        roots.append(-u - B/(3*A))
+    else:
+        r = math.sqrt(-(p*p*p)/27)
+        phi = math.acos(max(-1.0, min(1.0, -q / (2*r))))
+        rho = 2 * math.sqrt(-p/3)
+        roots.append(rho * math.cos(phi/3) - B/(3*A))
+        roots.append(rho * math.cos((phi + 2*math.pi)/3) - B/(3*A))
+        roots.append(rho * math.cos((phi + 4*math.pi)/3) - B/(3*A))
+        
+    return [t for t in roots if 0 <= t <= 1]
+
+def _get_bezier_poly(bez, axis_idx):
+    p0, p1, p2, p3 = [p[axis_idx] for p in bez]
+    A = -p0 + 3*p1 - 3*p2 + p3
+    B = 3*p0 - 6*p1 + 3*p2
+    C = -3*p0 + 3*p1
+    D = p0
+    return A, B, C, D
+
+def _split_cubic(bez, t):
+    p0, p1, p2, p3 = bez
+    p01 = (p0[0] + t*(p1[0]-p0[0]), p0[1] + t*(p1[1]-p0[1]))
+    p12 = (p1[0] + t*(p2[0]-p1[0]), p1[1] + t*(p2[1]-p1[1]))
+    p23 = (p2[0] + t*(p3[0]-p2[0]), p2[1] + t*(p3[1]-p2[1]))
+    p012 = (p01[0] + t*(p12[0]-p01[0]), p01[1] + t*(p12[1]-p01[1]))
+    p123 = (p12[0] + t*(p23[0]-p12[0]), p12[1] + t*(p23[1]-p12[1]))
+    p0123 = (p012[0] + t*(p123[0]-p012[0]), p012[1] + t*(p123[1]-p012[1]))
+    return (p0, p01, p012, p0123), (p0123, p123, p23, p3)
+
+def symmetrize_beziers(cubics, axis, c):
+    if not cubics: return []
+    axis_idx = 0 if axis == 'vertical' else 1
+    split_cubics = []
+    for bez in cubics:
+        A, B, C, D = _get_bezier_poly(bez, axis_idx)
+        D -= c
+        roots = cubic_roots(A, B, C, D)
+        valid_roots = sorted(list(set([t for t in roots if 1e-5 < t < 1 - 1e-5])))
+        
+        if not valid_roots:
+            split_cubics.append(bez)
+            continue
+            
+        rem = bez
+        t_offset = 0.0
+        for t in valid_roots:
+            t_rel = (t - t_offset) / (1.0 - t_offset)
+            left, right = _split_cubic(rem, t_rel)
+            cross_pt = list(left[3])
+            cross_pt[axis_idx] = c
+            p2 = list(left[2])
+            p2[1 - axis_idx] = cross_pt[1 - axis_idx]
+            left = (left[0], left[1], tuple(p2), tuple(cross_pt))
+            p1 = list(right[1])
+            p1[1 - axis_idx] = cross_pt[1 - axis_idx]
+            right = (tuple(cross_pt), tuple(p1), right[2], right[3])
+            split_cubics.append(left)
+            rem = right
+            t_offset = t
+        split_cubics.append(rem)
+        
+    is_right = []
+    for bez in split_cubics:
+        bx, by = bezier_point(bez, 0.5)
+        v = bx if axis == 'vertical' else by
+        is_right.append(v >= c - 1e-7)
+        
+    n = len(split_cubics)
+    if all(is_right) or not any(is_right): return cubics
+        
+    start_idx = 0
+    for i in range(n):
+        if is_right[i] and not is_right[(i - 1) % n]:
+            start_idx = i
+            break
+            
+    rotated = split_cubics[start_idx:] + split_cubics[:start_idx]
+    rotated_is_right = is_right[start_idx:] + is_right[:start_idx]
+    
+    right_cubics = []
+    for i in range(n):
+        if rotated_is_right[i]: right_cubics.append(rotated[i])
+        else: break
+            
+    left_cubics = []
+    for bez in reversed(right_cubics):
+        mirrored = []
+        for p in reversed(bez):
+            mx = 2*c - p[0] if axis == 'vertical' else p[0]
+            my = 2*c - p[1] if axis == 'horizontal' else p[1]
+            mirrored.append((mx, my))
+        left_cubics.append(tuple(mirrored))
+        
+    return right_cubics + left_cubics
+
+
 def _protrusion_anchors(rp, min_dev_mm, span_mm=ANCHOR_MIN_DIST_MM):
     """Âncoras de CONVEXIDADE LOCAL (saliências) que o seletor radial por quadrante
     (`_quadrant_anchors`) não pega: um ressalto no MEIO de uma aresta não é 'externo ao
@@ -1171,21 +1363,32 @@ def _one_cubic_contained(seg, field, eps):
     `eps`, ESTUFA p/ fora alongando os handles em torno das âncoras — mantém a DIREÇÃO
     das tangentes (segue G1) e empurra a curva p/ fora até conter a peça. Garante o
     requisito do pocket: a peça cabe (a forma só fica do tamanho real ou maior, nunca
-    cortando p/ dentro). Devolve a de menor penetração se nem a estufada máxima contiver."""
+    cortando p/ dentro). Devolve a de menor penetração se nem a estufada máxima contiver.
+
+    GUARDA DE SIMPLICIDADE (v0.4): o ajuste base tem o handle LIMITADO a `ANCHOR_HANDLE_CAP`·
+    corda (handle longo demais já nasce laçado) e, no estufamento, candidatos que se
+    AUTO-CRUZAM (`_cubic_is_simple` falso) são rejeitados — prefere-se o simples que contém;
+    se nenhum simples contém, o simples de menor penetração (um laço nunca é resposta: a curva
+    só pode estar do tamanho real ou maior, então o trecho simples ainda contém ~a peça)."""
     pts, t1, t2 = seg
-    p0, c1, c2, p3 = _fit_one_cubic(pts, _chord_params(pts), t1, t2)
-    best_bez, best_pen = None, float("inf")
+    p0, c1, c2, p3 = _cap_handles(_fit_one_cubic(pts, _chord_params(pts), t1, t2))
+    best_bez, best_pen = None, float("inf")            # melhor SIMPLES (não-laçado)
+    fallback_bez, fallback_pen = None, float("inf")    # melhor de todos (se nenhum simples)
     for scale in (1.0, 1.25, 1.6, 2.0, 2.6, 3.4, 4.5, 6.0):
         bez = (p0,
                (p0[0] + (c1[0] - p0[0]) * scale, p0[1] + (c1[1] - p0[1]) * scale),
                (p3[0] + (c2[0] - p3[0]) * scale, p3[1] + (c2[1] - p3[1]) * scale),
                p3)
         pen = _beziers_max_penetration([bez], field)
+        if pen < fallback_pen:
+            fallback_pen, fallback_bez = pen, bez
+        if not _cubic_is_simple(bez):                  # rejeita laço/cusp
+            continue
         if pen <= eps:
             return bez
         if pen < best_pen:
             best_pen, best_bez = pen, bez
-    return best_bez
+    return best_bez if best_bez is not None else fallback_bez
 
 
 def _fit_anchored(rp, field, eps, min_dist_mm=ANCHOR_MIN_DIST_MM):
@@ -1206,11 +1409,63 @@ def _fit_anchored(rp, field, eps, min_dist_mm=ANCHOR_MIN_DIST_MM):
             for s in _anchor_segments(rp, anchors, tang)]
 
 
+def _self_intersecting_indices(cubics, window=8, nsamp=20):
+    """Índices das cúbicas envolvidas em alguma AUTO-SOBREPOSIÇÃO do contorno fechado:
+    laço próprio (`_cubic_is_simple` falso) OU cruzamento com uma vizinha a ≤ `window` de
+    índice (onde os cruzamentos reais ocorrem — handles de trechos próximos se ultrapassam
+    numa aresta de baixa curvatura). Ignora o TOQUE legítimo no nó compartilhado entre
+    cúbicas consecutivas. Janela limitada → O(n·window), não O(n²)."""
+    n = len(cubics)
+    polys = [[bezier_point(b, k / nsamp) for k in range(nsamp + 1)] for b in cubics]
+    bad = set()
+    for i in range(n):
+        if not _cubic_is_simple(cubics[i]):
+            bad.add(i)
+        Pi = polys[i]
+        for dj in range(1, min(window, n)):
+            j = (i + dj) % n
+            Pj = polys[j]
+            crossed = False
+            for a in range(len(Pi) - 1):
+                for b in range(len(Pj) - 1):
+                    if dj == 1 and a == len(Pi) - 2 and b == 0:
+                        continue                       # nó compartilhado i→i+1
+                    if dj == n - 1 and a == 0 and b == len(Pj) - 2:
+                        continue                       # nó compartilhado da emenda
+                    if _segments_cross(Pi[a], Pi[a + 1], Pj[b], Pj[b + 1]):
+                        crossed = True
+                        break
+                if crossed:
+                    break
+            if crossed:
+                bad.add(i)
+                bad.add(j)
+    return bad
+
+
+def _repair_self_intersections(cubics, window=8, max_iter=12):
+    """Passe global anti-auto-sobreposição (v0.4): enquanto houver cúbicas que se cruzam,
+    ENCURTA os handles das envolvidas em direção à corda. Handle só encurta → a curva anda
+    p/ DENTRO (nunca expõe a peça além do que já estava), então a contenção se mantém. Pega
+    os cruzamentos de VIZINHAS que a guarda por-segmento de `_one_cubic_contained` não
+    enxerga. Converge em poucas iterações (0.7 por passo); para no teto de iterações."""
+    cubs = list(cubics)
+    if len(cubs) < 3:
+        return cubs
+    for _ in range(max_iter):
+        bad = _self_intersecting_indices(cubs, window)
+        if not bad:
+            break
+        for i in bad:
+            cubs[i] = _shrink_handles(cubs[i], 0.7)
+    return cubs
+
+
 def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
                                 simplify_mm=ANCHOR_SIMPLIFY_MM, eps=ANCHOR_EPS_MM,
                                 step=0.4, ppm=12.0, faithful=False,
                                 min_dist_mm=ANCHOR_MIN_DIST_MM,
-                                pocket_eps=POCKET_EPS_MM):
+                                pocket_eps=POCKET_EPS_MM, symmetry='none'):
     """Ajuste com TODOS os nós SUAVES (G1), contendo a peça. Devolve lista de
     (p0,c1,c2,p3) no referencial da silhueta; o snap de bbox (depois) fixa a dimensão real.
 
@@ -1230,15 +1485,30 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
         return []
     field = _floor_field(clean, 0.0, ppm)        # piso de contenção = peça denoisada
     if not faithful:                             # POCKET de encaixe (âncoras por quadrante)
-        return _fit_anchored(rp, field, pocket_eps, min_dist_mm=min_dist_mm)
-    # FIEL/ilimitado: âncoras do fecho convexo + subdivisão por contenção (legado).
-    anchors = hull_anchor_indices(rp, simplify_mm=simplify_mm)
-    if len(anchors) < 2:
-        anchors = [0, n // 2]
-    tang = _anchor_tangents(rp, anchors)         # tangente suave (marcha) por âncora
-    cubics = []
-    for seg, t1, t2 in _anchor_segments(rp, anchors, tang):
-        _fit_segment_contained(seg, t1, t2, field, eps, cubics)
+        cubics = _fit_anchored(rp, field, pocket_eps, min_dist_mm=min_dist_mm)
+    else:
+        # FIEL/ilimitado: âncoras do fecho convexo + subdivisão por contenção (legado).
+        anchors = hull_anchor_indices(rp, simplify_mm=simplify_mm)
+        if len(anchors) < 2:
+            anchors = [0, n // 2]
+        tang = _anchor_tangents(rp, anchors)         # tangente suave (marcha) por âncora
+        cubics = []
+        for seg, t1, t2 in _anchor_segments(rp, anchors, tang):
+            _fit_segment_contained(seg, t1, t2, field, eps, cubics)
+            
+    if symmetry and symmetry != 'none':
+        min_x, min_y, max_x, max_y = bbox(silhouette)
+        if symmetry == 'both':
+            cubics = symmetrize_beziers(cubics, 'vertical', 0.5 * (min_x + max_x))
+            cubics = symmetrize_beziers(cubics, 'horizontal', 0.5 * (min_y + max_y))
+        else:
+            c = 0.5 * (min_x + max_x) if symmetry == 'vertical' else 0.5 * (min_y + max_y)
+            cubics = symmetrize_beziers(cubics, symmetry, c)
+
+    # De-loop: garante um contorno fechado SIMPLES (sem auto-cruzar) — exigência geométrica
+    # do pocket (dentro/fora bem definido p/ o boolean a jusante). Roda após a simetria p/
+    # também limpar cruzamentos na emenda das metades espelhadas.
+    cubics = _repair_self_intersections(cubics)
     return cubics
 
 
@@ -1274,15 +1544,15 @@ _ANCHORED_CACHE = {}
 
 
 def fit_anchored_cached(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
-                        faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM):
+                        faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM, symmetry='none'):
     """Wrapper memoizado de `fit_closed_beziers_anchored` (mesma assinatura/retorno)."""
     key = (tuple(map(tuple, sil)), round(smooth_mm, 6), round(simplify_mm, 6),
-           bool(faithful), round(min_dist_mm, 6), round(pocket_eps, 6))
+           bool(faithful), round(min_dist_mm, 6), round(pocket_eps, 6), symmetry)
     cached = _ANCHORED_CACHE.get(key)
     if cached is None:
         cached = fit_closed_beziers_anchored(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
                                              faithful=faithful, min_dist_mm=min_dist_mm,
-                                             pocket_eps=pocket_eps)
+                                             pocket_eps=pocket_eps, symmetry=symmetry)
         _ANCHORED_CACHE.clear()
         _ANCHORED_CACHE[key] = cached
     return cached
@@ -1291,7 +1561,7 @@ def fit_anchored_cached(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM
 def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                    silhouette=None, c_fit=0.3, anchored=True,
                    smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
-                   min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM):
+                   min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM, symmetry='none'):
     """Estágio 5: SVG em mm — contorno + PREENCHIMENTO translúcido (`OUTLINE_COLOR` a
     `OUTLINE_FILL_OPACITY`, cor destacada quase transparente p/ sobrepor o objeto e
     conferir cobertura), feito SÓ de curvas de Bézier cúbicas (`C`). Com `silhouette`:
@@ -1312,7 +1582,8 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
         if anchored:
             cubics = fit_anchored_cached(silhouette, smooth_mm=smooth_mm,
                                          simplify_mm=simplify_mm, faithful=faithful,
-                                         min_dist_mm=min_dist_mm, pocket_eps=pocket_eps)
+                                         min_dist_mm=min_dist_mm, pocket_eps=pocket_eps,
+                                         symmetry=symmetry)
         else:
             cubics = fit_closed_beziers_contained(p, silhouette, c_fit=c_fit)
         if cubics and not pocket:                 # snap p/ a dimensão real (exceto encaixe)
@@ -1406,7 +1677,7 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      smooth_mm=SMOOTH_MM, clearance=CLEARANCE_MM, symmetry="none",
                      deshadow=False, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
                      min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
-                     mask_smooth_mm=MASK_SMOOTH_MM,
+                     mask_smooth_mm=MASK_SMOOTH_MM, val_frac=SEG_VAL_FRAC,
                      overlay_path=None, overlay_svg_path=None, debug_dir=None,
                      return_silhouette=False):
     """Pipeline completo → lista de pontos (x,y) em mm. Usado pelos testes E pelo CLI.
@@ -1420,7 +1691,7 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     img = load_image(in_path)
     rect, mmpp_x, mmpp_y, _conf = rectify(img, dict_name=dict_name, debug_dir=debug_dir)
     flat = normalize_illumination(rect, debug_dir=debug_dir)
-    mask = segment_tool(flat, deshadow=deshadow, debug_dir=debug_dir)
+    mask = segment_tool(flat, deshadow=deshadow, val_frac=val_frac, debug_dir=debug_dir)
     if symmetry and symmetry != "none":
         mask = symmetrize_mask(mask, symmetry, ppmm=1.0 / mmpp_x, debug_dir=debug_dir)
     if mask_smooth_mm and mask_smooth_mm > 0:
@@ -1490,6 +1761,12 @@ def main(argv=None):
                          "LARANJA dessaturado no fundo) — só pelos pixels COM CROMA — recuperando "
                          "a borda real que o corte único comia, e PARANDO na sombra de contato "
                          "cinza (que fica de fora, sem afrouxar o pocket). PADRÃO off.")
+    ap.add_argument("--val-frac", dest="val_frac", type=float, default=SEG_VAL_FRAC,
+                    help="corte de VALOR p/ pixel escuro = objeto (V ≤ val_frac × fundo). PADRÃO "
+                         "0.30 (exclui a sombra de contato em peças CROMÁTICAS). SUBA (~0.7-0.8) "
+                         "p/ capturar CORPO CINZA-NEUTRO de baixo contraste, que não tem croma p/ "
+                         "os outros predicados; pareie com --mask-smooth-mm p/ limpar a borda "
+                         "corpo↔sombra. Acima disso a sombra de contato pode vazar.")
     ap.add_argument("--symmetry", dest="symmetry", default="none",
                     choices=["none", "vertical", "horizontal", "both"],
                     help="impõe a simetria do objeto: espelha e faz a MÉDIA das duas metades "
@@ -1557,7 +1834,7 @@ def main(argv=None):
                                     deshadow=(args.shadow == "remove"),
                                     simplify_mm=args.simplify, faithful=args.faithful,
                                     min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps,
-                                    mask_smooth_mm=args.mask_smooth_mm,
+                                    mask_smooth_mm=args.mask_smooth_mm, val_frac=args.val_frac,
                                     overlay_path=overlay_path,
                                     overlay_svg_path=overlay_svg_path,
                                     debug_dir=args.debug_dir, return_silhouette=True)
@@ -1579,7 +1856,7 @@ def main(argv=None):
                          silhouette=floor, c_fit=args.c_fit, anchored=anchored,
                          smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
                          faithful=args.faithful, min_dist_mm=args.min_dist,
-                         pocket_eps=args.pocket_eps)
+                         pocket_eps=args.pocket_eps, symmetry=args.symmetry)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(svg)
     # Saída COMPACTA e parseável (a skill /ptoo lê isto a cada passo): uma linha de status,
@@ -1593,7 +1870,8 @@ def main(argv=None):
     elif anchored:
         cub = fit_anchored_cached(sil, smooth_mm=args.smooth_mm,
                                   simplify_mm=args.simplify, faithful=args.faithful,
-                                  min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps)
+                                  min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps,
+                                  symmetry=args.symmetry)
         if cub and not pocket:                      # mesma geometria do SVG emitido
             cub = _scale_cubics_to_bbox(cub, *size(sil))
         cov = coverage(flatten_beziers(cub), sil)

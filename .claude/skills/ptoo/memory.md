@@ -18,7 +18,7 @@ CONDICIONAL: --symmetry vertical (n=1); desligar em peça assimétrica (distorce
 
 ## cache último-bom (≤5 linhas; evicta a mais antiga; 1 linha por objeto)
 <!-- formato: - ~WxH mm | <params> | contém=0.NNNN clearance=+x/+y -->
-- ~67.62x70.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --symmetry vertical --mask-smooth-mm 2 | contém=1.0000 clearance=-0.08/+0.01
+- ~67.62x70.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --symmetry vertical --mask-smooth-mm 2 | contém=0.9999 clearance=-0.06/+0.01
 
 ## heurísticas (sintoma → delta)  — estável, não duplicar
 - RAMPAS ADAPTATIVAS com INVERSÃO: 1ª --min-dist (piso 1, teto ~10) → 2ª --smooth-mm (piso ~2,

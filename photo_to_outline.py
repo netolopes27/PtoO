@@ -78,6 +78,18 @@ SEG_SHADOW_GROW_MM = 3.0   # alcance MÁX. do crescimento da histerese a partir 
                            # de saturação (SEG_WEAK_SAT_MIN) o crescimento é AUTO-LIMITADO — para no
                            # papel claro e não entra na sombra cinza, então 3 mm cobre a borda dos dois
                            # lados sem risco de inflar (medido: topo +2.6 mm preto, fundo +0.4 mm toe).
+SEG_TEX_WIN = 9            # janela (px) do DESVIO-PADRÃO local de V que mede TEXTURA no modo
+                           # `--shadow texture` (a peça é texturizada; sombra/papel são lisos).
+SEG_TEX_GAIN = 6.0         # escala do mapa de textura (std→0..255) antes do Otsu; só normaliza
+                           # o histograma p/ o limiar adaptativo, não muda a separação.
+SEG_TEX_BG_FRAC = 0.93     # o Otsu do limiar de textura roda SÓ sobre o que não é papel claro
+                           # (V < frac·fundo), p/ o histograma não ser dominado pelo oceano liso.
+SEG_TEX_BODY_FRAC = 0.80   # corte de VALOR do corpo no modo textura: V ≤ frac·fundo = candidato a
+                           # corpo (cinza-neutro escuro, INCLUSIVE o liso que a textura perderia).
+SEG_TEX_LIGHT_FRAC = 0.70  # a sombra PROJETADA é LISA e mais clara que isto·fundo (~0.8-0.9): o
+                           # recorte tira do corpo só o que é (liso E mais claro) → rejeita a sombra
+                           # sem comer o corpo escuro. (Sombra de CONTATO é escura → fora deste termo;
+                           # pendência da v0.5, ver docs/melhorias/v0.5.md.)
 ILLUM_SCALE = 0.125        # escala reduzida p/ estimar o campo de luz (só velocidade)
 ILLUM_KERNEL_FRAC = 0.9    # kernel do closing ≈ fração do maior lado; DEVE cobrir o objeto
 ILLUM_MAX_GAIN = 3.0       # teto do ganho da divisão (não amplifica ruído/JPEG nas zonas escuras)
@@ -595,13 +607,17 @@ def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None):
     morfologia (abre respingos, fecha vãos), maior componente conectado e preenche
     buracos internos (display, texto) p/ um contorno cheio.
 
-    `deshadow=True` liga a HISTERESE de borda: a borda arredondada que vira p/ a base cai
-    no VÃO entre `colored` e `dark` (o corte único a come e serrilha) dos DOIS lados — o
-    BISEL PRETO no topo (escurece, mas com croma) e o TOE LARANJA no fundo (dessatura, mas
-    com croma). A histerese cresce os DOIS núcleos (preto `dark` + colorido `colored`) pelos
-    pixels "fracos" — não-claros (≤ SEG_VAL_WEAK_FRAC·fundo) E COM CROMA (S ≥ SEG_WEAK_SAT_MIN)
-    — recuperando a borda real e PARANDO na sombra de contato CINZA desaturada da base (que
-    fica de fora; se entrasse, só deixaria o pocket frouxo)."""
+    `deshadow` ∈ {False/"off", True/"remove", "texture"} (True = "remove", compat. retro):
+
+    - **"remove"** liga a HISTERESE de borda por CROMA: a borda arredondada que vira p/ a base
+      cai no VÃO entre `colored` e `dark` (o corte único a come e serrilha) dos DOIS lados — o
+      BISEL PRETO no topo (escurece, mas com croma) e o TOE LARANJA no fundo (dessatura, mas
+      com croma). A histerese cresce os DOIS núcleos (preto `dark` + colorido `colored`) pelos
+      pixels "fracos" — não-claros (≤ SEG_VAL_WEAK_FRAC·fundo) E COM CROMA (S ≥ SEG_WEAK_SAT_MIN)
+      — recuperando a borda real e PARANDO na sombra de contato CINZA desaturada da base.
+    - **"texture"** (v0.5, p/ corpo CINZA-NEUTRO sem croma): VALOR pega o corpo escuro inteiro e a
+      TEXTURA (std local de V, limiar Otsu adaptativo) RECORTA do corpo as regiões LISAS-E-mais-
+      CLARAS = sombra PROJETADA. Ver docs/melhorias/v0.5.md."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     H = hsv[:, :, 0].astype(np.int16)
     S = hsv[:, :, 1].astype(np.int16)
@@ -619,27 +635,55 @@ def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None):
     colored = S >= bg_s + SEG_SAT_MARGIN          # laranja/colorido saturado
     chromatic = (dh >= SEG_HUE_MARGIN) & (S >= SEG_HUE_SAT_MIN)  # matiz quente ≠ fundo (borda c/ realce)
     dark = V <= val_frac * bg_v                   # núcleo escuro (default 0.30; --val-frac sobe p/ cinza)
-    if deshadow:
-        # Histerese (estilo Canny) p/ recuperar a BORDA arredondada do objeto, dos DOIS
-        # lados, com o MESMO separador físico (croma). A borda vira p/ a base e cai no VÃO
-        # entre `colored` e `dark`, então o corte único a perde e serrilha:
-        #   • TOPO  — BISEL PRETO: escurece (V cai) mas mantém croma → semeado por `dark`.
-        #   • FUNDO — TOE LARANJA: dessatura (S cai p/ ~40) e escurece um pouco → o corte
-        #             `colored` (S alto) o larga; semeado por `colored`.
-        # Os dois NÚCLEOS (preto + colorido) crescem pelos pixels "fracos" — não-claros
-        # (V ≤ WEAK·fundo, exclui o papel) E COM CROMA (S ≥ SAT_MIN) — por ALCANCE LIMITADO
-        # (dilatação geodésica). O piso de saturação é o que separa o PLÁSTICO (croma → entra,
-        # recupera a borda real) da SOMBRA DE CONTATO cinza desaturada (S≈25 → barrada): o
-        # crescimento para exatamente na sombra. Sem ele inundaria o anel de sombra e deixaria
-        # o pocket frouxo (medido: base inflava +2 mm; topo recupera ~2.6 mm de preto real).
-        weak = ((V <= SEG_VAL_WEAK_FRAC * bg_v) & (S >= SEG_WEAK_SAT_MIN)).astype(np.uint8) * 255
-        core = ((dark | colored).astype(np.uint8) * 255)        # núcleo: preto (topo) E colorido (fundo)
-        seed = cv2.bitwise_and(core, weak)
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        for _ in range(max(1, int(round(SEG_SHADOW_GROW_MM * PX_PER_MM)))):
-            seed = cv2.bitwise_and(cv2.dilate(seed, k), weak)   # cresce 1px, contido em weak
-        dark = dark | (seed > 0)                                # une a borda recuperada ao núcleo
-    tool = (colored | chromatic | dark).astype(np.uint8) * 255
+    # deshadow ∈ {False/"off", True/"remove", "texture"}. True = "remove" (compat. retro dos testes).
+    mode = "remove" if deshadow is True else (deshadow or "off")
+    if mode == "texture":
+        # VALOR-primário + TEXTURA-subtratora-de-sombra (v0.5; corpos CINZA-NEUTROS, sem croma).
+        # O valor pega o corpo escuro INTEIRO (inclusive o liso, que a textura sozinha perde); a
+        # TEXTURA (std local de V) então RECORTA do corpo as regiões que são ao mesmo tempo LISAS
+        # (textura < limiar Otsu ADAPTATIVO da própria foto) E mais CLARAS (V > LIGHT·fundo) — i.e.
+        # a SOMBRA PROJETADA, que tem o mesmo brilho do corpo mas é lisa. Inverte o papel da textura:
+        # de crescedor/localizador p/ SUBTRATOR de sombra. Ver docs/melhorias/v0.5.md ("4ª foto").
+        Vd = cv2.bilateralFilter(V.astype(np.uint8), 7, 40, 7).astype(np.float32)  # denoise preserva borda
+        win = (SEG_TEX_WIN, SEG_TEX_WIN)
+        mu = cv2.boxFilter(Vd, -1, win)
+        mu2 = cv2.boxFilter(Vd * Vd, -1, win)
+        tex = np.sqrt(np.maximum(mu2 - mu * mu, 0.0))            # desvio-padrão local de V
+        tex_u = np.clip(tex * SEG_TEX_GAIN, 0, 255).astype(np.uint8)
+        not_bg = Vd < SEG_TEX_BG_FRAC * bg_v
+        if int(np.count_nonzero(not_bg)) >= 50:
+            th, _ = cv2.threshold(tex_u[not_bg], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        else:
+            th = 0.0                                             # nada p/ separar → não recorta
+        body_val = Vd < SEG_TEX_BODY_FRAC * bg_v
+        shadow_like = (tex_u < th) & (Vd > SEG_TEX_LIGHT_FRAC * bg_v)   # liso E mais claro = sombra
+        # O recorte vale p/ TODO o candidato (valor OU croma), não só o valor: em fundo de papel
+        # CROMÁTICO (lavanda saturada) a sombra projetada também fica cromática → sem subtrair do
+        # `colored|chromatic` ela voltaria por essa porta. A textura é o único cue que a separa.
+        cand = body_val | colored | chromatic
+        tool = (cand & ~shadow_like).astype(np.uint8) * 255
+    else:
+        if mode == "remove":
+            # Histerese (estilo Canny) p/ recuperar a BORDA arredondada do objeto, dos DOIS
+            # lados, com o MESMO separador físico (croma). A borda vira p/ a base e cai no VÃO
+            # entre `colored` e `dark`, então o corte único a perde e serrilha:
+            #   • TOPO  — BISEL PRETO: escurece (V cai) mas mantém croma → semeado por `dark`.
+            #   • FUNDO — TOE LARANJA: dessatura (S cai p/ ~40) e escurece um pouco → o corte
+            #             `colored` (S alto) o larga; semeado por `colored`.
+            # Os dois NÚCLEOS (preto + colorido) crescem pelos pixels "fracos" — não-claros
+            # (V ≤ WEAK·fundo, exclui o papel) E COM CROMA (S ≥ SAT_MIN) — por ALCANCE LIMITADO
+            # (dilatação geodésica). O piso de saturação é o que separa o PLÁSTICO (croma → entra,
+            # recupera a borda real) da SOMBRA DE CONTATO cinza desaturada (S≈25 → barrada): o
+            # crescimento para exatamente na sombra. Sem ele inundaria o anel de sombra e deixaria
+            # o pocket frouxo (medido: base inflava +2 mm; topo recupera ~2.6 mm de preto real).
+            weak = ((V <= SEG_VAL_WEAK_FRAC * bg_v) & (S >= SEG_WEAK_SAT_MIN)).astype(np.uint8) * 255
+            core = ((dark | colored).astype(np.uint8) * 255)    # núcleo: preto (topo) E colorido (fundo)
+            seed = cv2.bitwise_and(core, weak)
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            for _ in range(max(1, int(round(SEG_SHADOW_GROW_MM * PX_PER_MM)))):
+                seed = cv2.bitwise_and(cv2.dilate(seed, k), weak)   # cresce 1px, contido em weak
+            dark = dark | (seed > 0)                            # une a borda recuperada ao núcleo
+        tool = (colored | chromatic | dark).astype(np.uint8) * 255
 
     # Abertura remove respingos finos; fechamento tapa vãos internos do corpo.
     tool = cv2.morphologyEx(tool, cv2.MORPH_OPEN,
@@ -676,6 +720,11 @@ def _signed_distance(mask):
     inside = cv2.distanceTransform(mask, cv2.DIST_L2, 5).astype(np.float32)
     outside = cv2.distanceTransform(255 - mask, cv2.DIST_L2, 5).astype(np.float32)
     return inside - outside
+
+
+def _mask_from_sdf(sdf):
+    """Re-binariza um campo de distância com sinal em máscara 0/255 (corte em 0)."""
+    return (sdf >= 0.0).astype(np.uint8) * 255
 
 
 def _reflect_mask(mask, axis, c):
@@ -716,7 +765,7 @@ def symmetrize_mask(mask, axis, ppmm=PX_PER_MM, search_mm=SYM_SEARCH_MM, debug_d
 
     refl = _reflect_mask(mask, axis, best_c)
     sdf = 0.5 * (_signed_distance(mask) + _signed_distance(refl))
-    out = (sdf >= 0.0).astype(np.uint8) * 255
+    out = _mask_from_sdf(sdf)
     if debug_dir:
         os.makedirs(debug_dir, exist_ok=True)
         dbg = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
@@ -726,18 +775,26 @@ def symmetrize_mask(mask, axis, ppmm=PX_PER_MM, search_mm=SYM_SEARCH_MM, debug_d
     return out
 
 
-def regularize_silhouette(mask, radius_mm, ppmm=PX_PER_MM, debug_dir=None):
+def regularize_silhouette(mask, radius_mm, ppmm=PX_PER_MM, debug_dir=None,
+                          preserve_convex=False):
     """Suaviza a SILHUETA da máscara borrando o campo de distância com sinal (reusa
     `_signed_distance`) e re-cortando em 0. Remove saliências e reentrâncias de amplitude
     < `radius_mm` de forma ISOTRÓPICA — some com as ondulações da borda serrilhada (típicas
     na carcaça PRETA, onde o contraste contra a sombra é baixo) SEM arredondar os cantos
     macro (raio ≫ radius_mm). É ortogonal ao `--smooth-mm` (que age na curva já extraída):
-    aqui a forma é limpa na FONTE, antes de extrair o contorno. `radius_mm` ≤ 0 = no-op."""
+    aqui a forma é limpa na FONTE, antes de extrair o contorno. `radius_mm` ≤ 0 = no-op.
+
+    `preserve_convex=True` (v0.5, Etapa B): em vez do borrado puro, toma `max(sdf, blur)` —
+    um *closing* no campo de distância. Só preenche REENTRÂNCIAS (côncavas, ruído da serrilha)
+    e PRESERVA os RESSALTOS convexos (ex.: a aba lateral da peça), que o borrado isotrópico
+    arredondaria junto. Cuidado: também mantém picos de ruído convexo (raros sub-mm)."""
     if not radius_mm or radius_mm <= 0:
         return mask
     sdf = _signed_distance(mask)
-    sdf = cv2.GaussianBlur(sdf, (0, 0), sigmaX=radius_mm * ppmm)
-    out = (sdf >= 0.0).astype(np.uint8) * 255
+    blur = cv2.GaussianBlur(sdf, (0, 0), sigmaX=radius_mm * ppmm)
+    # max(sdf,blur) = closing no SDF: escolhe o mais "dentro" → enche côncavos, mantém convexos.
+    sdf = np.maximum(sdf, blur) if preserve_convex else blur
+    out = _mask_from_sdf(sdf)
     if debug_dir:
         os.makedirs(debug_dir, exist_ok=True)
         cv2.imwrite(os.path.join(debug_dir, "02c_regularized.png"), out)
@@ -1677,7 +1734,8 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      smooth_mm=SMOOTH_MM, clearance=CLEARANCE_MM, symmetry="none",
                      deshadow=False, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
                      min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
-                     mask_smooth_mm=MASK_SMOOTH_MM, val_frac=SEG_VAL_FRAC,
+                     mask_smooth_mm=MASK_SMOOTH_MM, mask_smooth_keep_bumps=False,
+                     val_frac=SEG_VAL_FRAC,
                      overlay_path=None, overlay_svg_path=None, debug_dir=None,
                      return_silhouette=False):
     """Pipeline completo → lista de pontos (x,y) em mm. Usado pelos testes E pelo CLI.
@@ -1695,7 +1753,8 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     if symmetry and symmetry != "none":
         mask = symmetrize_mask(mask, symmetry, ppmm=1.0 / mmpp_x, debug_dir=debug_dir)
     if mask_smooth_mm and mask_smooth_mm > 0:
-        mask = regularize_silhouette(mask, mask_smooth_mm, ppmm=1.0 / mmpp_x, debug_dir=debug_dir)
+        mask = regularize_silhouette(mask, mask_smooth_mm, ppmm=1.0 / mmpp_x,
+                                     debug_dir=debug_dir, preserve_convex=mask_smooth_keep_bumps)
     if overlay_path:
         write_overlay(rect, mask, overlay_path)
     sil = extract_outline(mask, mmpp_x, mmpp_y, debug_dir=debug_dir)
@@ -1755,12 +1814,14 @@ def main(argv=None):
                     help="folga externa (mm). PADRÃO 0 = tamanho REAL (sem ganho); "
                          "a folga de encaixe é aplicada DEPOIS (a jusante no OpenSCAD, ou à mão)")
     ap.add_argument("--shadow", dest="shadow", default="off",
-                    choices=["off", "remove"],
-                    help="'remove' liga a HISTERESE de borda: cresce os núcleos preto E colorido "
-                         "pela borda arredondada que vira p/ a base (bisel PRETO no topo, toe "
-                         "LARANJA dessaturado no fundo) — só pelos pixels COM CROMA — recuperando "
-                         "a borda real que o corte único comia, e PARANDO na sombra de contato "
-                         "cinza (que fica de fora, sem afrouxar o pocket). PADRÃO off.")
+                    choices=["off", "remove", "texture"],
+                    help="'remove' = HISTERESE de borda por CROMA: cresce os núcleos preto E "
+                         "colorido pela borda arredondada que vira p/ a base (bisel PRETO no topo, "
+                         "toe LARANJA dessaturado no fundo), recuperando a borda que o corte único "
+                         "comia e PARANDO na sombra de contato cinza. 'texture' = SUBTRATOR de "
+                         "sombra p/ CORPO CINZA-NEUTRO sem croma: o valor pega o corpo e a TEXTURA "
+                         "(std local de V, limiar Otsu adaptativo) RECORTA a sombra PROJETADA (lisa "
+                         "e mais clara) que o --val-frac sozinho engloba. PADRÃO off.")
     ap.add_argument("--val-frac", dest="val_frac", type=float, default=SEG_VAL_FRAC,
                     help="corte de VALOR p/ pixel escuro = objeto (V ≤ val_frac × fundo). PADRÃO "
                          "0.30 (exclui a sombra de contato em peças CROMÁTICAS). SUBA (~0.7-0.8) "
@@ -1809,6 +1870,10 @@ def main(argv=None):
                          "saliências/ondulações de amplitude < este valor na borda da máscara "
                          "(carcaça PRETA de baixo contraste) sem arredondar os cantos. Ortogonal "
                          "ao --smooth-mm. PADRÃO 0 (off); ~1.5-2 limpa a borda preta do thermpro.")
+    ap.add_argument("--mask-smooth-keep-bumps", dest="mask_smooth_keep_bumps", action="store_true",
+                    help="enviesa o --mask-smooth-mm p/ FECHAMENTO (closing no campo de distância): "
+                         "remove só as REENTRÂNCIAS côncavas (serrilha) e PRESERVA os ressaltos "
+                         "convexos (ex.: a aba lateral), que o modo isotrópico arredondaria. PADRÃO off.")
     ap.add_argument("--name", dest="name")
     ap.add_argument("--debug-dir", dest="debug_dir")
     args = ap.parse_args(argv)
@@ -1831,10 +1896,12 @@ def main(argv=None):
         pts, sil = generate_outline(args.in_path, dict_name=args.dict_name,
                                     min_radius=args.min_radius, smooth_mm=args.smooth_mm,
                                     clearance=args.clearance, symmetry=args.symmetry,
-                                    deshadow=(args.shadow == "remove"),
+                                    deshadow=(False if args.shadow == "off" else args.shadow),
                                     simplify_mm=args.simplify, faithful=args.faithful,
                                     min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps,
-                                    mask_smooth_mm=args.mask_smooth_mm, val_frac=args.val_frac,
+                                    mask_smooth_mm=args.mask_smooth_mm,
+                                    mask_smooth_keep_bumps=args.mask_smooth_keep_bumps,
+                                    val_frac=args.val_frac,
                                     overlay_path=overlay_path,
                                     overlay_svg_path=overlay_svg_path,
                                     debug_dir=args.debug_dir, return_silhouette=True)

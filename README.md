@@ -145,9 +145,10 @@ PNGs for diagnosis).
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--shadow` | `off` | `remove` turns on **edge hysteresis**: recovers the rounded edge curving toward the base (black bevel on top, desaturated orange toe at the bottom), growing only through chroma pixels and **stopping at the gray contact shadow** |
+| `--shadow` | `off` | `remove` = **edge hysteresis** by chroma: recovers the rounded edge curving toward the base (black bevel on top, desaturated orange toe at the bottom), growing only through chroma pixels and **stopping at the gray contact shadow**. `texture` = **shadow subtractor** for **gray-neutral bodies**: value grabs the dark body, then local-texture (adaptive Otsu threshold) **carves out** the smooth-and-lighter cast shadow that a plain value cut would swallow — works even over a chromatic paper background |
 | `--symmetry` | `none` | `vertical`/`horizontal`/`both`: mirrors the mask and **averages the halves** (less noise). Use on symmetric parts |
 | `--mask-smooth-mm` | `0.0` (off) | **regularizes the silhouette** before tracing: blurs the signed-distance field and re-thresholds, removing bumps/waviness smaller than the radius from the **mask** itself. Use when a low-contrast **black** edge comes out wavy even at high containment; `~1.5–2` cleans it without rounding macro corners. Orthogonal to `--smooth-mm` (which acts on the curve) and to containment |
+| `--mask-smooth-keep-bumps` | off | biases `--mask-smooth-mm` toward **closing** (a closing on the distance field): removes only **concave** dents (noise) while **preserving convex bumps** (e.g. a side tab) that the isotropic mode would round off |
 
 **Outline shape:**
 

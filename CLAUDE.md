@@ -37,7 +37,7 @@ O fluxo termina no SVG; levar para OpenSCAD é trabalho de um exportador externo
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt   # Windows; Linux/Mac: .venv/bin/python
 
-# Suíte completa (esperado: 78 testes, OK)
+# Suíte completa (deve ficar 100% verde; contagem canônica em docs/design.md §Testes)
 .venv/Scripts/python tests/run_image_tests.py
 
 # Um único teste (sempre com o venv)

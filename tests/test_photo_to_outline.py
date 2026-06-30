@@ -467,6 +467,45 @@ class TestRegularizeSilhouette(unittest.TestCase):
         out = P.regularize_silhouette(mask, 0.0, ppmm=P.PX_PER_MM)
         self.assertTrue(np.array_equal(out, mask))
 
+    # --- Etapa B (v0.5): preservar RESSALTOS convexos -------------------------
+    @staticmethod
+    def _bump_and_notch():
+        """Bloco macro com um RESSALTO convexo (sai do topo) e um ENTALHE côncavo
+        (entra pela base), ambos de amplitude sub-raio. A regularização isotrópica
+        apaga os DOIS; enviesada p/ fechamento deve apagar só o entalhe (côncavo) e
+        PRESERVAR o ressalto (convexo, ex.: a aba lateral da peça)."""
+        import cv2
+        m = np.zeros((400, 400), np.uint8)
+        cv2.rectangle(m, (100, 100), (300, 300), 255, -1)      # corpo macro
+        cv2.rectangle(m, (180, 84), (210, 100), 255, -1)       # ressalto convexo (16 px p/ cima)
+        cv2.rectangle(m, (140, 284), (170, 300), 0, -1)        # entalhe côncavo (16 px p/ dentro)
+        return m
+
+    def test_regularize_preserves_convex_bump(self):
+        mask = self._bump_and_notch()
+        iso = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM, preserve_convex=False)
+        keep = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM, preserve_convex=True)
+        # ponta do ressalto convexo: sobrevive SÓ no modo enviesado p/ fechamento
+        self.assertGreater(int(keep[88, 195]), 0)
+        self.assertEqual(int(iso[88, 195]), 0)
+
+    def test_regularize_fills_concave_notch_either_way(self):
+        mask = self._bump_and_notch()
+        iso = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM, preserve_convex=False)
+        keep = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM, preserve_convex=True)
+        # topo (extremo FECHADO) do entalhe côncavo: preenchido nos DOIS modos — o closing
+        # tampa a reentrância de amplitude < raio (a "boca" na borda fica aberta, por isso
+        # amostro perto do fundo do entalhe, não na boca).
+        self.assertGreater(int(iso[287, 155]), 0)
+        self.assertGreater(int(keep[287, 155]), 0)
+
+    def test_regularize_preserve_convex_default_off(self):
+        # default preserve_convex=False = comportamento atual inalterado (byte-a-byte).
+        mask = self._bump_and_notch()
+        a = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM)
+        b = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM, preserve_convex=False)
+        self.assertTrue(np.array_equal(a, b))
+
 
 class TestScaleAndHomography(unittest.TestCase):
     def test_px_per_mm(self):
@@ -698,6 +737,60 @@ class TestRimToeHysteresis(unittest.TestCase):
         # não invade a faixa de sombra (auto-limitação pelo piso de saturação).
         _, bot_on = self._top_bot(self.on)
         self.assertLess(bot_on, self.b["shadow"][0] + 4)
+
+
+# =============================================================================
+# B3. SUBTRATOR DE SOMBRA POR TEXTURA (--shadow texture, v0.5): corpo CINZA-NEUTRO
+#     sem croma. VALOR pega o corpo (inclusive liso); a TEXTURA (limiar Otsu
+#     adaptativo) RECORTA as regiões LISAS-E-mais-CLARAS = sombra PROJETADA, que o
+#     corte de valor sozinho englobaria. Discriminador = textura (std local de V),
+#     não croma nem valor. Doc: docs/melhorias/v0.5.md ("4ª foto").
+# =============================================================================
+def _texture_shadow_scene():
+    """Fundo branco (V=200). CORPO cinza-neutro ESCURO e TEXTURADO (colunas
+    alternadas 60/140 → desvio-padrão local alto) encostado, à direita, numa
+    SOMBRA projetada cinza-neutra LISA e mais clara (V=150, sem textura). Os dois
+    caem sob o corte de valor (V < 0.80·fundo = 160) — então o valor sozinho UNE
+    corpo+sombra. Só a textura separa: o corpo acende, a sombra lisa é recortada."""
+    import cv2
+    H, W = 480, 440
+    hsv = np.zeros((H, W, 3), np.uint8)
+    hsv[:, :, 0] = 15
+    hsv[:, :, 1] = 0
+    hsv[:, :, 2] = 200                                  # fundo branco neutro
+    # corpo texturado (colunas de 3 px alternando 60/140; amplitude > sigmaColor do
+    # bilateral → a textura sobrevive ao denoise)
+    for c in range(120, 220):
+        hsv[100:300, c, 2] = 60 if (c // 3) % 2 == 0 else 140
+    hsv[100:300, 220:320, 2] = 150                      # sombra projetada LISA, mais clara
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+class TestTextureShadowSubtractor(unittest.TestCase):
+    """`--shadow texture`: valor pega o corpo cinza, textura recorta a sombra lisa."""
+    BODY = (200, 170)      # (linha, coluna) no meio do corpo texturado
+    SHADOW = (200, 270)    # no meio da sombra projetada lisa
+
+    def setUp(self):
+        self.scene = _texture_shadow_scene()
+
+    def test_texture_keeps_body(self):
+        tex = P.segment_tool(self.scene, deshadow="texture")
+        self.assertGreater(int(tex[self.BODY]), 0)        # corpo cinza é segmentado
+
+    def test_texture_subtracts_smooth_light_shadow(self):
+        # O corte de VALOR sozinho (sem textura) engloba a sombra lisa mais clara;
+        # o modo textura a RECORTA. É o ganho central da v0.5.
+        val = P.segment_tool(self.scene, deshadow=False, val_frac=0.80)
+        tex = P.segment_tool(self.scene, deshadow="texture")
+        self.assertGreater(int(val[self.SHADOW]), 0)      # valor sozinho VAZA a sombra
+        self.assertEqual(int(tex[self.SHADOW]), 0)        # textura REJEITA a sombra
+
+    def test_texture_is_opt_in(self):
+        # default (deshadow=False) não roda o caminho de textura: a sombra lisa
+        # continua vazando — prova que 'texture' é opcional e não regride os modos atuais.
+        off = P.segment_tool(self.scene, deshadow=False, val_frac=0.80)
+        self.assertGreater(int(off[self.SHADOW]), 0)
 
 
 # =============================================================================

@@ -23,15 +23,28 @@
 
 ## 1. Detecção e segmentação (o que o tool "enxerga" da peça)
 
-### `--shadow {off,remove}`  · default `off`
-Liga a **histerese de borda**: cresce os núcleos preto E colorido pela borda arredondada que vira
-para a base (bisel preto no topo, *toe* laranja dessaturado no fundo), **só pelos pixels com
-croma**, recuperando a borda real que o corte único comia — e **parando na sombra de contato
-cinza** (que fica de fora, sem afrouxar o pocket).
-- **Quando usar:** a borda arredondada some / a segmentação "come" a peça; peça com bisel escuro.
+### `--shadow {off,remove,texture}`  · default `off`
+Estratégia de separação **corpo ↔ sombra** na segmentação.
+
+**`remove` — histerese de borda por CROMA.** Cresce os núcleos preto E colorido pela borda
+arredondada que vira para a base (bisel preto no topo, *toe* laranja dessaturado no fundo), **só
+pelos pixels com croma**, recuperando a borda real que o corte único comia — e **parando na sombra
+de contato cinza** (que fica de fora, sem afrouxar o pocket).
+- **Quando usar:** a borda arredondada some / a segmentação "come" a peça; peça **cromática** com
+  bisel escuro. Quase sempre `remove` em peças coloridas reais.
 - **Sintoma oposto:** com `remove`, se a sombra cinza vazasse, ela é barrada (não vaza).
-- **Efeito:** sobe a fidelidade da silhueta → pocket mais correto. Quase sempre `remove` em peças
-  reais fotografadas.
+
+**`texture` — subtrator de sombra por TEXTURA (v0.5).** Para **corpo cinza-neutro sem croma**, onde
+nem croma nem valor separam o corpo da sombra projetada (mesmo brilho). O **valor** pega o corpo
+escuro inteiro (inclusive o liso) e a **textura** (desvio-padrão local de V, limiar **Otsu
+adaptativo** da própria foto) **recorta** as regiões ao mesmo tempo **lisas E mais claras** = a
+sombra projetada. O recorte vale p/ todo o candidato (valor **ou** croma), então funciona até com
+fundo de papel cromático (a sombra sobre o papel lavanda também é cromática, mas é lisa → recortada).
+- **Quando usar:** corpo cinza-neutro **com sombra projetada** que `--val-frac` sozinho engloba.
+  Substitui o antigo paliativo `--val-frac 0.68 --shadow off`.
+- **Pendência conhecida:** a sombra de **contato** é *escura* (não "mais clara") → ainda fora do
+  termo de recorte; em peça cinza com sombra de contato, avaliar caso a caso.
+- **Efeito geral:** sobe a fidelidade da silhueta → pocket mais correto.
 
 ### `--val-frac <f>`  · default `0.30`
 Corte de **valor** do predicado "escuro" da segmentação: um pixel é objeto se `V ≤ f × fundo`.
@@ -43,10 +56,10 @@ Corte de **valor** do predicado "escuro" da segmentação: um pixel é objeto se
   a carcaça inteira aparece.
 - **Cuidado:** acima do nível que pega o corpo, a **sombra de contato** (também cinza) pode **vazar**
   → pocket inflado em fotos de fundo sujo. Pareie com `--mask-smooth-mm` p/ limpar a borda
-  corpo↔sombra; em fundo muito claro funciona bem. O caminho robusto p/ peça cinza é **refotografar
-  sobre fundo escuro/contrastante** (aí o corpo vira `dark` no default).
-- **Interação:** ortogonal a `--shadow` (a histerese cresce por **croma**, não ajuda em cinza; em
-  peça cinza costuma-se usar `--shadow off`).
+  corpo↔sombra; em fundo muito claro funciona bem.
+- **Interação:** ortogonal a `--shadow remove` (a histerese cresce por **croma**, não ajuda em
+  cinza). Para corpo cinza **com sombra projetada**, o caminho robusto hoje é **`--shadow texture`**
+  (recorta a sombra pela textura) em vez de só subir `--val-frac` — ver acima.
 
 ### `--symmetry {none,vertical,horizontal,both}`  · default `none`
 Impõe a simetria do objeto: **espelha e faz a MÉDIA das duas metades** (duas amostras do mesmo
@@ -123,6 +136,15 @@ e re-corta em 0, removendo **saliências e ondulações** de amplitude menor que
 - **Ortogonal ao contém:** não é um lever das rampas; some com a ondulação **mantendo** o contém
   (a peça continua contida; o pocket ainda dilata a folga). Não mexa nas rampas por causa disto.
 
+### `--mask-smooth-keep-bumps`  · flag · default off  ·  **(v0.5, Etapa B)**
+Enviesa o `--mask-smooth-mm` para **fechamento** (um *closing* no campo de distância: `max(sdf,blur)`).
+Remove **só as reentrâncias côncavas** (a serrilha de ruído) e **preserva os ressaltos convexos** —
+ex.: a **aba lateral** da peça, que o modo isotrópico arredondaria junto com o ruído.
+- **Quando usar:** com `--mask-smooth-mm` ligado, quando a regularização está comendo uma **saliência
+  real** (convexa) além da serrilha. Sem efeito se `--mask-smooth-mm` for 0.
+- **Cuidado:** também mantém eventuais **picos de ruído convexo** (raros sub-mm; a serrilha de baixo
+  contraste é majoritariamente côncava).
+
 ### `--clearance <mm>`  · default `0.0`
 Folga **externa** aplicada ao contorno. **Padrão 0 = tamanho REAL** (sem ganho). A folga de
 encaixe da impressão é aplicada **depois** (a jusante no OpenSCAD, ou à mão). Mexa só se quiser
@@ -172,7 +194,10 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 | resultado parou de melhorar | Inverta a direção da rampa atual; se a invertida também piora, rampa esgotou → próxima |
 | pocket **folgado demais** / clearance grande | sintoma de `--min-dist` alto → **baixe** `--min-dist` (Béziers longas arqueiam p/ dentro) |
 | escadinha/serrilhado no contorno | ↑`--smooth-mm` (+1..2) — conflita com o contém; ache o equilíbrio (~2) |
-| borda arredondada some / segmentação come a peça | `--shadow remove` |
+| borda arredondada some / segmentação come a peça (peça **cromática**) | `--shadow remove` |
+| corpo **cinza-neutro** + **sombra projetada** vaza no pocket (balão p/ um lado) | `--shadow texture` |
+| corpo cinza-neutro **sem** sombra projetada / obj sai pequeno (só o clipe) | ↑`--val-frac` (~0.68) |
+| `--mask-smooth-mm` arredondou uma **saliência convexa real** (aba) | + `--mask-smooth-keep-bumps` |
 | peça simétrica com contorno ruidoso/torto | `--symmetry vertical\|horizontal` (eixo do objeto) |
 | bico/canto vivo onde devia arredondar | ↑`--min-radius` (+0.5) |
 | quero o contorno **exato** (não pocket) | `--faithful` |

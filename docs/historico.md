@@ -112,9 +112,28 @@ parâmetro**.
 - **Saliências locais (`_protrusion_anchors`):** pico convexo no meio de uma aresta (pega/botão)
   ganha âncora se a proeminência ≥ `PROTRUSION_DEV_MM` (senão a curva arredondaria por cima).
 
+## Sombra em corpo cinza-neutro + ressalto convexo (v0.5)
+
+Validado em **4 fotos** da mesma trena (azul/contato, cinza/projetada, vista-de-cima/reflexo-rosa,
+luz-difusa) que **nenhum cue único** (croma, valor, textura-de-borda) separa o corpo cinza-neutro da
+sombra em todas as condições. O usuário traçou o contorno **ideal à mão** (`trena_esperado.svg`); a
+comparação do-zero expôs que `--val-frac 0.68 --shadow off` **balona sobre a sombra projetada** (76 vs
+65 mm) e o `contém 1.0000` **esconde** o erro (o gate não julga correção). Implementado:
+
+- **`--shadow texture` (substitui a Etapa A do plano, rebaixada por overfit):** valor-primário pega o
+  corpo escuro; a **textura** (std local de V, **limiar Otsu adaptativo** da própria foto) **recorta**
+  as regiões lisas-E-mais-claras = a sombra projetada. O recorte é aplicado a **todo** o candidato
+  (valor **e** croma) — necessário porque em fundo de papel **cromático** (lavanda saturada) a sombra
+  também é cromática e voltaria pela porta do `colored|chromatic`. Trena cinza: 76→64,5 mm, sombra fora.
+- **`--mask-smooth-keep-bumps` (Etapa B):** enviesa o `--mask-smooth-mm` p/ *closing* no campo de
+  distância (`max(sdf, blur)`) — remove só reentrâncias côncavas (serrilha) e **preserva ressaltos
+  convexos** (a aba lateral), que o borrado isotrópico arredondava junto.
+
+Resíduos pendentes (rumo ao "contorno perfeito") em [Pendências / roadmap](#pendências--roadmap).
+
 ## Estado de referência
 
-- **Suíte 71/71 verde.**
+- **Suíte verde** (contagem canônica em [design.md](design.md) §Testes).
 - **`thermpro.jpg`** no default (POCKET, `--min-dist 10`): pocket contém a peça (coverage ≥ 0,99)
   ~ objeto. Apertando: `--shadow remove --min-dist 0.6 --smooth-mm 2 --symmetry vertical` → **305
   Béziers, contém 0.9999**, folga −0,18 × −0,00 (flush). Somando `--mask-smooth-mm 2` (regulariza a
@@ -172,4 +191,7 @@ overlay → ajustar flag → repetir). Virou uma **skill do Claude Code** em
   Futuro: correção por altura conhecida.
 - **Ondulação residual** em bordas de alto contraste (laranja↔bezel) — revisitar com **mais
   fotos-exemplo** antes de calibrar mais fino (evitar overfit).
+- **Resíduos do `--shadow texture`** (rumo ao "contorno perfeito"): a **sombra de contato** (escura)
+  fica fora do termo "liso E claro" → ~3 mm de sobra na borda virada p/ ela; e o **gume claro/
+  especular** do corpo cinza some no fundo claro (localização de borda).
 - **Avisar** quando o contorno tocar a borda da imagem (peça grande/descentrada).

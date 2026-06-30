@@ -73,14 +73,21 @@ polui o contorno.
    `SEG_HUE_MARGIN`/`SEG_HUE_SAT_MIN`) **OU escuro** (brilho ≤ `SEG_VAL_FRAC`×fundo); a sombra
    suave é dessaturada e só um pouco escura → fica no fundo. Morfologia `open`/`close`, maior
    componente conectado, preenche buracos internos (display) → contorno cheio.
-   **Histerese de borda (opcional, `--shadow remove`).** O corte único de escuro corta *dentro*
-   da rampa preto→sombra→papel, comendo/serrilhando a borda arredondada que vira p/ a base (o
-   **bisel preto no topo** e o **toe laranja dessaturado no fundo**). A histerese (estilo Canny)
-   cresce os **núcleos certos** (preto E colorido) pelos pixels escuros vizinhos **com croma**
-   (`V ≤ SEG_VAL_WEAK_FRAC×fundo` **e** `S ≥ SEG_WEAK_SAT_MIN`) por **dilatação geodésica de
-   alcance limitado** (`SEG_SHADOW_GROW_MM`) até o papel claro — recupera a borda real. O **piso
-   de saturação** é o separador: cobre a rampa cromática do plástico mas **para na sombra de
-   contato CINZA** (que deixaria o pocket frouxo). Padrão `off`.
+   **Estratégia de sombra (`--shadow`, opcional).** Dois modos, p/ dois regimes de sombra:
+   - **`remove` — histerese por CROMA** (peça cromática). O corte único de escuro corta *dentro*
+     da rampa preto→sombra→papel, comendo/serrilhando a borda arredondada que vira p/ a base (o
+     **bisel preto no topo** e o **toe laranja dessaturado no fundo**). A histerese (estilo Canny)
+     cresce os **núcleos certos** (preto E colorido) pelos pixels escuros vizinhos **com croma**
+     (`V ≤ SEG_VAL_WEAK_FRAC×fundo` **e** `S ≥ SEG_WEAK_SAT_MIN`) por **dilatação geodésica de
+     alcance limitado** (`SEG_SHADOW_GROW_MM`) até o papel claro. O **piso de saturação** separa a
+     rampa cromática do plástico da **sombra de contato CINZA** (barrada).
+   - **`texture` — subtrator por TEXTURA** (corpo CINZA-NEUTRO sem croma, com sombra projetada). O
+     valor pega o corpo escuro inteiro (inclusive o liso) e a **textura** (std local de V numa
+     janela `SEG_TEX_WIN`, limiar **Otsu adaptativo** da própria foto) **recorta** as regiões
+     **lisas E mais claras** (`tex < Otsu` **e** `V > SEG_TEX_LIGHT_FRAC×fundo`) = a sombra
+     projetada. O recorte vale p/ **todo** o candidato (valor **ou** croma), então a sombra não
+     volta pela porta do cromático em fundo de papel saturado. Sombra de contato (escura) fica fora
+     do termo de recorte (pendência). Padrão `off`.
 2b. **Simetria (opcional, `--symmetry`).** `symmetrize_mask`: num objeto simétrico as duas
    metades são **duas medições do mesmo contorno** → espelhar e fazer a **média** cancela o
    ruído assimétrico e força a simetria. Acha o eixo pelo **centroide**, refina por **máx. IoU**
@@ -170,7 +177,8 @@ polui o contorno.
 ## API — pipeline (I/O)
 
 `load_image(path)`; `rectify(img, dict_name)→(rectified, mm_per_px, mm_per_px, conf)`;
-`normalize_illumination(img)→img`; `segment_tool(img, deshadow=False)→mask`;
+`normalize_illumination(img)→img`; `segment_tool(img, deshadow=False, val_frac)→mask`
+(`deshadow` ∈ {False/"off", True/"remove", "texture"});
 `symmetrize_mask(mask, axis, ppmm)→mask`; `extract_outline(mask, mm_per_px_x, mm_per_px_y)→pts`;
 `process_for_print(...)→pts`; `polygon_to_svg(pts, name, …)→str`; `write_overlay(rect, mask,
 path)` (PNG de conferência); `write_overlay_svg(rect, cubics, mm_per_px_x, mm_per_px_y, path)`
@@ -181,15 +189,16 @@ Orquestrador `main(argv)`.
 ```
 python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
     [--dict DICT_4X4_50] [--min-radius 1.5] [--smooth-mm 8] [--clearance 0] \
-    [--shadow off|remove] [--symmetry none|vertical|horizontal|both] [--inkscape] \
-    [--simplify 2.0] [--min-dist 10] [--faithful] \
+    [--shadow off|remove|texture] [--symmetry none|vertical|horizontal|both] [--inkscape] \
+    [--simplify 2.0] [--min-dist 10] [--faithful] [--mask-smooth-mm 0] [--mask-smooth-keep-bumps] \
     [--tol-fit --fit-tol 0.2 --guide 0.5 --c-fit 0] [--polyline] \
     [--name thermpro] [--debug-dir _debug]
 ```
 Imprima `base.svg` em A4 a 100%, apoie a peça no centro branco, fotografe perto do nadir.
 `--dict` deve casar com a base impressa. `--min-dist` = densidade do pocket (menor = mais justo,
 **sem teto de nós**); `--faithful` = modo fiel com snap (bbox = objeto); `--simplify` controla a
-densidade no modo fiel. `--shadow remove` = histerese de borda; `--symmetry` = espelho + média. **A cada
+densidade no modo fiel. `--shadow remove` = histerese de borda por croma; `--shadow texture` =
+subtrator de sombra por textura (corpo cinza-neutro, v0.5); `--symmetry` = espelho + média. **A cada
 execução** sai, antes do `.svg`, o overlay PNG `_overlay_<nome>.png` (contorno em vermelho sobre
 a foto retificada); `--inkscape` gera também `_overlay_<nome>.svg` editável. `--debug-dir` grava
 intermediários. Marcadores insuficientes → aborta com mensagem clara. (Guia de flags completo:
@@ -200,7 +209,10 @@ intermediários. Marcadores insuficientes → aborta com mensagem clara. (Guia d
 `PX_PER_MM = 8.0` (resolução do canvas) · `DICT_NAME = "DICT_4X4_50"` · `MIN_MARKERS = 8` ·
 `TILT_WARN_DEG = 5.0` · `SEG_SAT_MARGIN = 45` / `SEG_VAL_FRAC = 0.30` (colorido OU escuro vs
 fundo; default do `--val-frac`, suba p/ corpo cinza-neutro) · `SEG_VAL_WEAK_FRAC = 0.65` / `SEG_WEAK_SAT_MIN = 35` / `SEG_SHADOW_GROW_MM = 3.0`
-(histerese do `--shadow remove`) · `SEG_HUE_MARGIN = 25` / `SEG_HUE_SAT_MIN = 60` (matiz) ·
+(histerese do `--shadow remove`) · `SEG_TEX_WIN = 9` / `SEG_TEX_GAIN = 6.0` / `SEG_TEX_BG_FRAC = 0.93`
+/ `SEG_TEX_BODY_FRAC = 0.80` / `SEG_TEX_LIGHT_FRAC = 0.70` (subtrator de sombra do `--shadow texture`:
+janela da textura, Otsu adaptativo, corte de corpo, corte de sombra-clara) ·
+`SEG_HUE_MARGIN = 25` / `SEG_HUE_SAT_MIN = 60` (matiz) ·
 `ILLUM_SCALE = 0.125` / `ILLUM_KERNEL_FRAC = 0.9` / `ILLUM_MAX_GAIN = 3.0` (flat-field) ·
 `SYM_SEARCH_MM = 4.0` · `MIN_RADIUS_MM = 1.5` · `SMOOTH_MM = 8.0` · `CLEARANCE_MM = 0.0` (sem
 ganho) · `ANCHOR_SIMPLIFY_MM = 2.0` (modo fiel) · `ANCHOR_EPS_MM = 0.08` (fiel)
@@ -228,7 +240,8 @@ personalizável** a partir do contorno medido.
 ## Testes
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` (`unittest`, via
-`run_image_tests.py`). **Referência: 67/67 verde.** Níveis:
+`run_image_tests.py`). **Contagem canônica: 84/84 verde** (única fonte; os guias só dizem "verde").
+Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -248,6 +261,13 @@ personalizável** a partir do contorno medido.
   bisel** e **rejeita a sombra**; o piso de saturação (`SEG_WEAK_SAT_MIN`) é o separador (zerá-lo
   infla a base). (2) corpo colorido + toe laranja + sombra cinza → a mesma histerese **recupera
   o toe** e **para na sombra**.
+- **B3. Subtrator por textura (`TestTextureShadowSubtractor`):** corpo cinza texturado encostado
+  numa sombra projetada lisa e mais clara. `--shadow texture` **mantém o corpo** e **recorta a
+  sombra**, enquanto o corte de valor sozinho (`--val-frac` alto) a engloba. `TestValFrac`: o
+  `--val-frac` alto captura o corpo cinza-neutro que o default 0,30 perde.
+- **B4. Regularização da silhueta (`TestRegularizeSilhouette`):** remove serrilha mantendo a área e
+  o tamanho macro; `preserve_convex=True` (`--mask-smooth-keep-bumps`) **preserva o ressalto
+  convexo** que o modo isotrópico arredonda, ainda preenchendo a reentrância côncava.
 - **C. Ponta-a-ponta (`thermpro.jpg`, skip se ausente — `TestEndToEndThermpro`):** 32/32
   marcadores; escala plausível; no **modo ilimitado** a peça cabe (`coverage ≥ 0,99`), linha
   limpa, **bbox do SVG = dimensão medida**; no **default (pocket teto 4)** o pocket **contém** a

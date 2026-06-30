@@ -32,7 +32,7 @@ Objetivo final: gerar a **cavidade (pocket) de encaixe**. O fluxo termina no SVG
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt   # Windows; Linux/Mac: .venv/bin/python
 
-# Suíte completa (esperado: 68 testes, OK)
+# Suíte completa (deve ficar 100% verde; contagem canônica em docs/design.md §Testes)
 .venv/Scripts/python tests/run_image_tests.py
 
 # Gerar a base de calibração (imprimir em A4 a 100%, sem "fit to page")

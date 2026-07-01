@@ -166,12 +166,29 @@ PNGs for diagnosis).
 `--c-fit` (`0.0`, clearance baked into the SVG).
 
 **Output format:** `--inkscape` (also emit the editable overlay) · `--polyline` (raw `L`
-polyline instead of `C` curves).
+polyline instead of `C` curves) · `--edit` (open the built-in node editor before saving).
 
 **Advanced Bézier (rarely needed):** `--tol-fit` (fit by tolerance instead of containment
 minimum) · `--fit-tol` (tolerance mm, only with `--tol-fit`).
 
-## 5. Fine-tuning in Inkscape
+## 5. Adjust nodes in the built-in editor (`--edit`)
+
+Detection always errs a little (shadow/glare on the edge), so you usually want a manual touch-up.
+With `--edit`, the tool detects as usual and then opens a small window (tkinter, no extra install):
+the **rectified photo** as background and the curve's **nodes as draggable handles**.
+
+- **Drag** a handle to move a node · **click on the curve** to insert a node · **right-click** a
+  handle to delete it · mouse wheel = **zoom at the cursor** (the point under the mouse stays put),
+  **Ctrl + left-drag** = pan.
+- **Re-trace** draws a smooth (G1) Catmull-Rom curve through your nodes; moving, inserting or
+  deleting a node re-traces automatically. **Undo** / **Reset** as usual.
+- **Finalize** is **WYSIWYG**: it closes the window and writes the same outputs from **exactly the
+  curve on screen** — nothing is recomputed (closing the window without Finalize writes nothing).
+
+You place the nodes and see the curve; Finalize saves precisely that. The final `<out>.svg` is that
+curve (and `_overlay_<out>.svg` too, with `--inkscape`).
+
+## 5b. Fine-tuning in Inkscape (alternative)
 
 With `--inkscape`, open `_overlay_<out>.svg`: the rectified photo is a **locked layer**, the
 outline (smooth G1 Béziers) an **editable layer**, already in mm. Adjust nodes over the photo,
@@ -188,7 +205,7 @@ outline (smooth G1 Béziers) an **editable layer**, already in mm. Adjust nodes 
 | Want the **faithful outline** (bbox = object) | `--faithful` |
 | WARNING "pocket does not contain the part" | lower `--min-dist` |
 | **Diagnose** the segmentation | `--debug-dir debug/` and look at the PNGs |
-| **Hand-edit** afterwards | `--inkscape` |
+| **Hand-edit** the nodes | `--edit` (built-in editor) or `--inkscape` (in Inkscape) |
 
 ## 7. Common problems
 

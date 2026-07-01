@@ -1649,21 +1649,21 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
     else:
         cubics = fit_closed_beziers(p, tol=tol)
 
-    # bbox derivada da GEOMETRIA EMITIDA (não do guia inflado) → width/height corretos.
-    geo = flatten_beziers(cubics) if cubics else p
-    min_x, min_y, max_x, max_y = bbox(geo)
+    if cubics:                                # caminho normal: emite as cúbicas ajustadas
+        return _svg_from_cubics(cubics, name)
+    # polyline cru (--polyline): bbox da própria poligonal, sem curvas.
+    min_x, min_y, max_x, max_y = bbox(p)
     w, h = max_x - min_x, max_y - min_y
+    pp = [(q[0] - min_x, max_y - q[1]) for q in p]   # mm (Y p/ cima) → SVG (Y p/ baixo)
+    d = "M " + " L ".join(f"{f(x)},{f(y)}" for (x, y) in pp) + " Z"
+    return _svg_envelope(d, w, h, name, len(pp))
 
-    def tx(pt):                               # mm (Y p/ cima) → SVG (origem topo-esq, Y p/ baixo)
-        return (pt[0] - min_x, max_y - pt[1])
 
-    if cubics:
-        d = _cubics_to_path_d(cubics, tx)
-        npts = len(cubics)
-    else:
-        pp = [tx(q) for q in p]
-        d = "M " + " L ".join(f"{f(x)},{f(y)}" for (x, y) in pp) + " Z"
-        npts = len(pp)
+def _svg_envelope(d, w, h, name, npts):
+    """Monta o documento SVG (mm) em torno de um caminho `d` já no referencial SVG
+    (origem topo-esq, Y p/ baixo): contorno + preenchimento translúcido na cor de
+    saída. Fonte única do envelope usada pelo polyline E por `_svg_from_cubics`."""
+    f = CT.fmt_mm
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
         f'<!-- GERADO por photo_to_outline.py — contorno de {name} (mm), {npts} nós -->\n'
@@ -1674,6 +1674,21 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
         f'stroke:{OUTLINE_COLOR};stroke-width:{f(SVG_HAIRLINE_MM)};vector-effect:non-scaling-stroke"/>\n'
         f'</svg>\n'
     )
+
+
+def _svg_from_cubics(cubics, name="outline"):
+    """SVG (mm) a partir de uma lista de cúbicas PRONTAS `(p0,c1,c2,p3)` — sem
+    reajustar nada. A bbox vem da GEOMETRIA EMITIDA (achatada) → width/height corretos.
+    Usado pelo fluxo padrão (`polygon_to_svg`) e pelo modo `--edit` (curva editada à mão,
+    emitida LITERALMENTE, sem snap de bbox)."""
+    geo = flatten_beziers(cubics)
+    min_x, min_y, max_x, max_y = bbox(geo)
+    w, h = max_x - min_x, max_y - min_y
+
+    def tx(pt):                               # mm (Y p/ cima) → SVG (origem topo-esq, Y p/ baixo)
+        return (pt[0] - min_x, max_y - pt[1])
+
+    return _svg_envelope(_cubics_to_path_d(cubics, tx), w, h, name, len(cubics))
 
 
 def write_overlay(rect, mask, path):
@@ -1737,7 +1752,7 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      mask_smooth_mm=MASK_SMOOTH_MM, mask_smooth_keep_bumps=False,
                      val_frac=SEG_VAL_FRAC,
                      overlay_path=None, overlay_svg_path=None, debug_dir=None,
-                     return_silhouette=False):
+                     return_silhouette=False, return_edit_data=False):
     """Pipeline completo → lista de pontos (x,y) em mm. Usado pelos testes E pelo CLI.
     `symmetry` ∈ {'none','vertical','horizontal','both'} impõe a simetria do objeto
     (espelha + média das metades) p/ limpar o contorno. `deshadow=True` liga a histerese
@@ -1745,7 +1760,9 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     barrando a sombra de contato cinza). `overlay_path` grava o
     overlay PNG de conferência (contorno segmentado sobre a foto); `overlay_svg_path`
     grava o overlay SVG EDITÁVEL (foto embutida + Béziers do .svg) p/ ajuste no Inkscape.
-    `return_silhouette=True` devolve também a silhueta crua (p/ checar encaixe)."""
+    `return_silhouette=True` devolve também a silhueta crua (p/ checar encaixe).
+    `return_edit_data=True` devolve `(out, sil, rect, mmpp_x, mmpp_y)` — a foto retificada e a
+    escala, p/ o editor manual de nós (`--edit`); tem precedência sobre `return_silhouette`."""
     img = load_image(in_path)
     rect, mmpp_x, mmpp_y, _conf = rectify(img, dict_name=dict_name, debug_dir=debug_dir)
     flat = normalize_illumination(rect, debug_dir=debug_dir)
@@ -1768,6 +1785,8 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
             cub = _scale_cubics_to_bbox(cub, *size(sil))
         write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
     out = process_for_print(sil, min_radius=min_radius, smooth_mm=smooth_mm, clearance=clearance)
+    if return_edit_data:
+        return out, sil, rect, mmpp_x, mmpp_y
     return (out, sil) if return_silhouette else out
 
 
@@ -1801,6 +1820,60 @@ def coverage(outer, inner, ppm=8.0):
 # =============================================================================
 # CLI
 # =============================================================================
+def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
+    """Modo `--edit`: detecta como sempre, abre o editor de nós (outline_editor) e grava as
+    MESMAS saídas a partir da curva ajustada à mão. A detecção é automática; o usuário só move/
+    inclui/exclui nós (qualquer edição re-traça a spline Catmull-Rom G1 pelos nós). WYSIWYG: ao
+    Finalize, grava EXATAMENTE a curva exibida na tela — as cúbicas LITERAIS (sem snap de bbox,
+    sem recalcular)."""
+    import outline_editor as OE
+    try:
+        _out, sil, rect, mmpp_x, mmpp_y = generate_outline(
+            args.in_path, dict_name=args.dict_name, min_radius=args.min_radius,
+            smooth_mm=args.smooth_mm, clearance=args.clearance, symmetry=args.symmetry,
+            deshadow=(False if args.shadow == "off" else args.shadow),
+            simplify_mm=args.simplify, faithful=args.faithful, min_dist_mm=args.min_dist,
+            pocket_eps=args.pocket_eps, mask_smooth_mm=args.mask_smooth_mm,
+            mask_smooth_keep_bumps=args.mask_smooth_keep_bumps, val_frac=args.val_frac,
+            overlay_path=overlay_path, overlay_svg_path=None,   # o overlay editável sai DEPOIS
+            debug_dir=args.debug_dir, return_edit_data=True)
+    except GridDetectionError as e:
+        print(f"ERRO: retificação pela base ArUco falhou — {e}", file=sys.stderr)
+        print("      imprima base.svg em A4 a 100%, apoie a peça no centro branco e "
+              "fotografe de cima; use --debug-dir p/ inspecionar.", file=sys.stderr)
+        return 3
+
+    # Nós iniciais = curva ancorada (mesma geometria que o .svg padrão emitiria).
+    cub0 = fit_anchored_cached(sil, smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
+                               faithful=args.faithful, min_dist_mm=args.min_dist,
+                               pocket_eps=args.pocket_eps, symmetry=args.symmetry)
+    if cub0 and args.faithful:
+        cub0 = _scale_cubics_to_bbox(cub0, *size(sil))
+    nodes0 = OE.nodes_from_cubics(cub0)
+
+    try:
+        cub = OE.run_editor(rect, nodes0, mmpp_x, mmpp_y)
+    except Exception as e:                          # tkinter ausente/sem display etc.
+        print(f"ERRO: não consegui abrir o editor ({e}). Rode sem --edit p/ a saída automática.",
+              file=sys.stderr)
+        return 4
+    if cub is None:
+        print("editor cancelado — nada gravado (rode de novo ou sem --edit).")
+        return 0
+
+    with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(_svg_from_cubics(cub, name))       # EXATAMENTE a curva exibida no editor (WYSIWYG)
+    if overlay_svg_path:
+        write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
+    ow, oh = size(sil)
+    pw, ph = size(flatten_beziers(cub)) if cub else (0.0, 0.0)
+    print(f"OK  {args.in_path}  ->  {out_path}  (editado)")
+    print(f"    overlay {overlay_path}" + (f" | inkscape {overlay_svg_path}" if overlay_svg_path else ""))
+    print(f"    EDITADO {len(cub)} Béziers | obj {ow:.2f}x{oh:.2f} | "
+          f"contorno {pw:.2f}x{ph:.2f} | contém {coverage(flatten_beziers(cub), sil):.4f}")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Foto da ferramenta → SVG de contorno (mm)")
     ap.add_argument("--in", "-i", dest="in_path", required=True)
@@ -1874,6 +1947,12 @@ def main(argv=None):
                     help="enviesa o --mask-smooth-mm p/ FECHAMENTO (closing no campo de distância): "
                          "remove só as REENTRÂNCIAS côncavas (serrilha) e PRESERVA os ressaltos "
                          "convexos (ex.: a aba lateral), que o modo isotrópico arredondaria. PADRÃO off.")
+    ap.add_argument("--edit", dest="edit", action="store_true",
+                    help="abre o EDITOR de nós (GUI tkinter): a foto retificada de fundo + os nós "
+                         "da curva detectada como alças. Mova/inclua/exclua nós, clique 'Re-traçar' "
+                         "p/ recompor a curva suave (G1) e 'Finalizar' p/ gravar. A detecção continua "
+                         "automática; você só ajusta os nós. Parte sempre da curva ANCORADA (ignora "
+                         "--polyline/--tol-fit como ponto de partida). PADRÃO off.")
     ap.add_argument("--name", dest="name")
     ap.add_argument("--debug-dir", dest="debug_dir")
     args = ap.parse_args(argv)
@@ -1891,6 +1970,9 @@ def main(argv=None):
                             f"_overlay_{os.path.splitext(os.path.basename(out_path))[0]}")
     overlay_path = _ov_base + ".png"
     overlay_svg_path = (_ov_base + ".svg") if args.inkscape else None
+
+    if args.edit:                                   # editor manual de nós (GUI tkinter)
+        return _edit_flow(args, out_path, name, overlay_path, overlay_svg_path)
 
     try:
         pts, sil = generate_outline(args.in_path, dict_name=args.dict_name,

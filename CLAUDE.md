@@ -56,13 +56,16 @@ python -m venv .venv
 
 ## Arquitetura
 
-Três módulos na raiz (detalhe completo em [docs/design.md](docs/design.md)):
+Quatro módulos na raiz (detalhe completo em [docs/design.md](docs/design.md)):
 
 - **`calibration_target.py`** — layout do alvo, **puro (sem OpenCV)**. Posições/IDs dos
   marcadores ArUco e as correspondências nominais em mm (`homography_correspondences`); liga
   *o que se imprime* ao *que o detector assume*.
 - **`make_calibration_target.py`** — CLI que renderiza o layout num `base.svg` impressível.
 - **`photo_to_outline.py`** — a tool (~1450 linhas): todo o pipeline de visão **e** o CLI.
+- **`outline_editor.py`** — editor de nós opcional (`--edit`), em duas camadas: **núcleo puro**
+  (geometria, testável) + **view tkinter** (glue, não testada). WYSIWYG: Finalize grava exatamente
+  a curva exibida (Catmull-Rom G1 pelos nós). GUI em inglês; comentários em pt-BR como o resto.
 
 **Pipeline (foto → SVG):** retificar por homografia ArUco (sai a dimensão real) →
 normalizar luz + segmentar → extrair contorno → suavizar p/ impressão → ajustar Béziers
@@ -75,7 +78,9 @@ que **contém** a peça e fica justa (menor `--min-dist` = mais justo, sem teto 
 
 Suíte `unittest` em `tests/`, descoberta por `run_image_tests.py`. Níveis: **A** unidade pura
 (geometria, homografia, Bézier, `TestAnchoredFit`, `TestProtrusionAnchors`); **B** sintético
-ArUco + **B2** histerese de borda; **C** ponta-a-ponta direto de `thermpro.jpg`.
+ArUco + **B2** histerese de borda; **C** ponta-a-ponta direto de `thermpro.jpg`; **E** núcleo puro
+do editor (`test_outline_editor.py` — spline pelos nós, ops de edição, transforms; a view tkinter
+não é instanciada no runner headless).
 
 > **Caminhos fixos:** os testes resolvem paths relativos — `photo_to_outline.py` e
 > `thermpro.jpg` ficam na **raiz**, os testes em `tests/`. Não mova.

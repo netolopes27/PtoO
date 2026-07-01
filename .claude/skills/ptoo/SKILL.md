@@ -141,6 +141,20 @@ de tentativas = `--pass N`.
    Se esgotar os passes sem chegar a 0.9999, entregue o melhor e diga explicitamente que não
    bateu o alvo (e o que tentar a seguir).
 
+## Último passe — ajuste manual (`--edit`)
+
+Quando o laço convergir (`contém` ≥ 0.9999) **OU** os passes acabarem, faça **uma última** chamada
+com `--edit` e os params vencedores:
+```
+.venv/Scripts/python photo_to_outline.py --in <foto> --out <name>.svg <params-vencedores> --edit --inkscape
+```
+Abre a GUI (foto retificada + nós da curva como alças; zoom no cursor, pan). O usuário move/inclui/
+exclui nós e clica **Re-traçar** (spline Catmull-Rom G1 pelos nós); ao **Finalizar**, o `.svg` final é
+**EXATAMENTE a curva que está na tela** (WYSIWYG — nada é recalculado). A janela **bloqueia** até
+Finalizar (ou cancelar; cancelar não grava). **Só no ÚLTIMO passe**: a calibração automática já fez
+o melhor possível — não faz sentido ajustar à mão enquanto ainda se itera parâmetro. **Nunca**
+acrescente `--edit` nos passes de calibração (eles precisam do stdout/overlay p/ diagnóstico).
+
 ## Depois do laço
 
 1. Apresente ao usuário: caminho do `<name>.svg`, métricas do melhor passe (objeto, pocket,

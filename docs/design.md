@@ -17,7 +17,8 @@ Ferramenta **Python de visão autocontida**: roda num **venv** (`./.venv/`) com 
 sai **direto do JPG** (escala pelos marcadores) — sem referência desenhada à mão.
 
 **Arquivos:** `photo_to_outline.py` (a tool) · `calibration_target.py` (layout puro) ·
-`make_calibration_target.py` (gera `base.svg`) · `base.svg` · `requirements.txt` · `./.venv/`.
+`make_calibration_target.py` (gera `base.svg`) · `outline_editor.py` (editor de nós opcional,
+`--edit`) · `base.svg` · `requirements.txt` · `./.venv/`.
 **Testes:** `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` (runner
 `tests/run_image_tests.py`). **E/S:** `thermpro.jpg` → `thermpro.svg`.
 
@@ -191,7 +192,7 @@ python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
     [--dict DICT_4X4_50] [--min-radius 1.5] [--smooth-mm 8] [--clearance 0] \
     [--shadow off|remove|texture] [--symmetry none|vertical|horizontal|both] [--inkscape] \
     [--simplify 2.0] [--min-dist 10] [--faithful] [--mask-smooth-mm 0] [--mask-smooth-keep-bumps] \
-    [--tol-fit --fit-tol 0.2 --guide 0.5 --c-fit 0] [--polyline] \
+    [--tol-fit --fit-tol 0.2 --guide 0.5 --c-fit 0] [--polyline] [--edit] \
     [--name thermpro] [--debug-dir _debug]
 ```
 Imprima `base.svg` em A4 a 100%, apoie a peça no centro branco, fotografe perto do nadir.
@@ -200,9 +201,15 @@ Imprima `base.svg` em A4 a 100%, apoie a peça no centro branco, fotografe perto
 densidade no modo fiel. `--shadow remove` = histerese de borda por croma; `--shadow texture` =
 subtrator de sombra por textura (corpo cinza-neutro, v0.5); `--symmetry` = espelho + média. **A cada
 execução** sai, antes do `.svg`, o overlay PNG `_overlay_<nome>.png` (contorno em vermelho sobre
-a foto retificada); `--inkscape` gera também `_overlay_<nome>.svg` editável. `--debug-dir` grava
-intermediários. Marcadores insuficientes → aborta com mensagem clara. (Guia de flags completo:
-[README.md](../README.md) §4.)
+a foto retificada); `--inkscape` gera também `_overlay_<nome>.svg` editável. `--edit` abre o
+**editor de nós** (GUI tkinter, `outline_editor.py`, rótulos em inglês) entre a detecção e a saída:
+foto retificada de fundo + nós da curva como alças (rodinha = zoom no cursor, Ctrl+arrasto = pan; fundo
+renderizado por recorte do viewport, custo independente do zoom); o usuário move/inclui/exclui nós.
+"Re-trace" traça a curva G1 pelos nós (spline Catmull-Rom, `cubics_through_nodes`) — mover/inserir/
+excluir um nó já re-traça. **WYSIWYG:** "Finalize" grava as mesmas saídas a partir de **EXATAMENTE a
+curva que está na tela** (as cúbicas do último Re-trace; emitidas literal, sem recalcular nem snap).
+`--debug-dir` grava intermediários. Marcadores insuficientes → aborta
+com mensagem clara. (Guia de flags completo: [README.md](../README.md) §4.)
 
 ## Constantes (defaults, topo de `photo_to_outline.py`)
 
@@ -239,9 +246,9 @@ personalizável** a partir do contorno medido.
 
 ## Testes
 
-`tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` (`unittest`, via
-`run_image_tests.py`). **Contagem canônica: 84/84 verde** (única fonte; os guias só dizem "verde").
-Níveis:
+`tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
+`tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
+**Contagem canônica: 97/97 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -279,3 +286,9 @@ Níveis:
   ArUco. *Detecção sintética* (`TestTargetDetection`, OpenCV): renderiza → `detectMarkers` acha
   todos os IDs; `findHomography` recupera o lado de cada marcador = `marker_mm`, uniforme sob
   perspectiva conhecida (prova que o alvo é detectável e métrico **antes de imprimir**).
+- **E. Editor de nós (`test_outline_editor.py`, núcleo puro).** `cubics_through_nodes` ("re-traçar",
+  a ÚNICA geometria do editor): passa por cada nó, encadeado/fechado, **todos os nós G1** (tangente
+  compartilhada), anel de nós vira contorno **simples** (sem auto-cruzar). Ops de edição (`move`/
+  `insert`/`delete`) preservam ordem e ≥ 3 nós; `nearest_node`/`nearest_segment`. Transforms
+  `mm_to_px`/`px_to_mm` ida-e-volta. A view tkinter é glue fino e **não** é instanciada (runner
+  headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG), sem recalcular.

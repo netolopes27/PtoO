@@ -183,6 +183,34 @@ overlay → ajustar flag → repetir). Virou uma **skill do Claude Code** em
   contra-intuitivo, **min-dist grande** (poucos nós) deixa o pocket frouxo E com contém baixo
   (Béziers longos arqueiam p/ dentro); e avaliar **simetria no 1º passe** (`--symmetry vertical`).
 
+## Editor de nós embutido (`--edit`, v0.6)
+
+Constatação do usuário: por melhor que a detecção fique, **sempre** sobra um ajuste manual fino
+(sombra/realce na borda; ou traçar por dentro da peça de propósito, p/ aplicar offset global depois).
+O caminho antigo era exportar `--inkscape` e mexer nos nós no Inkscape — fora da ferramenta. v0.6
+traz esse ajuste **para dentro** da CLI.
+
+- **Módulo novo `outline_editor.py`** (stdlib + cv2), em duas camadas: **núcleo puro** (testável) e
+  **view tkinter** (glue fino). tkinter é stdlib (Tk 8.6 no Python do Windows); a foto entra via
+  `cv2.imencode(PNG)` → base64 → `tk.PhotoImage` (sem PIL).
+- **Flag `--edit`:** entre a detecção e a saída, abre uma janela com a **foto retificada** de fundo e
+  os **nós da curva** como alças. Arrastar = mover; clique na curva = inserir; botão-direito = excluir;
+  **rodinha = zoom no cursor** (o ponto sob o mouse fica parado, fundo por **recorte do viewport** →
+  custo independente do zoom); **Ctrl + arrasto esquerdo = pan**. Botões (GUI em **inglês**): Re-trace,
+  Undo, Reset, Finalize. **Re-trace** traça a curva suave G1 pelos nós (`cubics_through_nodes` — spline
+  cardinal com tangente compartilhada de `_anchor_tangents`, `_cap_handles`/`_repair_self_intersections`);
+  mover/inserir/excluir já re-traça.
+- **WYSIWYG:** **Finalize** grava as mesmas saídas a partir de **EXATAMENTE a curva exibida**
+  (`self.cubics`, o último Re-trace), emitida **literal** (sem snap de bbox). Uma 1ª tentativa fazia o
+  Finalize re-ajustar a curva à silhueta detectada (botão "Suavizar", `cubics_through_anchored_silhouette`)
+  e **atrapalhou**: ao mover um nó p/ *fora* da silhueta (ex.: incluir o pino do clipe) o algoritmo
+  brigava com a intenção → bicos/dentes e queda de contenção. Lição do usuário: **o que se vê ao
+  finalizar tem de ser o que é gravado** — a Suavizar e a função foram removidas.
+- **Divisão de trabalho:** edita-se os **nós finais** (não a silhueta crua) — o usuário corrige a forma
+  e a CLI re-traça a curva limpa. O `_overlay_<nome>.png` segue saindo (a skill `/ptoo` depende dele).
+  Refator: o envelope SVG saiu p/ `_svg_from_cubics`/`_svg_envelope` (fonte única do `.svg` padrão e do
+  editado). A skill `/ptoo` acrescenta `--edit` **só no último passe**, após a calibração convergir.
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) pode confundir-se com o miolo branco — uma

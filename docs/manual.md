@@ -180,6 +180,15 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 - **`--inkscape`** (default off) — gera também o overlay **SVG editável** `_overlay_<nome>.svg`
   (foto retificada embutida + Béziers em camadas, no referencial mm) para ajuste fino no Inkscape.
   O overlay **PNG** de conferência (contorno sobre a foto) sai **sempre**.
+- **`--edit`** (default off) — abre o **editor de nós** (GUI tkinter, stdlib, rótulos em inglês): a
+  foto retificada de fundo + os nós da curva detectada como alças. Arraste = mover; clique na curva =
+  inserir; botão-direito = excluir; roda = **zoom no cursor** (o ponto sob o mouse fica parado);
+  **Ctrl + arrasto do botão esquerdo = pan**. **Re-trace** traça a curva G1 pelos nós (spline
+  Catmull-Rom); mover/inserir/excluir um nó já re-traça. **WYSIWYG:** **Finalize** grava as mesmas
+  saídas a partir de **EXATAMENTE a curva que está na tela** — nada é recalculado (fechar sem finalizar
+  não grava). A detecção continua automática — você só posiciona os pontos. Parte sempre da curva
+  **ancorada** (ignora `--polyline`/`--tol-fit` como ponto de partida) e emite-a **literal** (sem snap
+  de bbox). Alternativa fora da CLI: `--inkscape` + Inkscape.
 - **`--debug-dir <dir>`** — grava os estágios intermediários (retificação, iluminação,
   segmentação) para inspeção.
 - **`--name <nome>`** — rótulo do contorno no SVG; default = nome da foto.

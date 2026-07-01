@@ -88,6 +88,23 @@ sample comes out: measured object **68.12 × 71.00 mm**, pocket **67.94 × 71.00
 `--mask-smooth-mm 2` smooths the wavy **black** edge at the source → **303 Béziers, contains 1.0000**.
 For a **faithful** outline use `--faithful`; for a looser pocket raise `--min-dist`. See §4.1.
 
+### The whole thing in one command ⭐⭐
+
+Add `--edit` to the recommended command and the CLI runs the full pipeline **and** drops you
+into the built-in node editor before saving — detect, rectify, fit the pocket, then hand-tune
+the curve over the rectified photo, all in one shot:
+
+```bash
+.venv/Scripts/python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
+    --shadow remove --min-dist 0.6 --smooth-mm 2 --inkscape --symmetry vertical --edit
+```
+
+A tkinter window opens (no extra install) with the rectified photo as background and the curve's
+nodes as draggable handles: drag to move, click the curve to insert, right-click to delete, wheel
+to zoom at the cursor, **Ctrl + drag** to pan. **Finalize** is WYSIWYG — it writes the SVG from
+**exactly** the curve on screen (closing without Finalize writes nothing). Needs a graphical
+display; drop `--edit` to get the automatic output only. Full editor guide in §5.
+
 ### Generated outputs
 
 | File | When | What it is |
@@ -193,6 +210,34 @@ curve (and `_overlay_<out>.svg` too, with `--inkscape`).
 With `--inkscape`, open `_overlay_<out>.svg`: the rectified photo is a **locked layer**, the
 outline (smooth G1 Béziers) an **editable layer**, already in mm. Adjust nodes over the photo,
 **delete the photo layer**, export — the result is at real scale.
+
+## 5c. Automatic calibration with the `/ptoo` skill (Claude Code)
+
+If you use [Claude Code](https://claude.com/claude-code), the repo ships a `/ptoo` **skill**
+(`.claude/skills/ptoo/`) that automates the whole `run → look at the overlay → tweak a flag →
+repeat` loop for you. It drives `photo_to_outline.py` from a photo toward a **snug fit pocket**,
+inspecting the outline with zoom tiles over the rectified photo between runs. It never edits the
+CLI — it only calibrates the flags (and, with `--debug`, *proposes* code improvements without
+applying them).
+
+```
+/ptoo <photo.jpg> --pass N [--debug]
+```
+
+- `<photo.jpg>` — the input photo (a bare name resolves at the repo root).
+- `--pass N` — hard cap on calibration attempts (default 3).
+- `--debug` — after converging, also emit a CLI-improvement package (diagnosis + proposed
+  diff + a next-version plan under `docs/melhorias/`); does **not** touch the CLI.
+
+**Acceptance target:** the skill keeps lowering `--min-dist` (and, if needed, `--smooth-mm` then
+`--pocket-eps`) until *contains the part* ≥ **0.9999**, preferring the result with the **fewest
+nodes** among those that cross. It keeps a small memory (`memory.md`) of good parameters per part
+size to shorten future searches, and finishes with one optional `--edit` pass for a manual
+touch-up. Full behavior is documented in the skill's own [SKILL.md](.claude/skills/ptoo/SKILL.md).
+
+> The skill is Claude-Code-only and is invoked by typing `/ptoo …` in a Claude Code session; it
+> is not a shell command. Under the hood it just calls the same `photo_to_outline.py` you can run
+> by hand (§4).
 
 ## 6. Quick recipes
 

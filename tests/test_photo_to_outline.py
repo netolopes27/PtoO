@@ -605,7 +605,10 @@ class TestRectifyAruco(unittest.TestCase):
             gray = cv2.cvtColor(_aruco_scene(layout, warp=warp), cv2.COLOR_BGR2GRAY)
             c, ids = P.detect_markers(gray, layout["dict"])
             ip, mp = P.aruco_correspondences(c, ids, layout)
-            return P.estimate_tilt_deg(ip, mp, gray.shape)
+            # Mesmo contrato do rectify: a homografia imagem→mm já resolvida é
+            # INVERTIDA e passada (sem um segundo RANSAC dentro da estimativa).
+            Hmat, _ = cv2.findHomography(ip, mp, cv2.RANSAC, 3.0)
+            return P.estimate_tilt_deg(np.linalg.inv(Hmat), gray.shape)
 
         flat, warped = tilt(0.0), tilt(0.06)
         self.assertLess(flat, 3.0)                 # cena frontal ≈ nadir
@@ -952,6 +955,223 @@ class TestValFrac(unittest.TestCase):
         a = P.segment_tool(scene)
         b = P.segment_tool(scene, val_frac=P.SEG_VAL_FRAC)
         self.assertTrue(bool((a == b).all()))
+
+
+class TestOutputFitSourceOfTruth(unittest.TestCase):
+    """Fonte ÚNICA do ajuste emitido (`_fit_for_output`): .svg final, overlay Inkscape e
+    métricas do CLI usam os MESMOS Béziers — inclusive a simetria (--symmetry).
+    Regressão: o overlay omitia `symmetry` e mostrava uma curva diferente do .svg."""
+
+    @staticmethod
+    def _synthetic_rect_scene():
+        # "Foto retificada" sintética: retângulo escuro sobre miolo branco (50×50 mm a 8 px/mm).
+        import cv2
+        img = np.full((400, 400, 3), 255, np.uint8)
+        cv2.rectangle(img, (120, 80), (280, 320), (30, 30, 30), -1)
+        return img
+
+    def test_fit_for_output_snaps_bbox_only_when_faithful(self):
+        # Modo FIEL: bbox das cúbicas = bbox do objeto (snap). Modo POCKET: sem snap,
+        # o contorno fica ≥ objeto (menos a tolerância de penetração).
+        shape = rounded_rect(50, 34, 8)
+        tw, th = P.size(shape)
+        fiel = P._fit_for_output(shape, smooth_mm=1.0, min_dist_mm=6.0, faithful=True)
+        fw, fh = P.size(P.flatten_beziers(fiel))
+        self.assertAlmostEqual(fw, tw, places=6)
+        self.assertAlmostEqual(fh, th, places=6)
+        pocket = P._fit_for_output(shape, smooth_mm=1.0, min_dist_mm=6.0)
+        pw, ph = P.size(P.flatten_beziers(pocket))
+        self.assertGreaterEqual(pw, tw - P.POCKET_EPS_MM - 0.15)
+        self.assertGreaterEqual(ph, th - P.POCKET_EPS_MM - 0.15)
+
+    def test_overlay_svg_fit_receives_symmetry(self):
+        # generate_outline(..., symmetry=..., overlay_svg_path=...) tem de ajustar o overlay
+        # com a MESMA symmetry que o .svg final usa (mesma chave de cache → mesma curva).
+        import tempfile
+        from unittest import mock
+        rect = self._synthetic_rect_scene()
+        seen = []
+        real = P.fit_anchored_cached
+
+        def spy(sil, **kw):
+            seen.append(kw.get("symmetry", "none"))
+            return real(sil, **kw)
+
+        with tempfile.TemporaryDirectory() as td:
+            ov = os.path.join(td, "_overlay_x.svg")
+            with mock.patch.object(P, "load_image", return_value=rect), \
+                 mock.patch.object(P, "rectify", return_value=(rect, 0.125, 0.125, 1.0)), \
+                 mock.patch.object(P, "fit_anchored_cached", side_effect=spy):
+                P.generate_outline("dummy.jpg", symmetry="vertical", overlay_svg_path=ov)
+            self.assertTrue(os.path.exists(ov))
+        self.assertEqual(seen, ["vertical"])
+
+
+class TestSvgNameEscaping(unittest.TestCase):
+    """`name` (derivado do arquivo de entrada ou de --name) entra no SVG ESCAPADO: um nome
+    hostil não pode injetar markup (um SVG aberto no navegador executa <script>) nem
+    quebrar o XML ('--' é proibido dentro de comentário)."""
+    EVIL = 'peca--><script>alert(1)</script><g a="'
+
+    def test_final_svg_stays_well_formed(self):
+        import xml.etree.ElementTree as ET
+        svg = P.polygon_to_svg(rectangle(10, 6), name=self.EVIL, curves=False)
+        self.assertNotIn("<script>", svg)
+        ET.fromstring(svg)                       # parse OK = XML bem-formado
+
+    def test_overlay_svg_label_stays_well_formed(self):
+        import tempfile
+        import xml.etree.ElementTree as ET
+        rect = np.full((16, 16, 3), 255, np.uint8)
+        cub = [((0.0, 0.0), (0.5, -0.2), (1.0, -0.2), (1.5, 0.0)),
+               ((1.5, 0.0), (1.0, -0.8), (0.5, -0.8), (0.0, 0.0))]
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "ov.svg")
+            P.write_overlay_svg(rect, cub, 0.125, 0.125, path, name=self.EVIL)
+            with open(path, encoding="utf-8") as fh:
+                svg = fh.read()
+        self.assertNotIn("<script>", svg)
+        ET.fromstring(svg)
+
+
+def _line_cubic(p0, p3):
+    """Cúbica RETA (controles colineares a 1/3 e 2/3) — p/ montar anéis de teste."""
+    return (p0, (p0[0] + (p3[0] - p0[0]) / 3, p0[1] + (p3[1] - p0[1]) / 3),
+            (p0[0] + 2 * (p3[0] - p0[0]) / 3, p0[1] + 2 * (p3[1] - p0[1]) / 3), p3)
+
+
+def _ring_from_polygon(pts):
+    """Anel fechado de cúbicas retas ligando os vértices consecutivos de `pts`."""
+    n = len(pts)
+    return [_line_cubic(pts[i], pts[(i + 1) % n]) for i in range(n)]
+
+
+class TestSymmetrizeBeziers(unittest.TestCase):
+    """Espelhamento de Béziers no eixo de simetria. Com >2 cruzamentos do eixo o lado
+    mantido tem 2+ arcos e cada arco+espelho fecharia um LAÇO separado (multi-contorno:
+    furo/componentes) — não existe caminho único fiel. O correto é RECUSAR (devolver o
+    contorno original intacto, com aviso), não descartar arcos silenciosamente."""
+
+    def test_two_crossings_still_mirrored_and_closed(self):
+        # Regressão do caminho feliz: quadrado (2 cruzamentos) → resultado fechado,
+        # simétrico e com a área preservada.
+        ring = _ring_from_polygon([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
+        out = P.symmetrize_beziers(ring, "vertical", 0.0)
+        self.assertGreater(len(out), 0)
+        m = len(out)
+        for k in range(m):                       # encadeado e fechado (p3 == próximo p0)
+            a, b = out[k], out[(k + 1) % m]
+            self.assertAlmostEqual(a[3][0], b[0][0], places=6)
+            self.assertAlmostEqual(a[3][1], b[0][1], places=6)
+        flat = P.flatten_beziers(out, seg=8)
+        mirror = [(-x, y) for (x, y) in flat]
+        self.assertGreaterEqual(P.coverage(flat, mirror, ppm=16.0), 0.99)   # simétrico
+        self.assertAlmostEqual(P.polygon_area(flat), 100.0, delta=2.0)      # área mantida
+
+    def test_four_crossings_falls_back_to_original(self):
+        # Retângulo com FENDA pela esquerda atravessando o eixo (x=0 cruzado 4 vezes:
+        # y=±10 e y=±2): o lado direito tem 2 arcos (externo + fenda). Antes, só o 1º
+        # arco sobrevivia e o resto era DESCARTADO (contorno mutilado); agora devolve o
+        # contorno ORIGINAL intacto (fallback com aviso).
+        slot = [(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0),
+                (-10.0, 2.0), (4.0, 2.0), (4.0, -2.0), (-10.0, -2.0)]
+        ring = _ring_from_polygon(slot)
+        out = P.symmetrize_beziers(ring, "vertical", 0.0)
+        self.assertEqual(out, ring)              # intacto — nada descartado
+
+
+class TestEditFlowGuards(unittest.TestCase):
+    """--edit com detecção/edição degenerada: aborta com erro amigável em vez de
+    crashar em `_svg_from_cubics([])` (min() de lista vazia) na hora de gravar."""
+
+    @staticmethod
+    def _cli_args():
+        import argparse
+        return argparse.Namespace(
+            in_path="dummy.jpg", dict_name=P.DICT_NAME, min_radius=P.MIN_RADIUS_MM,
+            smooth_mm=P.SMOOTH_MM, clearance=P.CLEARANCE_MM, symmetry="none",
+            shadow="off", simplify=P.ANCHOR_SIMPLIFY_MM, faithful=False,
+            min_dist=P.ANCHOR_MIN_DIST_MM, pocket_eps=P.POCKET_EPS_MM,
+            mask_smooth_mm=P.MASK_SMOOTH_MM, mask_smooth_keep_bumps=False,
+            val_frac=P.SEG_VAL_FRAC, debug_dir=None)
+
+    def _run(self, fit_result, editor_result):
+        """Roda `_edit_flow` com o pipeline e o editor MOCKADOS (sem foto nem GUI):
+        `fit_result` = cúbicas detectadas (cub0); `editor_result` = retorno do editor.
+        Devolve (código de saída, out_path foi escrito?, editor foi aberto?)."""
+        import io
+        import tempfile
+        from contextlib import redirect_stderr
+        from unittest import mock
+        import outline_editor as OE
+        rect = np.full((16, 16, 3), 255, np.uint8)
+        sil = [(0.0, 0.0), (2.0, 0.0), (2.0, -2.0), (0.0, -2.0)]
+        gen = (sil, sil, rect, 0.125, 0.125)
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "x.svg")
+            with mock.patch.object(P, "generate_outline", return_value=gen), \
+                 mock.patch.object(P, "_fit_for_output", return_value=fit_result), \
+                 mock.patch.object(OE, "run_editor", return_value=editor_result) as run_ed, \
+                 redirect_stderr(io.StringIO()):
+                code = P._edit_flow(self._cli_args(), out, "x",
+                                    os.path.join(td, "_overlay_x.png"), None)
+            return code, os.path.exists(out), run_ed.called
+
+    def test_empty_detection_aborts_before_editor(self):
+        # cub0 vazio (silhueta degenerada): erro ANTES de abrir o editor — um editor
+        # sem nós é beco sem saída (não dá nem p/ inserir: nearest_segment exige ≥ 2).
+        code, wrote, editor_opened = self._run([], None)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(wrote)
+        self.assertFalse(editor_opened)
+
+    def test_editor_returning_empty_writes_nothing(self):
+        # Editor devolvendo lista vazia (≠ None de cancelar): nada é gravado e o código
+        # de saída acusa o erro — antes crashava em min() de bbox vazia.
+        tri = [((0.0, 0.0), (0.5, 0.5), (1.5, 0.5), (2.0, 0.0)),
+               ((2.0, 0.0), (1.5, -1.5), (1.0, -2.0), (0.0, -2.0)),
+               ((0.0, -2.0), (0.0, -1.0), (0.0, -0.5), (0.0, 0.0))]
+        code, wrote, _ = self._run(tri, [])
+        self.assertNotEqual(code, 0)
+        self.assertFalse(wrote)
+
+
+class TestCubicRoots(unittest.TestCase):
+    def test_double_root_found_despite_float_rounding(self):
+        # (t−1/3)²·(t−0.8): o det do cúbico deprimido é 0 MATEMATICAMENTE, mas o float
+        # arredonda p/ ±2e-19. A comparação exata `det == 0` caía no ramo de raiz única
+        # quando o erro dava positivo e PERDIA a raiz dupla (medido: só 0.8 voltava) —
+        # em symmetrize_beziers isso pulava um cruzamento tangente do eixo. Com
+        # tolerância relativa, as duas raízes distintas saem sempre.
+        r_dbl, r_simple = 1.0 / 3.0, 0.8
+        B = -(2 * r_dbl + r_simple)
+        C = r_dbl * r_dbl + 2 * r_dbl * r_simple
+        D = -r_dbl * r_dbl * r_simple
+        roots = P.cubic_roots(1.0, B, C, D)
+        self.assertTrue(any(abs(t - r_dbl) < 1e-6 for t in roots), f"raiz dupla ausente: {roots}")
+        self.assertTrue(any(abs(t - r_simple) < 1e-6 for t in roots), f"raiz simples ausente: {roots}")
+
+    def test_three_distinct_roots_unchanged(self):
+        # Regressão do ramo trigonométrico: 3 raízes reais distintas em [0,1].
+        rr = (0.2, 0.5, 0.9)
+        B = -(rr[0] + rr[1] + rr[2])
+        C = rr[0] * rr[1] + rr[0] * rr[2] + rr[1] * rr[2]
+        D = -rr[0] * rr[1] * rr[2]
+        roots = sorted(P.cubic_roots(1.0, B, C, D))
+        self.assertEqual(len(roots), 3)
+        for got, want in zip(roots, rr):
+            self.assertAlmostEqual(got, want, places=9)
+
+
+class TestCliDictValidation(unittest.TestCase):
+    def test_unknown_dict_rejected_at_parse(self):
+        # --dict inválido é rejeitado pelo argparse (choices da tabela DICT_CAPACITY) com
+        # mensagem amigável — antes o getattr(cv2.aruco, ...) estourava AttributeError cru.
+        import io
+        from contextlib import redirect_stderr
+        with self.assertRaises(SystemExit) as cm, redirect_stderr(io.StringIO()):
+            P.main(["--in", THERMPRO_JPG, "--dict", "DICT_INEXISTENTE"])
+        self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":

@@ -67,12 +67,15 @@ class Marker:
 def _edge_positions(start, end, size, min_gap):
     """Posições do canto-de-início (top-left) de marcadores de lado `size`
     distribuídos uniformemente no intervalo [start, end] de uma borda. Os
-    marcadores ficam dentro de [start, end] (o último começa em end-size)."""
+    marcadores ficam dentro de [start, end] (o último começa em end-size).
+    Se não cabem DOIS com o vão `min_gap`, devolve UM centrado — nunca um par
+    quase-sobreposto (indetectável e fora do contrato de vão mínimo)."""
     span = (end - size) - start
     if span <= 1e-9:
         return [start]
     n = int(span // (size + min_gap)) + 1
-    n = max(2, n)
+    if n < 2:
+        return [start + span / 2.0]
     step = span / (n - 1)
     return [start + i * step for i in range(n)]
 
@@ -93,6 +96,9 @@ def target_layout(page=A4_LANDSCAPE, page_margin=10.0, marker_mm=16.0,
     Marker com IDs únicos sequenciais. Marcadores formam uma moldura de UMA
     espessura; o miolo (inner_rect) fica livre de marcadores.
     """
+    if dict_name not in DICT_CAPACITY:
+        raise ValueError(f"dicionário ArUco desconhecido: {dict_name!r} "
+                         f"(conhecidos: {', '.join(sorted(DICT_CAPACITY))})")
     W, H = page
     if min_gap is None:
         min_gap = 0.6 * marker_mm
@@ -126,14 +132,18 @@ def target_layout(page=A4_LANDSCAPE, page_margin=10.0, marker_mm=16.0,
 
     inner = (px0 + s + inner_pad, py0 + s + inner_pad,
              px1 - s - inner_pad, py1 - s - inner_pad)
+    if inner[2] - inner[0] <= 0 or inner[3] - inner[1] <= 0:
+        raise ValueError(
+            f"página {W}x{H} mm pequena demais p/ marcadores de {s} mm: o miolo branco "
+            f"degenera (bordas de marcadores colidiriam). Reduza marker_mm/margens.")
 
     return {
         "page": (W, H),
         "page_margin": page_margin,
         "marker_mm": s,
         "dict": dict_name,
-        "capacity": DICT_CAPACITY.get(dict_name, 50),
-        "modules": DICT_MODULES.get(dict_name, 6),
+        "capacity": DICT_CAPACITY[dict_name],
+        "modules": DICT_MODULES[dict_name],
         "inner_rect": inner,
         "markers": markers,
     }

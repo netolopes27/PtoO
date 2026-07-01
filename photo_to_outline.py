@@ -30,6 +30,7 @@ import base64
 import math
 import os
 import sys
+from xml.sax.saxutils import escape as _xml_escape
 
 import numpy as np
 
@@ -482,22 +483,23 @@ def aruco_correspondences(corners, ids, layout):
     return np.array(img_pts, np.float32), np.array(mm_pts, np.float32)
 
 
-def estimate_tilt_deg(img_pts, mm_pts, image_shape):
+def estimate_tilt_deg(H_mm2img, image_shape):
     """Inclinação (graus) entre o eixo da câmera e a NORMAL do papel, a partir da
-    homografia mm→pixel decomposta com uma intrínseca APROXIMADA (foco ~1,2·lado
-    maior — chute razoável p/ celular). Mede o quão longe do nadir a foto está; o
-    valor é aproximado (não temos calibração da lente), serve de aviso de paralaxe.
-    Devolve `nan` se não der p/ estimar."""
-    if len(img_pts) < 4:
+    homografia mm→pixel `H_mm2img` — o INVERSO da imagem→mm que a retificação já
+    resolveu (nada de um segundo RANSAC aqui) — decomposta com uma intrínseca
+    APROXIMADA (foco ~1,2·lado maior — chute razoável p/ celular). Mede o quão longe
+    do nadir a foto está; o valor é aproximado (não temos calibração da lente),
+    serve de aviso de paralaxe. Devolve `nan` se não der p/ estimar."""
+    if H_mm2img is None:
         return float("nan")
     h, w = image_shape[:2]
     f = 1.2 * max(h, w)
     K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1]], np.float64)
-    Hpix, _ = cv2.findHomography(mm_pts, img_pts, cv2.RANSAC, 3.0)
-    if Hpix is None:
+    B = np.linalg.inv(K) @ np.asarray(H_mm2img, np.float64)
+    n0 = np.linalg.norm(B[:, 0])
+    if n0 < 1e-12:                             # homografia degenerada
         return float("nan")
-    B = np.linalg.inv(K) @ Hpix
-    lam = 1.0 / np.linalg.norm(B[:, 0])
+    lam = 1.0 / n0
     r0 = B[:, 0] * lam
     r1 = B[:, 1] * lam
     r2 = np.cross(r0, r1)
@@ -545,7 +547,11 @@ def rectify(img, dict_name=DICT_NAME, ppmm=PX_PER_MM, layout=None, debug_dir=Non
         raise GridDetectionError("homografia ArUco falhou (marcadores degenerados)")
 
     # Aviso de inclinação (aproximado): longe do nadir = mais paralaxe pela altura.
-    tilt = estimate_tilt_deg(img_pts, mm_pts, gray.shape)
+    # Reusa o H imagem→mm já resolvido (invertido) em vez de um segundo RANSAC.
+    try:
+        tilt = estimate_tilt_deg(np.linalg.inv(H), gray.shape)
+    except np.linalg.LinAlgError:
+        tilt = float("nan")
     if not math.isnan(tilt) and tilt > TILT_WARN_DEG:
         warn(f"foto a ~{tilt:.0f}° do nadir (> {TILT_WARN_DEG:.0f}°): a altura do "
              f"objeto pode inflar o contorno — fotografe mais de cima.")
@@ -1137,9 +1143,10 @@ def fit_closed_beziers_contained(guide, silhouette, c_fit=0.3, eps=0.06, ppm=10.
 # Resultado: poucos nós, contorno justo e limpo, contendo a ferramenta.
 # -----------------------------------------------------------------------------
 def douglas_peucker_idx(pts, eps):
-    """RDP num polígono FECHADO → lista ordenada dos ÍNDICES mantidos (cantos
-    dominantes; descarta pontos quase-colineares). Usado p/ destilar o fecho convexo
-    nas extremidades dominantes."""
+    """RDP sobre a CADEIA ABERTA pts[0..n-1] → lista ordenada dos ÍNDICES mantidos
+    (cantos dominantes; descarta pontos quase-colineares). Os dois extremos ficam
+    sempre e a aresta de fechamento n-1→0 NÃO é simplificada — suficiente p/ o uso
+    (destilar o fecho convexo nas extremidades dominantes), não um RDP circular."""
     n = len(pts)
     if n <= 3:
         return list(range(n))
@@ -1259,15 +1266,19 @@ def cubic_roots(A, B, C, D):
     p = (3*A*C - B*B) / (3*A*A)
     q = (2*B*B*B - 9*A*B*C + 27*A*A*D) / (27*A*A*A)
     det = (q*q)/4 + (p*p*p)/27
-    
-    if det > 0:
+    # Tolerância RELATIVA p/ o caso de raiz dupla: det = 0 matemático arredonda p/
+    # ±~1e-19 em float e a comparação exata caía no ramo de raiz única, PERDENDO a
+    # raiz dupla (um cruzamento tangente do eixo sumia em symmetrize_beziers).
+    eps = 1e-12 * ((q*q)/4 + abs(p*p*p)/27) + 1e-30
+
+    if det > eps:
         u1 = -q/2 + math.sqrt(det)
         u1 = math.copysign(abs(u1)**(1/3), u1)
         u2 = -q/2 - math.sqrt(det)
         u2 = math.copysign(abs(u2)**(1/3), u2)
         t = u1 + u2 - B/(3*A)
         roots.append(t)
-    elif det == 0:
+    elif det >= -eps:                          # raiz dupla (det ≈ 0)
         u = math.copysign(abs(-q/2)**(1/3), -q/2)
         roots.append(2*u - B/(3*A))
         roots.append(-u - B/(3*A))
@@ -1339,16 +1350,27 @@ def symmetrize_beziers(cubics, axis, c):
         
     n = len(split_cubics)
     if all(is_right) or not any(is_right): return cubics
-        
+
+    # nº de ARCOS do lado mantido = nº de transições esquerda→direita na ordem circular.
+    runs = sum(1 for i in range(n) if is_right[i] and not is_right[(i - 1) % n])
+    if runs > 1:
+        # O contorno cruza o eixo MAIS de 2 vezes (forma côncava através do eixo): o lado
+        # mantido tem 2+ arcos e cada arco+espelho fecharia um LAÇO separado (furo/multi-
+        # contorno) — não existe simetrizado de caminho ÚNICO. Devolve o contorno ORIGINAL
+        # intacto (antes: só o 1º arco sobrevivia e o resto era descartado em silêncio).
+        warn("simetria de Béziers ignorada: o contorno cruza o eixo de simetria mais de "
+             "2 vezes — mantido o contorno sem espelhar (use só a simetria de máscara).")
+        return cubics
+
     start_idx = 0
     for i in range(n):
         if is_right[i] and not is_right[(i - 1) % n]:
             start_idx = i
             break
-            
+
     rotated = split_cubics[start_idx:] + split_cubics[:start_idx]
     rotated_is_right = is_right[start_idx:] + is_right[:start_idx]
-    
+
     right_cubics = []
     for i in range(n):
         if rotated_is_right[i]: right_cubics.append(rotated[i])
@@ -1615,6 +1637,21 @@ def fit_anchored_cached(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM
     return cached
 
 
+def _fit_for_output(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
+                    faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM,
+                    pocket_eps=POCKET_EPS_MM, symmetry="none"):
+    """Cúbicas PRONTAS p/ emissão — fonte ÚNICA dos três consumidores (.svg final, overlay
+    Inkscape e métricas do CLI), garantindo que todos usem os MESMOS parâmetros (inclusive
+    `symmetry`) e a mesma chave do cache: ajuste ancorado memoizado + snap de bbox no modo
+    FIEL. No POCKET não há snap (o pocket fica ≥ objeto p/ conter a peça)."""
+    cub = fit_anchored_cached(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
+                              faithful=faithful, min_dist_mm=min_dist_mm,
+                              pocket_eps=pocket_eps, symmetry=symmetry)
+    if cub and faithful:
+        cub = _scale_cubics_to_bbox(cub, *size(sil))
+    return cub
+
+
 def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                    silhouette=None, c_fit=0.3, anchored=True,
                    smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
@@ -1632,20 +1669,20 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
     p = dedup_closing_point(pts_mm)
     f = CT.fmt_mm
 
-    pocket = anchored and not faithful           # modo ENCAIXE: sem snap de bbox
     if not curves:
         cubics = []
     elif silhouette is not None:
         if anchored:
-            cubics = fit_anchored_cached(silhouette, smooth_mm=smooth_mm,
-                                         simplify_mm=simplify_mm, faithful=faithful,
-                                         min_dist_mm=min_dist_mm, pocket_eps=pocket_eps,
-                                         symmetry=symmetry)
+            # _fit_for_output faz o snap de bbox SÓ no modo fiel (no ENCAIXE o pocket
+            # fica ≥ objeto, sem snap) — mesma geometria do overlay e das métricas.
+            cubics = _fit_for_output(silhouette, smooth_mm=smooth_mm,
+                                     simplify_mm=simplify_mm, faithful=faithful,
+                                     min_dist_mm=min_dist_mm, pocket_eps=pocket_eps,
+                                     symmetry=symmetry)
         else:
             cubics = fit_closed_beziers_contained(p, silhouette, c_fit=c_fit)
-        if cubics and not pocket:                 # snap p/ a dimensão real (exceto encaixe)
-            tw, th = size(silhouette)
-            cubics = _scale_cubics_to_bbox(cubics, tw, th)
+            if cubics:                            # snap p/ a dimensão real medida pela grade
+                cubics = _scale_cubics_to_bbox(cubics, *size(silhouette))
     else:
         cubics = fit_closed_beziers(p, tol=tol)
 
@@ -1659,11 +1696,23 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
     return _svg_envelope(d, w, h, name, len(pp))
 
 
+def _svg_safe_name(name):
+    """Escapa `name` (vem do arquivo de entrada ou de --name) p/ inserção segura no SVG:
+    escapa &<>\" e colapsa '--' (proibido dentro de comentário XML). Sem isto um nome
+    hostil quebraria o documento ou injetaria markup executável (navegador roda <script>
+    de SVG)."""
+    s = _xml_escape(str(name), {'"': "&quot;"})
+    while "--" in s:
+        s = s.replace("--", "-")
+    return s
+
+
 def _svg_envelope(d, w, h, name, npts):
     """Monta o documento SVG (mm) em torno de um caminho `d` já no referencial SVG
     (origem topo-esq, Y p/ baixo): contorno + preenchimento translúcido na cor de
     saída. Fonte única do envelope usada pelo polyline E por `_svg_from_cubics`."""
     f = CT.fmt_mm
+    name = _svg_safe_name(name)
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
         f'<!-- GERADO por photo_to_outline.py — contorno de {name} (mm), {npts} nós -->\n'
@@ -1691,6 +1740,16 @@ def _svg_from_cubics(cubics, name="outline"):
     return _svg_envelope(_cubics_to_path_d(cubics, tx), w, h, name, len(cubics))
 
 
+def encode_png_b64(img):
+    """Codifica uma imagem BGR (OpenCV) em base64 de PNG (string ascii, sem o prefixo
+    `data:`). Fonte única — foto embutida no overlay SVG (`write_overlay_svg`) e
+    tk.PhotoImage da view do editor (outline_editor)."""
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        raise RuntimeError("falha ao codificar a imagem em PNG")
+    return base64.b64encode(buf.tobytes()).decode("ascii")
+
+
 def write_overlay(rect, mask, path):
     """Grava o OVERLAY de conferência: o contorno SEGMENTADO (já com a simetria, se
     houver) desenhado em vermelho sobre a foto retificada — o "o que o tool enxergou
@@ -1709,10 +1768,10 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
     referencial MÉTRICO do canvas (viewBox em mm). Abra no Inkscape, ajuste os nós do
     contorno sobre a foto, apague/oculte a camada da foto e exporte → contorno corrigido
     na escala real. O frame da foto é (x_mm, −y_mm): px(0,0) no topo-esq, como em `rect`."""
+    name = _svg_safe_name(name)
     h, w = rect.shape[:2]
     canvas_w, canvas_h = w * mmpp_x, h * mmpp_y
-    _ok, buf = cv2.imencode(".png", rect)
-    b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+    b64 = encode_png_b64(rect)
 
     f = CT.fmt_mm
 
@@ -1736,7 +1795,7 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
         f'  <g inkscape:groupmode="layer" inkscape:label="{name}">\n'
         f'    <path d="{d}"\n'
         f'          style="fill:{OUTLINE_COLOR};fill-opacity:{OUTLINE_FILL_OPACITY};'
-        f'stroke:{OUTLINE_COLOR};stroke-width:0.3;vector-effect:non-scaling-stroke"/>\n'
+        f'stroke:{OUTLINE_COLOR};stroke-width:{f(SVG_HAIRLINE_MM)};vector-effect:non-scaling-stroke"/>\n'
         '  </g>\n'
         '</svg>\n'
     )
@@ -1776,13 +1835,10 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
         write_overlay(rect, mask, overlay_path)
     sil = extract_outline(mask, mmpp_x, mmpp_y, debug_dir=debug_dir)
     if overlay_svg_path:
-        # Mesmos Béziers que o .svg emite. No modo encaixe (pocket) NÃO se faz o snap de
-        # bbox (o pocket fica ≥ objeto p/ conter a peça); no modo fiel, snap p/ a dimensão real.
-        cub = fit_anchored_cached(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
-                                  faithful=faithful, min_dist_mm=min_dist_mm,
-                                  pocket_eps=pocket_eps)
-        if cub and faithful:
-            cub = _scale_cubics_to_bbox(cub, *size(sil))
+        # Mesmos Béziers que o .svg emite (fonte única _fit_for_output, incl. symmetry).
+        cub = _fit_for_output(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
+                              faithful=faithful, min_dist_mm=min_dist_mm,
+                              pocket_eps=pocket_eps, symmetry=symmetry)
         write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
     out = process_for_print(sil, min_radius=min_radius, smooth_mm=smooth_mm, clearance=clearance)
     if return_edit_data:
@@ -1804,10 +1860,9 @@ def boundary_roughness(pts, win_mm=2.0, step=0.2):
 def coverage(outer, inner, ppm=8.0):
     """Fração da área de `inner` contida em `outer` (mesmo referencial mm). 1.0 =
     `inner` totalmente dentro de `outer` (a peça cabe no pocket)."""
-    min_x = min(bbox(outer)[0], bbox(inner)[0])
-    min_y = min(bbox(outer)[1], bbox(inner)[1])
-    max_x = max(bbox(outer)[2], bbox(inner)[2])
-    max_y = max(bbox(outer)[3], bbox(inner)[3])
+    bo, bi = bbox(outer), bbox(inner)
+    min_x, min_y = min(bo[0], bi[0]), min(bo[1], bi[1])
+    max_x, max_y = max(bo[2], bi[2]), max(bo[3], bi[3])
     w = int(math.ceil((max_x - min_x) * ppm)) + 2
     h = int(math.ceil((max_y - min_y) * ppm)) + 2
     mo = _polys_to_mask([[((x - min_x) * ppm, (y - min_y) * ppm) for (x, y) in _xy(outer)]], w, h)
@@ -1820,6 +1875,26 @@ def coverage(outer, inner, ppm=8.0):
 # =============================================================================
 # CLI
 # =============================================================================
+def _pipeline_kwargs(args, overlay_path, overlay_svg_path):
+    """Kwargs de `generate_outline` derivados dos flags do CLI — fonte única dos dois
+    fluxos (padrão e --edit), p/ os dois nunca divergirem num parâmetro."""
+    return dict(dict_name=args.dict_name, min_radius=args.min_radius,
+                smooth_mm=args.smooth_mm, clearance=args.clearance, symmetry=args.symmetry,
+                deshadow=(False if args.shadow == "off" else args.shadow),
+                simplify_mm=args.simplify, faithful=args.faithful, min_dist_mm=args.min_dist,
+                pocket_eps=args.pocket_eps, mask_smooth_mm=args.mask_smooth_mm,
+                mask_smooth_keep_bumps=args.mask_smooth_keep_bumps, val_frac=args.val_frac,
+                overlay_path=overlay_path, overlay_svg_path=overlay_svg_path,
+                debug_dir=args.debug_dir)
+
+
+def _print_grid_error(e):
+    """Mensagem única de falha da retificação ArUco (fluxo padrão e --edit)."""
+    print(f"ERRO: retificação pela base ArUco falhou — {e}", file=sys.stderr)
+    print("      imprima base.svg em A4 a 100%, apoie a peça no centro branco e "
+          "fotografe de cima; use --debug-dir p/ inspecionar.", file=sys.stderr)
+
+
 def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     """Modo `--edit`: detecta como sempre, abre o editor de nós (outline_editor) e grava as
     MESMAS saídas a partir da curva ajustada à mão. A detecção é automática; o usuário só move/
@@ -1829,26 +1904,22 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     import outline_editor as OE
     try:
         _out, sil, rect, mmpp_x, mmpp_y = generate_outline(
-            args.in_path, dict_name=args.dict_name, min_radius=args.min_radius,
-            smooth_mm=args.smooth_mm, clearance=args.clearance, symmetry=args.symmetry,
-            deshadow=(False if args.shadow == "off" else args.shadow),
-            simplify_mm=args.simplify, faithful=args.faithful, min_dist_mm=args.min_dist,
-            pocket_eps=args.pocket_eps, mask_smooth_mm=args.mask_smooth_mm,
-            mask_smooth_keep_bumps=args.mask_smooth_keep_bumps, val_frac=args.val_frac,
-            overlay_path=overlay_path, overlay_svg_path=None,   # o overlay editável sai DEPOIS
-            debug_dir=args.debug_dir, return_edit_data=True)
+            args.in_path, return_edit_data=True,
+            **_pipeline_kwargs(args, overlay_path, None))   # o overlay editável sai DEPOIS
     except GridDetectionError as e:
-        print(f"ERRO: retificação pela base ArUco falhou — {e}", file=sys.stderr)
-        print("      imprima base.svg em A4 a 100%, apoie a peça no centro branco e "
-              "fotografe de cima; use --debug-dir p/ inspecionar.", file=sys.stderr)
+        _print_grid_error(e)
         return 3
 
     # Nós iniciais = curva ancorada (mesma geometria que o .svg padrão emitiria).
-    cub0 = fit_anchored_cached(sil, smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
-                               faithful=args.faithful, min_dist_mm=args.min_dist,
-                               pocket_eps=args.pocket_eps, symmetry=args.symmetry)
-    if cub0 and args.faithful:
-        cub0 = _scale_cubics_to_bbox(cub0, *size(sil))
+    cub0 = _fit_for_output(sil, smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
+                           faithful=args.faithful, min_dist_mm=args.min_dist,
+                           pocket_eps=args.pocket_eps, symmetry=args.symmetry)
+    if not cub0:
+        # Editor sem nós é beco sem saída (nem inserir dá: precisa de ≥ 2 nós) e o
+        # Finalize crasharia em bbox de lista vazia — aborta com diagnóstico.
+        print("ERRO: detecção degenerada (nenhuma curva p/ editar) — nada gravado. "
+              "Confira o overlay e os parâmetros de segmentação.", file=sys.stderr)
+        return 4
     nodes0 = OE.nodes_from_cubics(cub0)
 
     try:
@@ -1860,6 +1931,9 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     if cub is None:
         print("editor cancelado — nada gravado (rode de novo ou sem --edit).")
         return 0
+    if not cub:                                 # lista vazia ≠ cancelar: nada p/ gravar
+        print("ERRO: contorno vazio ao finalizar — nada gravado.", file=sys.stderr)
+        return 4
 
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(_svg_from_cubics(cub, name))       # EXATAMENTE a curva exibida no editor (WYSIWYG)
@@ -1879,6 +1953,7 @@ def main(argv=None):
     ap.add_argument("--in", "-i", dest="in_path", required=True)
     ap.add_argument("--out", "-o", dest="out_path")
     ap.add_argument("--dict", dest="dict_name", default=DICT_NAME,
+                    choices=sorted(CT.DICT_CAPACITY),
                     help="dicionário ArUco da base impressa (deve casar com base.svg)")
     ap.add_argument("--min-radius", type=float, default=MIN_RADIUS_MM)
     ap.add_argument("--smooth-mm", dest="smooth_mm", type=float, default=SMOOTH_MM,
@@ -1975,22 +2050,10 @@ def main(argv=None):
         return _edit_flow(args, out_path, name, overlay_path, overlay_svg_path)
 
     try:
-        pts, sil = generate_outline(args.in_path, dict_name=args.dict_name,
-                                    min_radius=args.min_radius, smooth_mm=args.smooth_mm,
-                                    clearance=args.clearance, symmetry=args.symmetry,
-                                    deshadow=(False if args.shadow == "off" else args.shadow),
-                                    simplify_mm=args.simplify, faithful=args.faithful,
-                                    min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps,
-                                    mask_smooth_mm=args.mask_smooth_mm,
-                                    mask_smooth_keep_bumps=args.mask_smooth_keep_bumps,
-                                    val_frac=args.val_frac,
-                                    overlay_path=overlay_path,
-                                    overlay_svg_path=overlay_svg_path,
-                                    debug_dir=args.debug_dir, return_silhouette=True)
+        pts, sil = generate_outline(args.in_path, return_silhouette=True,
+                                    **_pipeline_kwargs(args, overlay_path, overlay_svg_path))
     except GridDetectionError as e:
-        print(f"ERRO: retificação pela base ArUco falhou — {e}", file=sys.stderr)
-        print("      imprima base.svg em A4 a 100%, apoie a peça no centro branco e "
-              "fotografe de cima; use --debug-dir p/ inspecionar.", file=sys.stderr)
+        _print_grid_error(e)
         return 3
 
     anchored = not args.tol_fit                     # ancorado nas extremidades (padrão)
@@ -2017,12 +2080,10 @@ def main(argv=None):
     if args.polyline:
         metrics = f"polyline | {obj}"
     elif anchored:
-        cub = fit_anchored_cached(sil, smooth_mm=args.smooth_mm,
-                                  simplify_mm=args.simplify, faithful=args.faithful,
-                                  min_dist_mm=args.min_dist, pocket_eps=args.pocket_eps,
-                                  symmetry=args.symmetry)
-        if cub and not pocket:                      # mesma geometria do SVG emitido
-            cub = _scale_cubics_to_bbox(cub, *size(sil))
+        cub = _fit_for_output(sil, smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
+                              faithful=args.faithful, min_dist_mm=args.min_dist,
+                              pocket_eps=args.pocket_eps,
+                              symmetry=args.symmetry)     # mesma geometria do SVG emitido
         cov = coverage(flatten_beziers(cub), sil)
         if pocket:
             pw, ph = size(flatten_beziers(cub))     # pocket = ≥ objeto (contém a peça)

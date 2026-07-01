@@ -25,7 +25,7 @@ import calibration_target as CT
 def _marker_modules(dict_name, marker_id):
     """Matriz mods×mods (0=preto, 255=branco) do marcador, 1 px por módulo."""
     dic = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
-    mods = CT.DICT_MODULES.get(dict_name, 6)
+    mods = CT.DICT_MODULES[dict_name]     # dict validado no parse (choices) e no layout
     return cv2.aruco.generateImageMarker(dic, marker_id, mods)
 
 
@@ -132,7 +132,7 @@ def main(argv=None):
     ap.add_argument("--page-margin", type=float, default=10.0)
     ap.add_argument("--marker-mm", type=float, default=16.0)
     ap.add_argument("--inner-pad", type=float, default=6.0)
-    ap.add_argument("--dict", default="DICT_4X4_50")
+    ap.add_argument("--dict", default="DICT_4X4_50", choices=sorted(CT.DICT_CAPACITY))
     args = ap.parse_args(argv)
 
     page = CT.A4_LANDSCAPE if args.orientation == "landscape" else CT.A4_PORTRAIT

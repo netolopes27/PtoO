@@ -1,7 +1,7 @@
-# Dependências do tooling de imagem — tools/photo_to_outline.py
-# Instalar SOMENTE no venv isolado tools/.venv/ (a suíte OpenSCAD segue stdlib-pura):
-#   python -m venv tools/.venv
-#   tools/.venv/Scripts/python -m pip install -r tools/requirements.txt
+# Dependências do tooling de imagem — photo_to_outline.py (raiz do repo)
+# Instalar SOMENTE no venv isolado ./.venv/ (o resto do projeto segue stdlib-pura):
+#   python -m venv .venv
+#   .venv/Scripts/python -m pip install -r requirements.txt      # Linux/Mac: .venv/bin/python
 #
 # Verificado em Python 3.14 (Windows): há wheel abi3 do opencv-python que cobre 3.14.
 numpy>=2.5,<3

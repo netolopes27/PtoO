@@ -69,11 +69,18 @@ contorno → menos ruído). `vertical` = eixo vertical (metades esq./dir.), `hor
   passe (pelo overview).
 - **Cuidado:** **nunca** em peça assimétrica — distorce o contorno.
 - **Efeito:** limpa ruído lateral e **sobe o contém**.
+- **Limite (espelhamento de Béziers):** se o contorno cruza o eixo **mais de 2 vezes** (forma
+  côncava atravessando o eixo, ex.: fenda central), o espelhamento das curvas é **ignorado com
+  aviso** — cada arco+espelho fecharia um laço separado (multi-contorno), sem caminho único
+  fiel. A simetria de **máscara** (a média das metades, feita antes) continua valendo.
 
 ### `--dict <nome>`  · default `DICT_4X4_50`
 Dicionário ArUco da base impressa; **deve casar** com o `base.svg` gerado.
 - **Quando mexer:** só se você regerou a base com outro dicionário. Se não casar, a retificação
   falha (`ERRO: retificação pela base ArUco falhou`) — aí é problema de foto/base, não de pocket.
+- **Validação:** só os dicionários da tabela `DICT_CAPACITY`/`DICT_MODULES`
+  (`calibration_target.py`) são aceitos (`choices` do argparse, nos dois CLIs); um nome fora da
+  tabela é rejeitado no parse. Para usar outro dicionário, acrescente-o à tabela.
 
 ### `--min-radius <mm>`  · default `1.5`
 Raio **mínimo** de canto na suavização (evita bico/cusp de 90°).

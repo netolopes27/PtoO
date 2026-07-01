@@ -20,7 +20,6 @@
 # Roda no mesmo venv do photo_to_outline.py (numpy + opencv-python).
 # =============================================================================
 
-import base64
 import math
 
 import photo_to_outline as P
@@ -131,16 +130,6 @@ def mm_to_px(pt, mmpp_x, mmpp_y):
 def px_to_mm(pt, mmpp_x, mmpp_y):
     """Pixel da foto retificada (Y p/ baixo) → ponto em mm (Y p/ cima)."""
     return (pt[0] * mmpp_x, -pt[1] * mmpp_y)
-
-
-def _encode_png_b64(rect):
-    """Codifica uma imagem BGR (OpenCV) em base64 de PNG p/ tk.PhotoImage(data=...)
-    — sem PIL. Devolve a string ascii (base64 puro, sem o prefixo `data:`)."""
-    import cv2
-    ok, buf = cv2.imencode(".png", rect)
-    if not ok:
-        raise RuntimeError("falha ao codificar a foto em PNG")
-    return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
 # =============================================================================
@@ -254,7 +243,7 @@ class EditorApp:
         dh = max(1, int(round((iy1 - iy0) * z)))
         interp = cv2.INTER_AREA if z < 1 else cv2.INTER_LINEAR
         img = cv2.resize(crop, (dw, dh), interpolation=interp)
-        self._photo = self.tk.PhotoImage(data=_encode_png_b64(img))
+        self._photo = self.tk.PhotoImage(data=P.encode_png_b64(img))
         self._photo_xy = self._photo_px_to_screen(ix0, iy0)
 
     def _fit_view(self):

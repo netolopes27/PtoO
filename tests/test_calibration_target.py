@@ -83,6 +83,39 @@ class TestTargetLayout(unittest.TestCase):
         self.assertEqual(m.corners_mm(),
                          [(10, 20), (16, 20), (16, 26), (10, 26)])
 
+    def test_edge_positions_single_when_two_would_violate_gap(self):
+        # Span curto (não cabem 2 marcadores com o vão mínimo): devolve UM, centrado,
+        # em vez de dois quase-sobrepostos (indetectáveis e fora do contrato min_gap).
+        pos = CT._edge_positions(0.0, 20.0, 16.0, 9.6)   # span útil = 4 mm < 16+9.6
+        self.assertEqual(len(pos), 1)
+        self.assertAlmostEqual(pos[0], 2.0)              # centrado em [0, 20-16]
+
+    def test_tight_page_yields_single_marker_rows_without_overlap(self):
+        # Página apertada (1 marcador por borda): layout ainda válido, nenhum par de
+        # marcadores se sobrepõe.
+        L = CT.target_layout(page=(95.0, 95.0), marker_mm=30.0)
+        s = L["marker_mm"]
+        ms = L["markers"]
+        self.assertGreaterEqual(len(ms), 2)
+        for i in range(len(ms)):
+            for j in range(i + 1, len(ms)):
+                a, b = ms[i], ms[j]
+                self.assertFalse(a.x < b.x + s and a.x + s > b.x and
+                                 a.y < b.y + s and a.y + s > b.y,
+                                 f"marcadores {a.id} e {b.id} sobrepostos")
+
+    def test_degenerate_inner_rect_raises(self):
+        # Página pequena demais p/ o marcador: as bordas de marcadores colidiriam e o
+        # miolo branco degenera — erro claro em vez de um alvo impresso inválido.
+        with self.assertRaises(ValueError):
+            CT.target_layout(page=(60.0, 60.0), marker_mm=30.0)
+
+    def test_unknown_dict_raises_value_error(self):
+        # Dicionário fora da tabela DICT_CAPACITY/DICT_MODULES: erro CLARO na hora, em vez
+        # do fallback silencioso (capacity=50 inventada) + AttributeError cru lá na frente.
+        with self.assertRaises(ValueError):
+            CT.target_layout(dict_name="DICT_BOGUS")
+
 
 # =============================================================================
 # B. DETECÇÃO SINTÉTICA (precisa OpenCV)
@@ -176,6 +209,18 @@ class TestTargetDetection(unittest.TestCase):
         sides = np.array(sides)
         self.assertAlmostEqual(float(sides.mean()), s, delta=0.3)
         self.assertLess(float(sides.std()), 0.5)  # uniforme em todo o campo
+
+
+@unittest.skipUnless(_HAS_CV, "OpenCV ausente")
+class TestMakeTargetCli(unittest.TestCase):
+    def test_unknown_dict_rejected_at_parse(self):
+        # --dict inválido é rejeitado pelo argparse (choices) antes de renderizar qualquer coisa.
+        import io
+        from contextlib import redirect_stderr
+        import make_calibration_target as MCT
+        with self.assertRaises(SystemExit) as cm, redirect_stderr(io.StringIO()):
+            MCT.main(["--dict", "DICT_BOGUS", "--out", os.devnull])
+        self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":

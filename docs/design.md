@@ -248,7 +248,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 97/97 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 113/113 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -292,3 +292,20 @@ personalizável** a partir do contorno medido.
   `insert`/`delete`) preservam ordem e ≥ 3 nós; `nearest_node`/`nearest_segment`. Transforms
   `mm_to_px`/`px_to_mm` ida-e-volta. A view tkinter é glue fino e **não** é instanciada (runner
   headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG), sem recalcular.
+- **F. Saída/CLI (`TestOutputFitSourceOfTruth`, `TestSvgNameEscaping`, `TestCliDictValidation`,
+  `TestMakeTargetCli`).** `_fit_for_output` é a **fonte única** do ajuste emitido (.svg final,
+  overlay Inkscape e métricas — o overlay recebe a MESMA `--symmetry`; snap de bbox só no modo
+  fiel); o `name` (arquivo/`--name`) entra **escapado** no SVG (nome hostil não injeta markup nem
+  quebra o XML); `--dict` restrito às `choices` da tabela `DICT_CAPACITY` nos dois CLIs e
+  `target_layout` levanta `ValueError` p/ dicionário desconhecido. `TestCubicRoots`: raiz DUPLA
+  achada apesar do arredondamento float (tolerância relativa no `det`; antes `det == 0` exato
+  perdia a raiz e um cruzamento tangente do eixo sumia). Robustez do layout: borda que não
+  comporta 2 marcadores com o vão mínimo recebe **1 centrado** (nunca um par quase-sobreposto)
+  e página pequena demais (miolo degenerado) levanta `ValueError`. `estimate_tilt_deg` recebe a
+  homografia mm→imagem PRONTA (o inverso da que `rectify` já resolveu — sem 2º RANSAC).
+  `TestEditFlowGuards`: `--edit` com detecção degenerada (cub0 vazio) aborta com erro ANTES de
+  abrir o editor, e editor devolvendo lista vazia não grava nada (antes: crash em `min()` de
+  bbox vazia ao Finalizar). `TestSymmetrizeBeziers`: 2 cruzamentos do eixo → espelhado, fechado
+  e simétrico; **>2 cruzamentos** (côncava através do eixo: 2+ arcos no lado mantido, cada
+  arco+espelho = laço separado) → **fallback com aviso**, contorno original intacto (antes só o
+  1º arco sobrevivia e o resto era descartado em silêncio).

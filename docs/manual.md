@@ -139,6 +139,30 @@ quantidade de Béziers emerge só do espaçamento.
 - **Rampa adaptativa (1º lever):** direção padrão ↓; enquanto melhorar, continue; parou de
   melhorar → inverta p/ ↑; piorou na invertida → volte ao melhor e passe p/ a 2ª rampa.
   Piso = 1 mm; teto ~10.
+- **v0.10:** com as primitivas ligadas (default), `--min-dist` rege só os trechos **livres**
+  (nem reta nem arco) — em peças retilíneas o default 10 já sai justo (as retas não arqueiam).
+  Comece a rampa no default; se o objeto for orgânico (pouca primitiva), a rampa volta a mandar.
+
+### `--line-tol <mm>`  · default `0.3`  ·  **primitivas: RETAS (v0.10)**
+Detecção de **retas** no contorno: um trecho maximal onde **todos** os pontos desviam menos que
+isto da corda vira **uma reta** (cúbica degenerada na corda, deslocada para FORA pelo desvio
+residual — contenção garantida). Trechos colineares adjacentes fundem (uma aresta física = uma
+reta); as pontas recuam ~0.8 mm para o canto virar filete tangente (**G1** mantido em todo nó).
+Âncoras de quadrante internas à reta são suprimidas — menos nós, e a aresta reta **não arqueia
+para dentro** (o caso "placa retangular" que fechava a rampa min-dist alto).
+- **`0` = DESLIGA retas E arcos** (caminho legado puro, idêntico ao pré-v0.10).
+- **MAIOR** (0.5+): mais agressivo — pega arestas abauladas, mas começa a facetar curvas gentis.
+- **MENOR** (0.1–0.2): só reta de verdade; fotos ruidosas podem perder arestas legítimas.
+- Um **círculo grande não vira polígono**: trecho que um círculo de raio plausível ajusta melhor
+  que a corda é vetado e fica para os arcos.
+
+### `--arc-tol <mm>`  · default `0.3`  ·  **primitivas: ARCOS (v0.10)**
+Nos **vãos entre retas** (contorno inteiro se não há retas), um círculo por mínimos quadrados com
+resíduo radial abaixo disto — e varredura angular monótona, giro por ponto compatível com o raio
+(canto não é engolido) — vira **arco tangente**: canto = filete limpo, 1 cúbica por até 90°.
+Raio plausível: 0.8–60 mm. `0` desliga só os arcos (retas continuam).
+- No Pi (2 fotos, min-dist 10): folga caiu de +0.83/+0.19 (legado) p/ **+0.07/−0.05** com
+  contém 0.9999 — as primitivas colam o pocket na peça.
 
 ### `--pocket-eps <mm>`  · default `0.5`
 Penetração **tolerada** no modo POCKET: a curva pode tocar/cortar a peça até este valor (em vez de

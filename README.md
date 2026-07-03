@@ -135,6 +135,13 @@ where the part rests (e.g. a recess in a 3D-printed case). Twofold priority: the
    "outermost", so the smooth curve would round over it. The pocket **forces an anchor at each
    local protrusion** whose prominence exceeds `PROTRUSION_DEV_MM` (0.8 mm). Smooth/uniform
    curvature (a circle) doesn't trigger it.
+5. **Geometric primitives (v0.10, on by default — `--line-tol`/`--arc-tol`).** Straight
+   stretches of the contour become **exact straight lines** (chord shifted outward by the
+   residual, so containment is guaranteed and a straight edge never bows inward) and the gaps
+   between them become **tangent arcs** (a corner turns into a clean fillet, one cubic per
+   90°). Interior anchors are suppressed — fewer nodes, CAD-like output — and `--min-dist`
+   only governs the remaining free-form stretches. `--line-tol 0` disables both and restores
+   the legacy behavior.
 
 | `--min-dist` | result (thermpro) |
 |---|---|
@@ -173,7 +180,9 @@ PNGs for diagnosis).
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--min-dist` | `10` | **the pocket tightness lever** (mm): min distance between same-quadrant anchors. **No node cap** — smaller `--min-dist` = more anchors = tighter pocket and higher containment. See §4.1 |
+| `--min-dist` | `10` | **the pocket tightness lever** (mm): min distance between same-quadrant anchors. **No node cap** — smaller `--min-dist` = more anchors = tighter pocket and higher containment. With primitives on (v0.10) it only governs the free-form stretches. See §4.1 |
+| `--line-tol` | `0.3` | **straight-line detection** (mm, v0.10): a maximal stretch deviating less than this from its chord becomes one exact straight line (never bowing inward). `0` disables lines **and** arcs (legacy path). See §4.1 |
+| `--arc-tol` | `0.3` | **arc detection** (mm, v0.10): in the gaps between lines, a least-squares circle within this radial residual becomes a tangent arc (corners = clean fillets). `0` disables arcs only |
 | `--smooth-mm` | `8.0` | low-pass window (mm) removing the jaggies; larger = smoother. **Fine lever for containment:** the floor is built from the *smoothed* silhouette, so a large window lets the raw part poke out — lower it (e.g. `2`) to scrape the last 0.0x once `--min-dist` is close, but too low (`≲1`) reintroduces jaggies |
 | `--faithful` | off | **faithful mode**: exact outline of the part (bbox = object, with snap) instead of the fit pocket. Replaces the old `--max-nodes 0`. Ignored if `--tol-fit` |
 | `--simplify` | `2.0` | anchor density (mm) in **faithful** mode: larger = fewer nodes; smaller = tighter |

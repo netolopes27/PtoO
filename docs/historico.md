@@ -287,6 +287,40 @@ pontas USB + microSD saltando), contém **1.0000**, folga −0.01/−0.10, 189 B
 com `--edit` ou refotografando. Refactor: registro extraído p/ `_register_masks` (testável).
 Suíte: 123 → **130** (`TestWatershedEdgeRefine`, `TestFaintMetal`, `TestFuseMasks`).
 
+## Primitivas geométricas — retas e arcos (v0.10)
+
+Observação do usuário: objetos reais têm **arestas retas** e o ajuste livre insiste em Béziers
+que "tendem a reta" (no Pi, a rampa min-dist fechava alto e o canto do Ethernet custava +0.83 mm
+de folga). Ideia: detectar **pontos quase-colineares logo após a extração**, suprimir os do meio
+e ficar só com as extremidades — "compactação com formas geométricas conhecidas": primeiro
+retas, depois arcos. Protótipos visuais sobre o Pi validaram a direção antes do código
+(tol 0.3 mm: 17 retas + 15 arcos cobrindo 292/295 mm do perímetro).
+
+- **Retas** (`_detect_line_runs`, `--line-tol`, default 0.3): trecho maximal com desvio à corda
+  < tol; fusão de colineares (uma aresta = UMA reta); **veto por círculo** (círculo grande não
+  vira polígono; no veto o cursor NÃO pula o trecho — a reta real pode começar adiante); pontas
+  recuadas `PRIM_TRIM_MM`. Emissão: cúbica degenerada NA corda, **deslocada p/ fora** pelo
+  desvio residual (reta-suporte: estufar cúbica colinear não a move de lado → o guard de
+  contenção seria impotente; lição do teste `spread`).
+- **Arcos** (`_detect_arc_runs`, `--arc-tol`): círculo LSQ (Kasa) nos vãos entre retas, com
+  varredura monótona E **giro por ponto ≈ passo/r** — sem isso o arco **engolia bicos/vales**
+  (caso estrela: canto curto desvia < tol do círculo grande) e as tangentes saíam erradas.
+  Arco > 90° divide em 1 cúbica/90°.
+- **Junções**: tangente da primitiva na âncora → reta↔filete G1 de graça; RETA manda sobre arco
+  no nó compartilhado (é rígida; a média entortava a reta em S); primitivas coladas com
+  tangentes discordando > ~25° = **canto vivo** → `_open_corner_gaps` recua as fronteiras e o
+  canto vira trecho livre (legado). Âncoras de quadrante internas às primitivas suprimidas;
+  saliências (`_protrusion_anchors`) são sagradas. `--min-dist` passa a reger só trechos livres.
+- **Editor (`--edit`)**: shift+clique seleciona 2 nós (alça vermelha) e o botão **Line** remove
+  os nós do caminho mais curto entre eles e traça a RETA (`straighten_between`); retas
+  sobrevivem a mover/inserir/excluir (`remap_lines_insert`/`_delete`: inserir divide em 2 retas,
+  excluir funde); duas retas consecutivas = canto legítimo (exceção deliberada ao G1, só manual).
+
+Resultado (Pi 2, 2 fotos, **min-dist 10 = default**): 48 Béziers, contém 0.9999, folga
+**+0.07/−0.05** (antes: 46 Béziers e +0.83/+0.19 em min-dist 7.5) — as retas não arqueiam p/
+dentro e o pocket cola na peça. `--line-tol 0` reproduz o caminho legado exatamente. Suíte:
+130 → **149** (`TestPrimitiveFit`, `TestStraightSegments`).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2

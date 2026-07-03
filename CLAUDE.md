@@ -62,14 +62,18 @@ Quatro módulos na raiz (detalhe completo em [docs/design.md](docs/design.md)):
 - **`photo_to_outline.py`** — a tool (~2300 linhas): todo o pipeline de visão **e** o CLI.
 - **`outline_editor.py`** — editor de nós opcional (`--edit`), em duas camadas: **núcleo puro**
   (geometria, testável) + **view tkinter** (glue, não testada). WYSIWYG: Finalize grava exatamente
-  a curva exibida (Catmull-Rom G1 pelos nós). GUI em inglês; comentários em pt-BR como o resto.
+  a curva exibida (Catmull-Rom G1 pelos nós; shift+clique seleciona 2 nós e o botão **Line** traça
+  uma RETA entre eles, removendo os nós intermediários). GUI em inglês; comentários em pt-BR.
 
 **Pipeline (foto → SVG):** retificar por homografia ArUco (sai a dimensão real) →
 normalizar luz + segmentar → *(opcional `--in2`: fusão 2-fotos com luz oposta — registro
 automático + fusão direcional, p/ sombra dura e metal claro)* → extrair contorno → suavizar
 p/ impressão → ajustar Béziers + emitir SVG. **Modo padrão = POCKET de encaixe**: não busca
 fidelidade, busca uma cavidade que **contém** a peça e fica justa (menor `--min-dist` = mais
-justo, sem teto de nós; `--faithful` = modo fiel, bbox = objeto). Todos os nós são suaves (G1).
+justo, sem teto de nós; `--faithful` = modo fiel, bbox = objeto). **Primitivas (v0.10, default
+ligado)**: RETAS e ARCOS detectados no contorno viram primitivas exatas (`--line-tol`/`--arc-tol`,
+0 desliga) — aresta reta não arqueia p/ dentro, canto vira filete tangente, e `--min-dist` passa a
+reger só os trechos livres. Todos os nós são suaves (G1).
 Constantes-chave no topo de `photo_to_outline.py`. Ver [docs/design.md](docs/design.md) para
 estágios, API e constantes.
 

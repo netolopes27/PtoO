@@ -151,6 +151,22 @@ polui o contorno.
    suavizar demais deixa a peça crua vazar por fora → `contém` cai. Baixar `--smooth-mm` (8→2)
    aproxima o piso da peça e raspa o último 0.0x (≲1 reintroduz serrilhado). `--pocket-eps`
    (0.5→0) tem efeito sub-0.001 — ajuste fino, não o lever.
+   **Primitivas geométricas (v0.10, default ligado — `--line-tol`/`--arc-tol`):** antes da
+   seleção de âncoras, o contorno reamostrado passa por dois detectores (`_detect_line_runs` /
+   `_detect_arc_runs`): trecho maximal com desvio à corda < `LINE_TOL_MM` vira **RETA** (fusão de
+   colineares; **veto por círculo**: se um círculo de raio plausível ajusta melhor, é arco — um
+   círculo grande não vira polígono; pontas recuadas `PRIM_TRIM_MM` p/ o canto virar filete), e
+   nos **vãos entre retas** um círculo LSQ (Kasa) com resíduo < `ARC_TOL_MM`, varredura monótona
+   e **giro por ponto ≈ passo/r** (canto não é engolido) vira **ARCO**. Emissão via
+   `_fit_primitives`: pontas de primitiva = âncoras com **tangente da primitiva** (reta manda
+   sobre arco no nó compartilhado; discórdia > ~25° entre primitivas coladas = canto → 
+   `_open_corner_gaps` recua as fronteiras e o canto vira trecho livre G1); ponta de reta é
+   **deslocada p/ fora** pelo desvio residual (a corda vira reta-suporte: contenção garantida,
+   pois estufar cúbica colinear não a move de lado); arco > 90° é dividido (1 cúbica/90°);
+   âncoras de quadrante internas às primitivas são **suprimidas** (saliências nunca). Resultado:
+   aresta reta é reta de verdade (não arqueia p/ dentro — no Pi a folga caiu de +0.83 p/ +0.07 em
+   min-dist 10), canto é filete tangente, e `--min-dist` passa a reger só os trechos livres.
+   `--line-tol 0` desliga tudo (caminho legado intacto).
    **Espigões finos (v0.7, `_preserve_spikes`):** o low-pass do `--smooth-mm` recuaria a ponta de
    uma protuberância fina real (gancho da trena) antes da seleção de âncoras; os trechos crus
    proeminentes (recuo ≥ `SPIKE_MIN_RECEDE_MM` e boca ≤ `SPIKE_MAX_WIDTH_MM` — pico de serrilha e
@@ -277,7 +293,11 @@ ganho) · `ANCHOR_SIMPLIFY_MM = 2.0` (modo fiel) · `ANCHOR_EPS_MM = 0.08` (fiel
 · `POCKET_EPS_MM = 0.5` (penetração tolerada) · `ANCHOR_HANDLE_CAP = 0.40` (teto do handle =
 fração da corda, anti-laço) · `ANCHOR_MIN_DIST_MM = 10.0` (densidade do pocket) ·
 `PROTRUSION_DEV_MM = 0.8` (proeminência mín.) · `CONTAIN_COVERAGE = 0.99` (abaixo,
-avisa) · `FIT_TOL_MM = 0.2` · `BEZIER_GUIDE_MM = 0.5` · `CORNER_ANGLE_DEG = 40.0` ·
+avisa) · `LINE_TOL_MM = 0.3` / `ARC_TOL_MM = 0.3` (primitivas v0.10; defaults de
+`--line-tol`/`--arc-tol`, 0 desliga) · `LINE_MIN_MM = 5.0` / `ARC_MIN_MM = 2.5` (comprimentos
+mínimos) · `ARC_R_MIN_MM = 0.8` / `ARC_R_MAX_MM = 60.0` (faixa de raio plausível; também veta
+reta que é arco disfarçado) · `PRIM_TRIM_MM = 0.8` (recuo das pontas de reta → filete G1) ·
+`FIT_TOL_MM = 0.2` · `BEZIER_GUIDE_MM = 0.5` · `CORNER_ANGLE_DEG = 40.0` ·
 `RASTER_PPM = 16.0` · `OUTLINE_COLOR = "#ff00ff"` / `OUTLINE_FILL_OPACITY = 0.25`.
 
 ## Decisões
@@ -299,7 +319,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 130/130 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 149/149 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -311,7 +331,12 @@ personalizável** a partir do contorno medido.
   `TestProtrusionAnchors`: saliência no meio de aresta ganha âncora, o pocket a alcança, círculo
   **não** gera âncora espúria, nó G1. `TestCoverageTolerance` (v0.7): `coverage(tol_mm=)` perdoa
   penetração rasa e mantém corte profundo. `TestPreserveSpikes` (v0.7): espigão fino restaurado
-  (ponta crua), forma lisa intacta, pocket alcança a ponta.
+  (ponta crua), forma lisa intacta, pocket alcança a ponta. `TestPrimitiveFit` (v0.10): retângulo
+  arredondado → exatamente 4 retas eixo-alinhadas + 4 arcos com r≈r do canto; círculo não vira
+  polígono (veto por círculo) e sim arcos de raio certo; aresta emitida é reta de verdade
+  (spread < 0.08 mm) e **nunca corta a peça** (reta-suporte externa); menos nós que o legado;
+  todo nó G1; `line_tol_mm=0` reproduz o legado; kwargs com default em toda a cadeia
+  (`generate_outline`, `polygon_to_svg`, `fit_closed_beziers_anchored`, `fit_anchored_cached`).
 - **B. Sintético ArUco (`TestRectifyAruco`):** numpy gera a cena (marcadores + objeto de tamanho
   conhecido); `rectify` devolve canvas métrico, escala uniforme `1/PX_PER_MM`, `conf` 1,0;
   recupera o tamanho real **inclusive sob keystone**; aborta sem marcadores; `estimate_tilt_deg`
@@ -356,7 +381,12 @@ personalizável** a partir do contorno medido.
   a ÚNICA geometria do editor): passa por cada nó, encadeado/fechado, **todos os nós G1** (tangente
   compartilhada), anel de nós vira contorno **simples** (sem auto-cruzar). Ops de edição (`move`/
   `insert`/`delete`) preservam ordem e ≥ 3 nós; `nearest_node`/`nearest_segment`. Transforms
-  `mm_to_px`/`px_to_mm` ida-e-volta. A view tkinter é glue fino e **não** é instanciada (runner
+  `mm_to_px`/`px_to_mm` ida-e-volta. `TestStraightSegments` (v0.10): `straighten_between` remove
+  os nós interiores do caminho MAIS CURTO entre 2 nós e marca o trecho RETO; retas existentes são
+  remapeadas (`remap_lines_insert`/`remap_lines_delete`: inserir divide em 2 retas, excluir funde
+  — reto só se ambos); `cubics_through_nodes(line_segs=)` emite a reta NA corda, vizinho sai
+  tangente (G1), duas retas consecutivas = canto legítimo, e o índice sobrevive à inversão CCW.
+  A view tkinter é glue fino e **não** é instanciada (runner
   headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG), sem recalcular.
 - **F. Saída/CLI (`TestOutputFitSourceOfTruth`, `TestSvgNameEscaping`, `TestCliDictValidation`,
   `TestMakeTargetCli`).** `_fit_for_output` é a **fonte única** do ajuste emitido (.svg final,

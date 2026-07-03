@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # =============================================================================
 # test_photo_to_outline.py — suíte TDD do tooling foto → contorno
 # -----------------------------------------------------------------------------
@@ -277,12 +277,16 @@ class TestAnchoredFit(unittest.TestCase):
             self.assertGreater(dot, 0.0, f"nó {k} com tangente invertida")
 
     def test_min_dist_controls_density(self):
-        # --min-dist é a ÚNICA alavanca de densidade do pocket: menor distância mínima
-        # entre âncoras ⇒ MAIS cúbicas (contorno mais justo); maior ⇒ menos. Não há mais
-        # teto de nós — a quantidade de curvas emerge só do espaçamento.
+        # --min-dist é a alavanca de densidade dos trechos LIVRES do pocket: menor
+        # distância mínima entre âncoras ⇒ MAIS cúbicas (contorno mais justo); maior ⇒
+        # menos. Não há teto de nós. Medido com line_tol_mm=0 p/ isolar a maquinaria de
+        # quadrante: com primitivas ligadas (v0.10) as arestas retas da estrela viram
+        # RETAS e a densidade delas deixa de depender do min-dist (ver TestPrimitiveFit).
         star = star_polygon(5, 30, 14, samples_per_edge=12)
-        dense = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, min_dist_mm=2.0)
-        sparse = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, min_dist_mm=20.0)
+        dense = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, min_dist_mm=2.0,
+                                              line_tol_mm=0)
+        sparse = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, min_dist_mm=20.0,
+                                               line_tol_mm=0)
         self.assertGreater(len(dense), len(sparse))    # menos distância ⇒ mais nós
         # mesmo denso, TODO nó continua suave (G1).
         m = len(dense)
@@ -408,6 +412,124 @@ class TestProtrusionAnchors(unittest.TestCase):
             dout = P._unit((b[1][0] - b[0][0], b[1][1] - b[0][1]))
             self.assertLess(abs(din[0] * dout[1] - din[1] * dout[0]), 1e-3,
                             f"nó {k} com bico")
+
+
+class TestPrimitiveFit(unittest.TestCase):
+    """v0.10: detecção de PRIMITIVAS (retas e arcos) no contorno reamostrado, antes das
+    âncoras. Aresta reta vira UMA reta (corda deslocada p/ fora pela contenção), canto
+    vira arco tangente; âncoras internas às primitivas são suprimidas — compressão
+    'CAD-like' do pocket. `--line-tol 0` desliga tudo (caminho legado)."""
+
+    W, H, R = 80.0, 50.0, 5.0
+
+    def _rp(self, shape, step=0.4):
+        return P.resample_uniform(shape, step, closed=True)
+
+    def test_default_constants(self):
+        # Flags nascem com default (CLI: --line-tol / --arc-tol); 0 desliga.
+        self.assertEqual(P.LINE_TOL_MM, 0.3)
+        self.assertEqual(P.ARC_TOL_MM, 0.3)
+        self.assertEqual(P.LINE_MIN_MM, 5.0)
+
+    def test_detect_lines_on_rounded_rect(self):
+        # Retângulo arredondado: exatamente 4 retas (uma por lado, colineares fundidas),
+        # cada uma cobrindo ~o trecho reto do lado (lado − 2r − recuo das pontas).
+        rp = self._rp(rounded_rect(self.W, self.H, self.R, n=40))
+        runs = P._detect_line_runs(rp, 0.4, tol_mm=0.3, min_len_mm=5.0)
+        self.assertEqual(len(runs), 4)
+        n = len(rp)
+        for (i0, i1) in runs:
+            a, b = rp[i0 % n], rp[i1 % n]
+            u = P._unit((b[0] - a[0], b[1] - a[1]))
+            self.assertGreater(max(abs(u[0]), abs(u[1])), 0.999)   # eixo-alinhada
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            side = self.W if abs(u[0]) > 0.5 else self.H
+            self.assertGreater(L, side - 2 * self.R - 4.5)         # cobre o trecho reto
+            self.assertLess(L, side - 2 * self.R + 2.5)            # ~não invade os cantos
+
+    def test_no_lines_on_circle(self):
+        # Círculo: a corda passaria na tolerância em trechos curtos, mas o VETO por
+        # círculo (um círculo de raio plausível ajusta melhor) rejeita — círculo não
+        # vira polígono.
+        rp = self._rp(regular_polygon(360, 25.0))
+        self.assertEqual(P._detect_line_runs(rp, 0.4, tol_mm=0.3, min_len_mm=5.0), [])
+
+    def test_detect_arcs_on_corners(self):
+        # Os vãos entre as retas do retângulo arredondado viram ARCOS de raio ≈ r.
+        rp = self._rp(rounded_rect(self.W, self.H, self.R, n=40))
+        lines = P._detect_line_runs(rp, 0.4, tol_mm=0.3, min_len_mm=5.0)
+        arcs = P._detect_arc_runs(rp, 0.4, lines, tol_mm=0.3)
+        self.assertEqual(len(arcs), 4)
+        for a in arcs:
+            self.assertGreater(a[4], self.R - 1.5)                 # raio ≈ r do canto
+            self.assertLess(a[4], self.R + 3.0)
+
+    def test_arcs_cover_circle_without_lines(self):
+        # Sem retas, o contorno inteiro é um vão único: círculo → arcos com raio ≈ r.
+        rp = self._rp(regular_polygon(240, 20.0))
+        arcs = P._detect_arc_runs(rp, 0.4, [], tol_mm=0.3)
+        self.assertGreaterEqual(len(arcs), 1)
+        for a in arcs:
+            self.assertAlmostEqual(a[4], 20.0, delta=1.0)
+
+    def test_straight_edge_is_straight_and_contained(self):
+        # O fit completo emite a aresta reta como cúbica DEGENERADA (na corda): os
+        # pontos do miolo da aresta inferior ficam numa reta (spread ≤ 0.05 mm) que
+        # NUNCA corta a peça p/ dentro. E o pocket segue contendo a peça.
+        shape = rounded_rect(self.W, self.H, self.R, n=40)
+        cub = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, min_dist_mm=6.0)
+        flat = P.flatten_beziers(cub, seg=40)
+        mid = [pt for pt in flat if abs(pt[0]) <= 20.0 and pt[1] < -self.H / 2 + 2.0]
+        self.assertGreater(len(mid), 4)
+        ys = [pt[1] for pt in mid]
+        self.assertLess(max(ys) - min(ys), 0.08)                   # reto de verdade
+        self.assertGreaterEqual(min(ys), -self.H / 2 - 0.5)        # perto da aresta
+        self.assertLessEqual(max(ys), -self.H / 2 + 1e-6)          # nunca DENTRO da peça
+        self.assertGreaterEqual(P.coverage(flat, shape), 0.99)
+
+    def test_primitives_reduce_nodes(self):
+        # A compressão entrega: com primitivas, MENOS nós que o caminho legado na mesma
+        # densidade (as âncoras internas às retas/arcos somem).
+        shape = rounded_rect(self.W, self.H, self.R, n=40)
+        prim = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, min_dist_mm=4.0)
+        legacy = P.fit_closed_beziers_anchored(shape, smooth_mm=1.0, min_dist_mm=4.0,
+                                               line_tol_mm=0)
+        self.assertLess(len(prim), len(legacy))
+
+    def test_primitive_fit_all_nodes_smooth(self):
+        # O recuo das pontas das retas deixa um vão curvo em cada canto → a junção
+        # reta↔arco continua G1 (tangente = direção da primitiva) em TODO nó.
+        cub = P.fit_closed_beziers_anchored(rounded_rect(self.W, self.H, self.R, n=40),
+                                            smooth_mm=1.0, min_dist_mm=6.0)
+        m = len(cub)
+        self.assertGreater(m, 2)
+        for k in range(m):
+            a, b = cub[k], cub[(k + 1) % m]
+            din = P._unit((a[3][0] - a[2][0], a[3][1] - a[2][1]))
+            dout = P._unit((b[1][0] - b[0][0], b[1][1] - b[0][1]))
+            self.assertLess(abs(din[0] * dout[1] - din[1] * dout[0]), 1e-3,
+                            f"nó {k} com bico")
+
+    def test_line_tol_zero_matches_legacy_path(self):
+        # `line_tol_mm=0` reproduz o caminho legado: mesmíssimas cúbicas que a
+        # seleção por quadrante+saliência sem primitivas.
+        star = star_polygon(5, 30, 14, samples_per_edge=12)
+        a = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, min_dist_mm=6.0,
+                                          line_tol_mm=0, arc_tol_mm=0)
+        b = P.fit_closed_beziers_anchored(star, smooth_mm=1.0, min_dist_mm=6.0,
+                                          line_tol_mm=0, arc_tol_mm=0.3)
+        self.assertEqual(a, b)                     # arc_tol é inerte com line_tol=0
+
+    def test_generate_outline_accepts_primitive_kwargs(self):
+        # Plumbing: generate_outline e polygon_to_svg expõem os parâmetros com default.
+        import inspect
+        for fn in (P.generate_outline, P.polygon_to_svg, P.fit_closed_beziers_anchored,
+                   P.fit_anchored_cached):
+            sig = inspect.signature(fn)
+            self.assertIn("line_tol_mm", sig.parameters, fn.__name__)
+            self.assertIn("arc_tol_mm", sig.parameters, fn.__name__)
+            self.assertEqual(sig.parameters["line_tol_mm"].default, P.LINE_TOL_MM)
+            self.assertEqual(sig.parameters["arc_tol_mm"].default, P.ARC_TOL_MM)
 
 
 class TestCoverageTolerance(unittest.TestCase):
@@ -1130,7 +1252,10 @@ class TestEndToEndThermpro(unittest.TestCase):
         # estufados se ultrapassavam → o contorno emitido cruzava a si mesmo (8 cruzamentos
         # medidos). O contorno fechado tem de ser SIMPLES (dentro/fora bem definido p/ o
         # boolean a jusante). Aqui a foto real, antes quebrada, sai sem auto-interseção.
-        cub = P.fit_closed_beziers_anchored(self.sil, smooth_mm=2.0, min_dist_mm=0.6)
+        # line_tol_mm=0: exercita o caminho denso LEGADO (o alvo da guarda); com
+        # primitivas (v0.10) a densidade cai e o caso deixaria de ser denso.
+        cub = P.fit_closed_beziers_anchored(self.sil, smooth_mm=2.0, min_dist_mm=0.6,
+                                            line_tol_mm=0)
         self.assertGreater(len(cub), 50)                       # de fato densa
         self.assertEqual(P._self_intersecting_indices(cub), set())
         # E a peça continua contida (de-loop só encurta handles → não expõe a peça).

@@ -22,10 +22,15 @@ CONDICIONAL: --shadow texture p/ CORPO CINZA-NEUTRO (sem croma) COM SOMBRA PROJE
 <!-- formato: - ~WxH mm | <params> | contém=0.NNNN clearance=+x/+y -->
 - ~67.62x70.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --symmetry vertical --mask-smooth-mm 2 | contém=0.9999 clearance=-0.06/+0.01
 - ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 (trena azul, assimétrica: aba lateral → SEM symmetry) | contém=1.0000 clearance=+0.01/-0.04
-- ~90.00x58.75 mm | --shadow remove --min-dist 1.2 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --in2 <foto2> (Raspberry Pi 2, 2 FOTOS luz oposta, fusão DIRECIONAL: peça girada ~180° entre fotos, registro rot=181° por IoU×ZNCC de textura sobre máscaras LIMPAS. Modo --in2 liga AUTOMÁTICO o predicado faint-metal (S≥fundo+10) que recupera CONECTORES METÁLICOS claros ≈ papel (em luz difusa nenhum predicado normal os pega → baías na máscara = pocket bloqueava os conectores; o gate contém NÃO acusa pois mede contra a própria máscara — SÓ o zoom pega). A sombra readmitida pelo faint é removida pela fusão. 90.00 = 85 placa + pontas USB + microSD saltando (dimensões REAIS; os 86.88 de antes comiam metal). Resíduo: nick ~1.5mm no canto do Ethernet, único ponto sombrio nas 2 fotos) | contém=1.0000 clearance=-0.01/-0.10
+- ~90.00x58.75 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --in2 <foto2> (Raspberry Pi 2, 2 FOTOS luz oposta, fusão DIRECIONAL: registro rot=181° por IoU×ZNCC sobre máscaras LIMPAS. --in2 liga AUTOMÁTICO o faint-metal (S≥fundo+10) que recupera CONECTORES METÁLICOS claros ≈ papel — baía na máscara NÃO derruba o contém, SÓ o zoom pega. v0.10 PRIMITIVAS default: as arestas retas da placa viram RETAS exatas e os cantos ARCOS — md10 DEFAULT dá 48 nós, folga +0.07/-0.05; o problema antigo "Bézier longo arqueia no canto do Ethernet" (md7.5, 46 nós, folga +0.83) SUMIU. Legado p/ comparar: --line-tol 0) | contém=0.9999 clearance=+0.07/-0.05
 - ~65.12x65.50 mm | --shadow texture --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps (trena CINZA-neutra + sombra projetada, luz difusa; SEM symmetry; rampa min-dist FECHADA em md1.5; v0.7: keep-bumps preserva o GANCHO da fita → obj cresce p/ 65.5 de altura e contém=1.0000; SEM keep-bumps o CLI avisa "removeu saliência convexa" e contém cai a 0.9968. v0.8: texture ganhou REFINO DE BORDA por watershed (fronteira re-decidida pelo gradiente) — a UMBRA que vazava ~4-5mm caiu p/ ~0.5-1.5mm residual (verificado por perfil de V e zoom 3x: contorno colado na borda serrilhada, sem comer corpo); obj 65.12x65.50 → 64.50x65.00) | contém=1.0000 clearance=-0.21/-0.24
 
 ## heurísticas (sintoma → delta)  — estável, não duplicar
+- v0.10 PRIMITIVAS (retas+arcos, --line-tol/--arc-tol default 0.3, LIGADO): aresta reta vira RETA
+  exata (não arqueia p/ dentro) e canto vira ARCO → --min-dist só rege trechos LIVRES. Em peça
+  RETILÍNEA comece a rampa min-dist NO DEFAULT 10 (não desça por reflexo — no Pi md10 já colou:
+  folga +0.07). Facetou curva gentil ou faltou aresta → mexa --line-tol (↓0.2 conservador,
+  ↑0.5 agressivo); --line-tol 0 = legado puro (comparação A/B barata).
 - RAMPAS ADAPTATIVAS com INVERSÃO: 1ª --min-dist (piso 1, teto ~10) → 2ª --smooth-mm (piso ~2,
   teto ~10) → 3ª --pocket-eps (piso 0, teto 0.5). Em cada rampa, a partir do start/cache:
   • Direção padrão ↓ (baixar parâmetro → tipicamente sobe contém). Continue enquanto melhorar.
@@ -34,6 +39,9 @@ CONDICIONAL: --shadow texture p/ CORPO CINZA-NEUTRO (sem croma) COM SOMBRA PROJE
   "Melhor" = cruza 0.9999 > não-cruza; entre cruzas: menos nós; entre não-cruzas: maior contém.
   CONTRA-INTUITIVO: min-dist GRANDE = âncoras esparsas → Béziers longos arqueiam p/ dentro nos
   cantos → contém MENOR (pocket frouxo E contém ~0.998).
+- a rampa min-dist fecha onde a FORMA manda: contorno com cantos arredondados/orgânico fecha
+  baixo (~1-1.5); PLACA RETANGULAR (lados retos) fecha alto (~7-7.5) — reta longa não arqueia.
+  Se o 1º passe (start folgado ~4) JÁ cruzar 0.9999, suba o min-dist (menos nós) em vez de descer.
 - smooth-mm: baixar aproxima o piso da silhueta crua e sobe contém; subir tira serrilhado. Abaixo
   de ~2 reintroduz serrilha.
 - pocket-eps: baixar reduz penetração tolerada e sobe contém (~+0.0001–0.0003/degrau). Degraus

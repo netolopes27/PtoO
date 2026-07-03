@@ -190,6 +190,26 @@ SPIKE_MAX_WIDTH_MM = 3.0    # boca máxima (mm) da base de um ESPIGÃO restaurá
                             # protuberância fina real (gancho da trena, ~1-2 mm) dos CANTOS
                             # e curvaturas macro (boca ≫ 3 mm), cujo recuo é o arredondamento
                             # LEGÍTIMO do smooth-mm p/ impressão.
+LINE_TOL_MM = 0.3           # detecção de RETAS no contorno (flag --line-tol): trecho maximal
+                            # onde TODOS os pontos desviam < isto da corda vira UMA reta
+                            # (cúbica degenerada, deslocada p/ fora pela contenção). 0 = desliga
+                            # retas E arcos (caminho legado, só âncoras por quadrante). Ver
+                            # _detect_line_runs / v0.10 "primitivas".
+ARC_TOL_MM = 0.3            # detecção de ARCOS (flag --arc-tol): nos vãos entre retas, um
+                            # círculo por mínimos quadrados com resíduo radial < isto (e
+                            # varredura monótona) vira arco tangente (canto = filete). 0 =
+                            # desliga só os arcos. Ver _detect_arc_runs.
+LINE_MIN_MM = 5.0           # comprimento mínimo (mm) de uma reta detectável — abaixo disso o
+                            # trecho fica p/ os arcos/âncoras (evita retalhar curvas em cordas)
+ARC_MIN_MM = 2.5            # comprimento mínimo (mm) de arco detectável nos vãos
+ARC_R_MIN_MM = 0.8          # faixa de raio plausível de um arco: abaixo é ruído de borda,
+ARC_R_MAX_MM = 60.0         # acima é quase-reta (deixa p/ a reta/cúbica livre). Também VETA
+                            # retas: trecho que um círculo nesta faixa ajusta melhor que a
+                            # corda é arco, não reta (círculo grande não vira polígono).
+PRIM_TRIM_MM = 0.8          # recuo (mm) das pontas de cada reta detectada: garante um vão
+                            # curvo entre primitivas → a junção reta↔canto vira filete G1
+                            # (mantém o invariante "todo nó suave") e tira a ponta da reta
+                            # de dentro da curvatura do canto.
 RASTER_PPM = 16.0           # px/mm das operações raster (filete/IoU)
 PEN_SAMPLE_MM = 0.25        # passo (mm) ao amostrar a cúbica p/ medir penetração no piso
 OUTLINE_COLOR = "#ff00ff"      # cor BEM DESTACADA (magenta) do vetor de saída e do overlay
@@ -1860,14 +1880,370 @@ def _one_cubic_contained(seg, field, eps):
     return best_bez if best_bez is not None else fallback_bez
 
 
-def _fit_anchored(rp, field, eps, min_dist_mm=ANCHOR_MIN_DIST_MM):
+# =============================================================================
+# PRIMITIVAS (v0.10): retas e arcos detectados no contorno reamostrado — compressão
+# "CAD-like" do pocket: aresta reta vira UMA reta, canto vira arco tangente, e as
+# âncoras por quadrante ficam só p/ os trechos LIVRES (forma orgânica).
+# =============================================================================
+def _seg_pts(rp, i0, i1):
+    """Pontos `i0..i1` (inclusivo) do polígono FECHADO `rp`; `i1` pode passar de n."""
+    n = len(rp)
+    return [rp[k % n] for k in range(i0, i1 + 1)]
+
+
+def _chord_dev(a, b, seg):
+    """Desvio perpendicular MÁXIMO dos pontos `seg` à reta a→b (mm)."""
+    ux, uy = b[0] - a[0], b[1] - a[1]
+    L = math.hypot(ux, uy)
+    if L < 1e-9:
+        return 0.0
+    s = np.asarray(seg, np.float64)
+    return float(np.max(np.abs((s[:, 0] - a[0]) * uy - (s[:, 1] - a[1]) * ux)) / L)
+
+
+def _circle_fit(seg):
+    """Círculo por mínimos quadrados (Kasa). Devolve `(cx, cy, r, resíduo_máx)` ou
+    None se degenerado (colinear demais / raio imaginário)."""
+    s = np.asarray(seg, np.float64)
+    x, y = s[:, 0], s[:, 1]
+    A = np.column_stack([x, y, np.ones(len(s))])
+    b = -(x * x + y * y)
+    try:
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    cx, cy = -sol[0] / 2.0, -sol[1] / 2.0
+    r2 = cx * cx + cy * cy - sol[2]
+    if not np.isfinite(r2) or r2 <= 0:
+        return None
+    r = math.sqrt(r2)
+    res = np.abs(np.hypot(x - cx, y - cy) - r)
+    return cx, cy, r, float(res.max())
+
+
+def _arc_check(seg, tol_mm):
+    """`seg` é um ARCO de verdade? Exige: resíduo radial < tol, raio plausível
+    (`ARC_R_MIN_MM..ARC_R_MAX_MM`) e varredura angular MONÓTONA de 10°–350° (não é
+    serpentina que por acaso tangencia o círculo). Devolve `(cx, cy, r, sigma)` com
+    `sigma` = sentido (+1 anti-horário em torno do centro), ou None."""
+    if len(seg) < 5:
+        return None
+    fit = _circle_fit(seg)
+    if fit is None:
+        return None
+    cx, cy, r, res = fit
+    if res >= tol_mm or not (ARC_R_MIN_MM <= r <= ARC_R_MAX_MM):
+        return None
+    s = np.asarray(seg, np.float64)
+    ang = np.unwrap(np.arctan2(s[:, 1] - cy, s[:, 0] - cx))
+    sweep = ang[-1] - ang[0]
+    if not (math.radians(10) <= abs(sweep) <= math.radians(350)):
+        return None
+    dif = np.diff(ang)
+    if np.count_nonzero(np.sign(dif) == np.sign(sweep)) < 0.9 * len(dif):
+        return None
+    # GIRO por ponto ~constante (≈ passo/r): um CANTO engolido (bico arredondado pelo
+    # low-pass) gira 20–30° num único ponto e passaria no resíduo — o círculo grande
+    # tangencia as duas flancas. Sem isto, arcos atravessam bicos/vales e as tangentes
+    # nas fronteiras saem erradas (caso estrela).
+    d = np.diff(s, axis=0)
+    turn = np.abs(np.arctan2(d[:-1, 0] * d[1:, 1] - d[:-1, 1] * d[1:, 0],
+                             (d[:-1] * d[1:]).sum(axis=1)))
+    step_local = float(np.median(np.hypot(d[:, 0], d[:, 1])))
+    if float(turn.max()) > max(3.0 * step_local / r, 0.12):
+        return None
+    return cx, cy, r, (1.0 if sweep > 0 else -1.0)
+
+
+def _detect_line_runs(rp, step, tol_mm=LINE_TOL_MM, min_len_mm=LINE_MIN_MM):
+    """Trechos RETOS maximais do polígono fechado `rp` (reamostrado a `step` mm):
+    cresce cada trecho enquanto TODOS os pontos desviam < `tol_mm` da corda; aceita se
+    ≥ `min_len_mm`. VETO POR CÍRCULO: se um círculo de raio plausível ajusta o trecho
+    bem melhor que a corda, é arco — rejeita (círculo grande não vira polígono). Runs
+    colineares adjacentes são FUNDIDOS (uma aresta física = UMA reta) e cada reta tem
+    as pontas RECUADAS `PRIM_TRIM_MM` (junta G1 com o vizinho). Devolve [(i0, i1)]
+    ordenado; só o último run pode atravessar a emenda (i1 ≥ n)."""
+    n = len(rp)
+    if n < 8:
+        return []
+    # gira o início da varredura p/ a extremidade mais distante do centróide (um canto,
+    # nunca o MEIO de uma aresta) — evita partir em dois a aresta que cruza o índice 0.
+    cx = sum(p[0] for p in rp) / n
+    cy = sum(p[1] for p in rp) / n
+    ofs = max(range(n), key=lambda i: (rp[i][0] - cx) ** 2 + (rp[i][1] - cy) ** 2)
+    rot = rp[ofs:] + rp[:ofs]
+    min_pts = max(3, int(round(min_len_mm / step)))
+    runs = []
+    i = 0
+    while i < n:
+        j, best = i + 2, None
+        while j <= i + n - 2:
+            if _chord_dev(rot[i], rot[j % n], _seg_pts(rot, i, j)) < tol_mm:
+                best = j
+                j += 1
+            else:
+                break
+        if best is None or best - i < min_pts:
+            i += 1
+            continue
+        seg = _seg_pts(rot, i, best)
+        circ = _circle_fit(seg)
+        if circ is not None and ARC_R_MIN_MM <= circ[2] <= ARC_R_MAX_MM \
+                and circ[3] < 0.5 * tol_mm:
+            i += 1                               # arco disfarçado de reta: NÃO consome o
+            continue                             # trecho — a reta real pode começar adiante
+        runs.append((i, best))
+        i = best
+    # fusão COLINEAR de adjacentes (inclusive pela emenda): a corda da UNIÃO ainda
+    # respeita a tolerância (frouxa 1.3× p/ absorver o leve abaulamento da aresta real).
+    merged = True
+    while merged and len(runs) > 1:
+        merged = False
+        out, k = [], 0
+        while k < len(runs):
+            a = runs[k]
+            if k + 1 < len(runs):
+                b = runs[k + 1]
+                if b[0] - a[1] <= 2 and _chord_dev(rot[a[0] % n], rot[b[1] % n],
+                                                   _seg_pts(rot, a[0], b[1])) < 1.3 * tol_mm:
+                    out.append((a[0], b[1]))
+                    k += 2
+                    merged = True
+                    continue
+            out.append(a)
+            k += 1
+        runs = out
+    if len(runs) > 1:                            # emenda circular: último ↔ primeiro
+        a, b = runs[-1], runs[0]
+        if (b[0] + n) - a[1] <= 2 and (b[1] + n) - a[0] <= n - 2 and \
+                _chord_dev(rot[a[0] % n], rot[b[1] % n],
+                           _seg_pts(rot, a[0], b[1] + n)) < 1.3 * tol_mm:
+            runs = runs[1:-1] + [(a[0], b[1] + n)]
+    # recuo das pontas (PRIM_TRIM_MM) — mantém o mínimo de pontos da reta
+    trim = max(0, int(round(PRIM_TRIM_MM / step)))
+    trimmed = []
+    for (i0, i1) in runs:
+        t = min(trim, (i1 - i0 - min_pts) // 2)
+        if t > 0:
+            i0, i1 = i0 + t, i1 - t
+        trimmed.append((i0, i1))
+    # de volta ao referencial original, ordenado por i0 (mod n)
+    return sorted(((i0 + ofs) % n, (i0 + ofs) % n + (i1 - i0)) for (i0, i1) in trimmed)
+
+
+def _detect_arc_runs(rp, step, line_runs, tol_mm=ARC_TOL_MM):
+    """ARCOS nos vãos entre retas consecutivas (contorno inteiro se não há retas):
+    tenta o vão INTEIRO como um arco (`_arc_check`); senão cresce sub-arcos gulosos.
+    Fronteiras coladas (≤ 3 pontos) são SOLDADAS às vizinhas — sem nós gêmeos.
+    Devolve [(i0, i1, cx, cy, r, sigma)] no mesmo referencial de `line_runs`."""
+    n = len(rp)
+    min_pts = max(4, int(round(ARC_MIN_MM / step)))
+    weld = 3
+    gaps = []
+    if not line_runs:
+        gaps = [(0, n)] if n >= min_pts else []
+    else:
+        m = len(line_runs)
+        for k in range(m):
+            g0 = line_runs[k][1]
+            g1 = line_runs[(k + 1) % m][0] + (n if k + 1 == m else 0)
+            if g1 - g0 >= 2:
+                gaps.append((g0, g1))
+    arcs = []
+    for (g0, g1) in gaps:
+        whole = _arc_check(_seg_pts(rp, g0, g1), tol_mm)
+        if whole is not None:
+            arcs.append((g0, g1) + whole)
+            continue
+        found = []
+        i = g0
+        while i <= g1 - min_pts:
+            j, best = i + min_pts, None
+            while j <= g1:
+                got = _arc_check(_seg_pts(rp, i, j), tol_mm)
+                if got is not None:
+                    best = (j,) + got
+                    j += 1
+                elif best is not None:
+                    break
+                else:
+                    j += 1
+            if best is not None:
+                found.append([i, best[0], best[1], best[2], best[3], best[4]])
+                i = best[0]
+            else:
+                i += 1
+        # solda: cola as fronteiras dos sub-arcos nos limites do vão e entre si
+        for a in found:
+            if a[0] - g0 <= weld:
+                a[0] = g0
+            if g1 - a[1] <= weld:
+                a[1] = g1
+        for a, b in zip(found, found[1:]):
+            if 0 < b[0] - a[1] <= weld:
+                a[1] = b[0]
+        arcs.extend(tuple(a) for a in found)
+    return arcs
+
+
+def _arc_split_indices(arc, step):
+    """Índices INTERNOS que dividem o arco em pedaços de ≤ ~90° de varredura (uma
+    cúbica aproxima até 90° com erro desprezível; acima, laçaria/achataria)."""
+    i0, i1, _cx, _cy, r, _sg = arc
+    sweep_deg = math.degrees((i1 - i0) * step / max(r, 1e-9))
+    parts = max(1, int(math.ceil(sweep_deg / 90.0)))
+    return [i0 + (i1 - i0) * k // parts for k in range(1, parts)]
+
+
+def _arc_tangent(rp, k, cx, cy, sg):
+    """Tangente do círculo (cx,cy) no ponto `rp[k % n]`, no sentido de marcha `sg`."""
+    v = _unit((rp[k % len(rp)][0] - cx, rp[k % len(rp)][1] - cy))
+    return (-v[1] * sg, v[0] * sg)
+
+
+_PRIM_COS_G1 = 0.906                             # consenso de tangentes ≈ até ~25°
+
+
+def _open_corner_gaps(rp, lines, arcs, step):
+    """Abre um VÃO nos CANTOS entre primitivas coladas: quando o fim de uma encosta
+    (≤ 1 ponto) no início da outra com tangentes DISCORDANTES (> ~25° — bico/vale da
+    peça, não junção tangente), RECUA a fronteira do lado que é ARCO — cada arco
+    mantém as tangentes do próprio círculo e o canto vira um trecho livre curto,
+    emitido G1 como no legado (as retas já nascem recuadas por PRIM_TRIM_MM).
+    Devolve (lines, arcs) ajustados; primitiva que encolher demais é descartada
+    (ex.: flancos curtos de um espigão em V — a região volta ao legado, que o
+    contém melhor que retas com tangente envenenada pelo bico)."""
+    pull = max(2, int(round(PRIM_TRIM_MM / step)))
+    min_arc = max(4, int(round(ARC_MIN_MM / step)))
+    min_line = max(3, int(round(LINE_MIN_MM / step)))
+    n = len(rp)
+    prims = sorted([["line", i0, i1, None] for (i0, i1) in lines] +
+                   [["arc", a[0], a[1], a[2:]] for a in arcs], key=lambda p: p[1] % n)
+    m = len(prims)
+    for k in range(m):
+        a, b = prims[k], prims[(k + 1) % m]
+        b0 = b[1] + (n if k + 1 == m else 0)
+        if b0 - a[2] > 1:
+            continue                             # já há vão (canto/trecho livre)
+        ta = (_unit((rp[a[2] % n][0] - rp[a[1] % n][0], rp[a[2] % n][1] - rp[a[1] % n][1]))
+              if a[0] == "line" else _arc_tangent(rp, a[2], a[3][0], a[3][1], a[3][3]))
+        tb = (_unit((rp[b[2] % n][0] - rp[b[1] % n][0], rp[b[2] % n][1] - rp[b[1] % n][1]))
+              if b[0] == "line" else _arc_tangent(rp, b[1], b[3][0], b[3][1], b[3][3]))
+        if ta[0] * tb[0] + ta[1] * tb[1] >= _PRIM_COS_G1:
+            continue                             # tangentes concordam: junção G1 direta
+        a[2] -= pull
+        b[1] += pull
+    lines2 = [(p[1], p[2]) for p in prims
+              if p[0] == "line" and p[2] - p[1] >= min_line]
+    arcs2 = [(p[1], p[2]) + p[3] for p in prims
+             if p[0] == "arc" and p[2] - p[1] >= min_arc]
+    return lines2, arcs2
+
+
+def _fit_primitives(rp, field, eps, lines, arcs, min_dist_mm, step):
+    """Emissão do pocket COM primitivas: âncoras = pontas de reta/arco (+ divisões de
+    arco > 90°) + âncoras de quadrante/saliência dos trechos LIVRES. Tangente nas
+    pontas = direção da primitiva (reta: corda; arco: tangente do círculo) → junção
+    G1. Pontas de RETA são DESLOCADAS p/ fora pelo desvio residual máximo (a corda
+    vira reta-suporte externa: contenção garantida — estufar uma cúbica colinear não
+    a move de lado). Cada trecho vira UMA `_one_cubic_contained`, como sempre."""
+    n = len(rp)
+    lines, arcs = _open_corner_gaps(rp, lines, arcs, step)
+    covered = [False] * n
+    for (i0, i1) in lines:
+        for k in range(i0 + 1, i1):
+            covered[k % n] = True
+    for a in arcs:
+        for k in range(a[0] + 1, a[1]):
+            covered[k % n] = True
+    bounds = set()
+    want, pos_over = {}, {}                      # want: nó → tangentes DESEJADAS pelas primitivas
+    line_dir = {}                                # nó que é ponta de RETA → direção da reta
+    for (i0, i1) in lines:
+        a, b = rp[i0 % n], rp[i1 % n]
+        u = _unit((b[0] - a[0], b[1] - a[1]))
+        nh = (u[1], -u[0])                       # CCW: p/ FORA = direita da marcha
+        s = np.asarray(_seg_pts(rp, i0, i1), np.float64)
+        sign = (s[:, 0] - a[0]) * u[1] - (s[:, 1] - a[1]) * u[0]   # >0 = lado de FORA
+        d_out = max(0.0, float(sign.max()))      # quanto a peça abaúla além da corda
+        for k, p in ((i0 % n, a), (i1 % n, b)):
+            bounds.add(k)
+            want.setdefault(k, []).append(u)
+            line_dir[k] = u
+            pos_over[k] = (p[0] + nh[0] * d_out, p[1] + nh[1] * d_out)
+    for arc in arcs:
+        i0, i1, cx, cy, _r, sg = arc
+        for k in [i0, i1] + _arc_split_indices(arc, step):
+            km = k % n
+            bounds.add(km)
+            want.setdefault(km, []).append(_arc_tangent(rp, km, cx, cy, sg))
+    # Tangente por nó: a da primitiva quando há CONSENSO (junção tangente: reta↔arco
+    # do filete, arcos encadeados — após `_open_corner_gaps`, a regra geral). Se ainda
+    # houver DISCÓRDIA (> ~25°) num nó, fica a tangente de MARCHA do legado — o
+    # compromisso arredondado que o estufamento contém, G1 preservado.
+    tang_over = {}
+    for km, dirs in want.items():
+        if all(dirs[a][0] * dirs[b][0] + dirs[a][1] * dirs[b][1] >= _PRIM_COS_G1
+               for a in range(len(dirs)) for b in range(a + 1, len(dirs))):
+            # RETA manda no consenso (é rígida — girar a tangente a entortaria em S);
+            # o arco vizinho absorve a diferença. Só arcos: média das tangentes.
+            tang_over[km] = line_dir.get(km) or \
+                _unit((sum(d[0] for d in dirs), sum(d[1] for d in dirs)))
+    prot = _protrusion_anchors(rp, PROTRUSION_DEV_MM, span_mm=min_dist_mm)
+    radial = _quadrant_anchors(rp, min_dist_mm=min_dist_mm)
+    free = {a for a in set(radial) if not covered[a]
+            and all(min((a - b) % n, (b - a) % n) > 2 for b in bounds)}
+    # Saliência é SAGRADA (espigão fino/pega lateral): entra mesmo colada/coberta —
+    # sem a âncora da ponta o filete atalharia por cima dela (mesma razão do legado).
+    free |= {a for a in set(prot) if a not in bounds}
+    anchors = sorted(bounds | free)
+    if len(anchors) < 2:
+        anchors = [0, n // 2]
+    tang = _anchor_tangents(rp, anchors)
+    tang.update(tang_over)
+    segs = []
+    m = len(anchors)
+    for k in range(m):
+        i0, i1 = anchors[k], anchors[(k + 1) % m]
+        seg = rp[i0:i1 + 1] if i1 > i0 else rp[i0:] + rp[:i1 + 1]
+        if len(seg) < 2:
+            continue
+        seg = list(seg)
+        if i0 in pos_over:
+            seg[0] = pos_over[i0]
+        if i1 in pos_over:
+            seg[-1] = pos_over[i1]
+        segs.append((seg, tang[i0], (-tang[i1][0], -tang[i1][1])))
+    return [_one_cubic_contained(s, field, eps) for s in segs]
+
+
+def _poly_step(rp):
+    """Passo médio (mm) do polígono fechado reamostrado uniformemente."""
+    n = len(rp)
+    per = sum(math.hypot(rp[(i + 1) % n][0] - rp[i][0], rp[(i + 1) % n][1] - rp[i][1])
+              for i in range(n))
+    return per / n if n else 0.0
+
+
+def _fit_anchored(rp, field, eps, min_dist_mm=ANCHOR_MIN_DIST_MM,
+                  line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
     """Âncoras BALANCEADAS POR QUADRANTE (ver `_quadrant_anchors`): as extremidades de cada
     setor angular, espaçadas a ≥ `min_dist_mm`, mais as âncoras de SALIÊNCIA local
     (`_protrusion_anchors`); entre âncoras consecutivas UMA cúbica suave CONTIDA
     (`_one_cubic_contained`, estufa p/ fora se preciso → a peça cabe). Todas G1. É o
     contorno de ENCAIXE: não busca fidelidade máxima, e sim um pocket que contém a peça e
-    fica mais justo conforme `min_dist_mm` diminui (mais âncoras). SEM teto de nós."""
+    fica mais justo conforme `min_dist_mm` diminui (mais âncoras). SEM teto de nós.
+
+    v0.10: com `line_tol_mm` > 0, RETAS e ARCOS detectados no contorno viram primitivas
+    (ver `_fit_primitives`) e as âncoras acima regem só os trechos livres; 0 = legado."""
     n = len(rp)
+    if line_tol_mm and line_tol_mm > 0:
+        step = _poly_step(rp)
+        lines = _detect_line_runs(rp, step, tol_mm=line_tol_mm)
+        arcs = (_detect_arc_runs(rp, step, lines, tol_mm=arc_tol_mm)
+                if arc_tol_mm and arc_tol_mm > 0 else [])
+        if lines or arcs:
+            return _fit_primitives(rp, field, eps, lines, arcs, min_dist_mm, step)
     prot = _protrusion_anchors(rp, PROTRUSION_DEV_MM, span_mm=min_dist_mm)
     radial = _quadrant_anchors(rp, min_dist_mm=min_dist_mm)
     anchors = sorted(set(radial) | set(prot))        # densidade ditada só por min_dist
@@ -1934,7 +2310,8 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
                                 simplify_mm=ANCHOR_SIMPLIFY_MM, eps=ANCHOR_EPS_MM,
                                 step=0.4, ppm=12.0, faithful=False,
                                 min_dist_mm=ANCHOR_MIN_DIST_MM,
-                                pocket_eps=POCKET_EPS_MM, symmetry='none'):
+                                pocket_eps=POCKET_EPS_MM, symmetry='none',
+                                line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
     """Ajuste com TODOS os nós SUAVES (G1), contendo a peça. Devolve lista de
     (p0,c1,c2,p3) no referencial da silhueta; o snap de bbox (depois) fixa a dimensão real.
 
@@ -1957,7 +2334,8 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
         return []
     field = _floor_field(clean, 0.0, ppm)        # piso de contenção = peça denoisada
     if not faithful:                             # POCKET de encaixe (âncoras por quadrante)
-        cubics = _fit_anchored(rp, field, pocket_eps, min_dist_mm=min_dist_mm)
+        cubics = _fit_anchored(rp, field, pocket_eps, min_dist_mm=min_dist_mm,
+                               line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
     else:
         # FIEL/ilimitado: âncoras do fecho convexo + subdivisão por contenção (legado).
         anchors = hull_anchor_indices(rp, simplify_mm=simplify_mm)
@@ -2016,15 +2394,18 @@ _ANCHORED_CACHE = {}
 
 
 def fit_anchored_cached(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
-                        faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM, symmetry='none'):
+                        faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
+                        symmetry='none', line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
     """Wrapper memoizado de `fit_closed_beziers_anchored` (mesma assinatura/retorno)."""
     key = (tuple(map(tuple, sil)), round(smooth_mm, 6), round(simplify_mm, 6),
-           bool(faithful), round(min_dist_mm, 6), round(pocket_eps, 6), symmetry)
+           bool(faithful), round(min_dist_mm, 6), round(pocket_eps, 6), symmetry,
+           round(line_tol_mm, 6), round(arc_tol_mm, 6))
     cached = _ANCHORED_CACHE.get(key)
     if cached is None:
         cached = fit_closed_beziers_anchored(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
                                              faithful=faithful, min_dist_mm=min_dist_mm,
-                                             pocket_eps=pocket_eps, symmetry=symmetry)
+                                             pocket_eps=pocket_eps, symmetry=symmetry,
+                                             line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
         _ANCHORED_CACHE.clear()
         _ANCHORED_CACHE[key] = cached
     return cached
@@ -2032,14 +2413,16 @@ def fit_anchored_cached(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM
 
 def _fit_for_output(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
                     faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM,
-                    pocket_eps=POCKET_EPS_MM, symmetry="none"):
+                    pocket_eps=POCKET_EPS_MM, symmetry="none",
+                    line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
     """Cúbicas PRONTAS p/ emissão — fonte ÚNICA dos três consumidores (.svg final, overlay
     Inkscape e métricas do CLI), garantindo que todos usem os MESMOS parâmetros (inclusive
     `symmetry`) e a mesma chave do cache: ajuste ancorado memoizado + snap de bbox no modo
     FIEL. No POCKET não há snap (o pocket fica ≥ objeto p/ conter a peça)."""
     cub = fit_anchored_cached(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
                               faithful=faithful, min_dist_mm=min_dist_mm,
-                              pocket_eps=pocket_eps, symmetry=symmetry)
+                              pocket_eps=pocket_eps, symmetry=symmetry,
+                              line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
     if cub and faithful:
         cub = _scale_cubics_to_bbox(cub, *size(sil))
     return cub
@@ -2048,7 +2431,8 @@ def _fit_for_output(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
 def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                    silhouette=None, c_fit=0.3, anchored=True,
                    smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
-                   min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM, symmetry='none'):
+                   min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM, symmetry='none',
+                   line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
     """Estágio 5: SVG em mm — contorno + PREENCHIMENTO translúcido (`OUTLINE_COLOR` a
     `OUTLINE_FILL_OPACITY`, cor destacada quase transparente p/ sobrepor o objeto e
     conferir cobertura), feito SÓ de curvas de Bézier cúbicas (`C`). Com `silhouette`:
@@ -2071,7 +2455,8 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
             cubics = _fit_for_output(silhouette, smooth_mm=smooth_mm,
                                      simplify_mm=simplify_mm, faithful=faithful,
                                      min_dist_mm=min_dist_mm, pocket_eps=pocket_eps,
-                                     symmetry=symmetry)
+                                     symmetry=symmetry, line_tol_mm=line_tol_mm,
+                                     arc_tol_mm=arc_tol_mm)
         else:
             cubics = fit_closed_beziers_contained(p, silhouette, c_fit=c_fit)
             if cubics:                            # snap p/ a dimensão real medida pela grade
@@ -2203,6 +2588,7 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
                      mask_smooth_mm=MASK_SMOOTH_MM, mask_smooth_keep_bumps=False,
                      val_frac=SEG_VAL_FRAC, in2_path=None, fuse_grow_mm=FUSE_GROW_MM,
+                     line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
                      overlay_path=None, overlay_svg_path=None, debug_dir=None,
                      return_silhouette=False, return_silhouettes=False,
                      return_edit_data=False):
@@ -2264,7 +2650,8 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
         # Mesmos Béziers que o .svg emite (fonte única _fit_for_output, incl. symmetry).
         cub = _fit_for_output(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
                               faithful=faithful, min_dist_mm=min_dist_mm,
-                              pocket_eps=pocket_eps, symmetry=symmetry)
+                              pocket_eps=pocket_eps, symmetry=symmetry,
+                              line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
         write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
     out = process_for_print(sil, min_radius=min_radius, smooth_mm=smooth_mm, clearance=clearance)
     if return_edit_data:
@@ -2324,6 +2711,8 @@ def _pipeline_kwargs(args, overlay_path, overlay_svg_path):
                 # getattr: Namespaces sintéticos dos testes antecedem o --in2 (param novo = default)
                 in2_path=getattr(args, "in2_path", None),
                 fuse_grow_mm=getattr(args, "fuse_grow", FUSE_GROW_MM),
+                line_tol_mm=getattr(args, "line_tol", LINE_TOL_MM),
+                arc_tol_mm=getattr(args, "arc_tol", ARC_TOL_MM),
                 overlay_path=overlay_path, overlay_svg_path=overlay_svg_path,
                 debug_dir=args.debug_dir)
 
@@ -2351,9 +2740,12 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
         return 3
 
     # Nós iniciais = curva ancorada (mesma geometria que o .svg padrão emitiria).
+    # getattr: Namespaces sintéticos dos testes antecedem as flags novas (default)
     cub0 = _fit_for_output(sil, smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
                            faithful=args.faithful, min_dist_mm=args.min_dist,
-                           pocket_eps=args.pocket_eps, symmetry=args.symmetry)
+                           pocket_eps=args.pocket_eps, symmetry=args.symmetry,
+                           line_tol_mm=getattr(args, "line_tol", LINE_TOL_MM),
+                           arc_tol_mm=getattr(args, "arc_tol", ARC_TOL_MM))
     if not cub0:
         # Editor sem nós é beco sem saída (nem inserir dá: precisa de ≥ 2 nós) e o
         # Finalize crasharia em bbox de lista vazia — aborta com diagnóstico.
@@ -2461,6 +2853,16 @@ def main(argv=None):
                     help="penetração tolerada (mm) no modo POCKET: a curva pode tocar/cortar a "
                          "peça até este valor. Menor = pocket mais justo p/ fora = 'contém' mais "
                          "alto (→1.0); 0 = não corta a peça (contém ~1.0, encaixe mais folgado).")
+    ap.add_argument("--line-tol", dest="line_tol", type=float, default=LINE_TOL_MM,
+                    help="detecção de RETAS (mm, v0.10): trecho do contorno onde todos os pontos "
+                         "desviam < isto da corda vira UMA reta (menos nós; aresta reta não "
+                         "arqueia p/ dentro). MAIOR = mais agressivo (pega arestas abauladas), "
+                         "MENOR = só reta de verdade. 0 = DESLIGA retas e arcos (caminho antigo). "
+                         f"PADRÃO {LINE_TOL_MM}.")
+    ap.add_argument("--arc-tol", dest="arc_tol", type=float, default=ARC_TOL_MM,
+                    help="detecção de ARCOS (mm, v0.10): nos vãos entre retas, círculo com resíduo "
+                         "radial < isto vira arco tangente (canto = filete limpo, 1 cúbica por "
+                         f"90°). 0 = desliga só os arcos. PADRÃO {ARC_TOL_MM}.")
     ap.add_argument("--min-dist", dest="min_dist", type=float, default=ANCHOR_MIN_DIST_MM,
                     help="distância MÍNIMA (mm) entre âncoras do MESMO QUADRANTE no pocket de "
                          "encaixe: ao adensar (8, 12…), o 2º/3º ponto de um quadrante só entra "
@@ -2525,7 +2927,8 @@ def main(argv=None):
                          silhouette=floor, c_fit=args.c_fit, anchored=anchored,
                          smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
                          faithful=args.faithful, min_dist_mm=args.min_dist,
-                         pocket_eps=args.pocket_eps, symmetry=args.symmetry)
+                         pocket_eps=args.pocket_eps, symmetry=args.symmetry,
+                         line_tol_mm=args.line_tol, arc_tol_mm=args.arc_tol)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(svg)
     # Saída COMPACTA e parseável (a skill /ptoo lê isto a cada passo): uma linha de status,
@@ -2539,8 +2942,9 @@ def main(argv=None):
     elif anchored:
         cub = _fit_for_output(sil, smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
                               faithful=args.faithful, min_dist_mm=args.min_dist,
-                              pocket_eps=args.pocket_eps,
-                              symmetry=args.symmetry)     # mesma geometria do SVG emitido
+                              pocket_eps=args.pocket_eps, symmetry=args.symmetry,
+                              line_tol_mm=args.line_tol,
+                              arc_tol_mm=args.arc_tol)    # mesma geometria do SVG emitido
         cov = coverage(flatten_beziers(cub), sil_ref, tol_mm=CONTAIN_TOL_MM)
         if pocket:
             pw, ph = size(flatten_beziers(cub))     # pocket = ≥ objeto (contém a peça)

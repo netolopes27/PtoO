@@ -849,7 +849,7 @@ class TestRimToeHysteresis(unittest.TestCase):
 #     sem croma. VALOR pega o corpo (inclusive liso); a TEXTURA (limiar Otsu
 #     adaptativo) RECORTA as regiões LISAS-E-mais-CLARAS = sombra PROJETADA, que o
 #     corte de valor sozinho englobaria. Discriminador = textura (std local de V),
-#     não croma nem valor. Doc: docs/melhorias/v0.5.md ("4ª foto").
+#     não croma nem valor. Doc: docs/historico.md (v0.5).
 # =============================================================================
 def _texture_shadow_scene():
     """Fundo branco (V=200). CORPO cinza-neutro ESCURO e TEXTURADO (colunas

@@ -64,7 +64,7 @@ SEG_VAL_FRAC = 0.30        # DEFAULT do corte escuro (flag --val-frac): brilho A
                            # sombra e serrilhava a base. SUBA (~0.7-0.8) p/ capturar CORPOS
                            # CINZA-NEUTROS de baixo contraste (V≈0.6-0.7·fundo, sem croma p/ os
                            # outros predicados); aí pareie com --mask-smooth-mm e atente que a
-                           # sombra de contato pode vazar. Ver docs/melhorias/v0.4.md.
+                           # sombra de contato pode vazar. Ver docs/historico.md (v0.5).
 SEG_VAL_WEAK_FRAC = 0.65   # corte FRACO da histerese de borda (--shadow): V abaixo disto (não é
                            # papel claro) E com croma continua sendo objeto. Cresce a borda
                            # arredondada (bisel preto no topo, toe laranja no fundo) pela rampa até
@@ -90,7 +90,7 @@ SEG_TEX_BODY_FRAC = 0.80   # corte de VALOR do corpo no modo textura: V ≤ frac
 SEG_TEX_LIGHT_FRAC = 0.70  # a sombra PROJETADA é LISA e mais clara que isto·fundo (~0.8-0.9): o
                            # recorte tira do corpo só o que é (liso E mais claro) → rejeita a sombra
                            # sem comer o corpo escuro. (Sombra de CONTATO é escura → fora deste termo;
-                           # pendência da v0.5, ver docs/melhorias/v0.5.md.)
+                           # pendência da v0.5, ver docs/historico.md.)
 SEG_WS_ERODE_MM = 2.0      # erosão da máscara p/ virar marcador FG do watershed de refino de borda:
                            # o miolo é peça certa; a casca de ±band vira zona incerta onde a fronteira
                            # é re-decidida pelo GRADIENTE (a borda física é degrau; a sombra é rampa).
@@ -701,7 +701,7 @@ def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None, fai
       — recuperando a borda real e PARANDO na sombra de contato CINZA desaturada da base.
     - **"texture"** (v0.5, p/ corpo CINZA-NEUTRO sem croma): VALOR pega o corpo escuro inteiro e a
       TEXTURA (std local de V, limiar Otsu adaptativo) RECORTA do corpo as regiões LISAS-E-mais-
-      CLARAS = sombra PROJETADA. Ver docs/melhorias/v0.5.md.
+      CLARAS = sombra PROJETADA. Ver docs/historico.md (v0.5).
 
     `faint_metal` (ligado pelo modo 2 fotos, --in2): acrescenta o predicado de saturação FRACA
     (S ≥ fundo + FUSE_FAINT_SAT_MARGIN, V ≤ FUSE_FAINT_VAL_MAX·fundo) que recupera metal claro
@@ -732,7 +732,7 @@ def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None, fai
         # TEXTURA (std local de V) então RECORTA do corpo as regiões que são ao mesmo tempo LISAS
         # (textura < limiar Otsu ADAPTATIVO da própria foto) E mais CLARAS (V > LIGHT·fundo) — i.e.
         # a SOMBRA PROJETADA, que tem o mesmo brilho do corpo mas é lisa. Inverte o papel da textura:
-        # de crescedor/localizador p/ SUBTRATOR de sombra. Ver docs/melhorias/v0.5.md ("4ª foto").
+        # de crescedor/localizador p/ SUBTRATOR de sombra. Ver docs/historico.md (v0.5).
         Vd = cv2.bilateralFilter(V.astype(np.uint8), 7, 40, 7).astype(np.float32)  # denoise preserva borda
         win = (SEG_TEX_WIN, SEG_TEX_WIN)
         mu = cv2.boxFilter(Vd, -1, win)

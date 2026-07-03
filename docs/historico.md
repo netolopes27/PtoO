@@ -215,8 +215,7 @@ traz esse ajuste **para dentro** da CLI.
 
 Caso real (`/ptoo trena.jpg`): o **gancho metálico da fita** (pino ~1×5 mm) era apagado pelo
 `--mask-smooth-mm 2` e **nenhuma métrica acusava** — o `contém` era medido contra a silhueta
-**pós**-regularização, validando uma silhueta já mutilada. Plano e detalhes em
-[melhorias/v0.7.md](melhorias/v0.7.md). Três mudanças:
+**pós**-regularização, validando uma silhueta já mutilada. Três mudanças:
 
 - **P1 — `contém` honesto:** o CLI mede o `contém`/`encaixe` contra a silhueta de **REFERÊNCIA**
   pré `--mask-smooth-mm` (`generate_outline(..., return_silhouettes=True)` → `(out, sil, sil_ref)`),

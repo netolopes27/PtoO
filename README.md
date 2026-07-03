@@ -162,7 +162,9 @@ PNGs for diagnosis).
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--shadow` | `off` | `remove` = **edge hysteresis** by chroma: recovers the rounded edge curving toward the base (black bevel on top, desaturated orange toe at the bottom), growing only through chroma pixels and **stopping at the gray contact shadow**. `texture` = **shadow subtractor** for **gray-neutral bodies**: value grabs the dark body, then local-texture (adaptive Otsu threshold) **carves out** the smooth-and-lighter cast shadow that a plain value cut would swallow — works even over a chromatic paper background |
+| `--shadow` | `off` | `remove` = **edge hysteresis** by chroma: recovers the rounded edge curving toward the base (black bevel on top, desaturated orange toe at the bottom), growing only through chroma pixels and **stopping at the gray contact shadow**. `texture` = **shadow subtractor** for **gray-neutral bodies**: value grabs the dark body, then local-texture (adaptive Otsu threshold) **carves out** the smooth-and-lighter cast shadow that a plain value cut would swallow — works even over a chromatic paper background; a built-in **watershed edge refinement** then re-decides the boundary on the physical gradient, expelling the dark contact shadow (umbra) |
+| `--in2` | off | **two-photo fusion** for hard sunlight shadows or bright metal parts: second photo of the same part on the same base with the light coming from the **opposite side** (rotate base+part together ~180° relative to the sun). Registration (rotation+shift) is automatic; each photo is **sovereign on its lit side**, so both shadows drop out. Also auto-enables a faint-saturation predicate that recovers **bright smooth metal** (connector tops ≈ paper brightness) that single-photo segmentation cannot see. The overlay uses the better-lit photo as background |
+| `--fuse-grow` | `0.0` | only with `--in2`: optional geodesic grow (mm) within the union of both masks, for parallax residue near the bisector of the two shadow directions. Rarely needed |
 | `--symmetry` | `none` | `vertical`/`horizontal`/`both`: mirrors the mask and **averages the halves** (less noise). Use on symmetric parts |
 | `--mask-smooth-mm` | `0.0` (off) | **regularizes the silhouette** before tracing: blurs the signed-distance field and re-thresholds, removing bumps/waviness smaller than the radius from the **mask** itself. Use when a low-contrast **black** edge comes out wavy even at high containment; `~1.5–2` cleans it without rounding macro corners. Orthogonal to `--smooth-mm` (which acts on the curve) and to containment |
 | `--mask-smooth-keep-bumps` | off | biases `--mask-smooth-mm` toward **closing** (a closing on the distance field): removes only **concave** dents (noise) while **preserving convex bumps** (e.g. a side tab) that the isotropic mode would round off |
@@ -244,6 +246,8 @@ touch-up. Full behavior is documented in the skill's own [SKILL.md](.claude/skil
 | Situation | What to do |
 |-----------|------------|
 | **Rounded edge** (black top / colored rim) disappearing | `--shadow remove` |
+| **Hard sunlight shadow** no `--shadow` mode fixes | second photo with opposite light + `--in2 photo2.jpg` |
+| **Bright metal connector** vanishing into the white paper | same: `--in2` (auto-recovers faint metal) |
 | **Symmetric** part, noisy outline | `--symmetry vertical` (or `horizontal`/`both`) |
 | **Jagged** outline | raise `--smooth-mm` (e.g. `12`) |
 | Pocket **too loose** | lower `--min-dist`: `2`, `1`, `0.5`… |
@@ -260,8 +264,9 @@ touch-up. Full behavior is documented in the skill's own [SKILL.md](.claude/skil
 - **Inflated/shifted outline** — parallax from the object's **height** (the top floats above
   the paper). No base corrects this; the tool only **measures and warns** about the tilt. Shoot
   as perpendicular as possible.
-- **Light/matte part vanishes into the white** — it blends with the white center (known
-  limitation, see the roadmap in [docs/historico.md](docs/historico.md)); improve contrast.
+- **Light/matte part vanishes into the white** — it blends with the white center. With **two
+  photos** (`--in2`, opposite light) the faint-metal predicate recovers it; in single-photo mode
+  it remains a known limitation (see the roadmap in [docs/historico.md](docs/historico.md)).
 - **`image not found`** — check the `--in` path.
 
 ## 8. Built-in help

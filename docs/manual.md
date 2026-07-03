@@ -18,6 +18,11 @@
   base).
 - A **folga real de impressão** NÃO sai daqui: aplique a jusante (OpenSCAD/`--clearance`). O SVG
   sai no tamanho real (`--clearance 0`).
+- O **`contém` é honesto (v0.7):** medido contra a silhueta **pré** `--mask-smooth-mm` com
+  tolerância de profundidade de 0.3 mm — ruído raso não conta, mas uma feature removida pela
+  regularização (o CLI avisa) derruba o gate.
+- **Sombra dura ou metal claro que some no branco → 2 fotos (v0.9):** `--in2 <foto2>` com a luz
+  do outro lado; registro e fusão são automáticos (ver seção 1).
 
 ---
 
@@ -42,8 +47,11 @@ sombra projetada. O recorte vale p/ todo o candidato (valor **ou** croma), entã
 fundo de papel cromático (a sombra sobre o papel lavanda também é cromática, mas é lisa → recortada).
 - **Quando usar:** corpo cinza-neutro **com sombra projetada** que `--val-frac` sozinho engloba.
   Substitui o antigo paliativo `--val-frac 0.68 --shadow off`.
-- **Pendência conhecida:** a sombra de **contato** é *escura* (não "mais clara") → ainda fora do
-  termo de recorte; em peça cinza com sombra de contato, avaliar caso a caso.
+- **Refino de borda por watershed (v0.8, embutido):** a sombra de **contato/UMBRA** é *escura*
+  (não "mais clara") e passava pelo recorte, inflando a silhueta ~4–5 mm. O modo agora re-decide a
+  fronteira pelo **gradiente** (watershed com marcadores): a borda física peça↔fundo é um *degrau*
+  de V, sombra↔papel é *rampa* suave — a inundação do papel atravessa a rampa e a da peça esbarra
+  no degrau. Resíduo típico de umbra: ~0,5–1,5 mm (medido na trena cinza).
 - **Efeito geral:** sobe a fidelidade da silhueta → pocket mais correto.
 
 ### `--val-frac <f>`  · default `0.30`
@@ -60,6 +68,34 @@ Corte de **valor** do predicado "escuro" da segmentação: um pixel é objeto se
 - **Interação:** ortogonal a `--shadow remove` (a histerese cresce por **croma**, não ajuda em
   cinza). Para corpo cinza **com sombra projetada**, o caminho robusto hoje é **`--shadow texture`**
   (recorta a sombra pela textura) em vez de só subir `--val-frac` — ver acima.
+
+### `--in2 <foto2>`  · default off  ·  **fusão 2-fotos (v0.9)**
+Segunda foto da **mesma peça sobre a mesma base**, com a **luz vindo do outro lado** (protocolo:
+girar **base+peça juntas** ~180° em relação ao sol/lâmpada e refotografar). As duas retificações
+ancoram no mesmo alvo impresso → a peça cai no mesmo canvas métrico; só a sombra muda de lado.
+A CLI então faz tudo sozinha:
+1. **Registro rígido automático** da foto 2 sobre a 1 (quartos de volta + refino fino de ângulo
+   + translação), pontuado por IoU × **textura** (ZNCC) sobre as máscaras **limpas** — pode girar a
+   peça à mão livre entre as fotos, o registro absorve.
+2. **Fusão direcional**: a direção da sombra de cada foto sai do próprio lóbulo de discordância
+   das máscaras; cada foto é **soberana no seu lado iluminado** (a borda que a luz dela deixou
+   limpa), e a sombra de cada uma cai. A paralaxe não rói peça alta (não há AND na borda soberana).
+3. **Predicado faint-metal** (ligado automaticamente): recupera **metal claro liso** (topo de
+   conector ≈ brilho do papel, invisível aos predicados normais em luz difusa) via saturação fraca
+   (S ≥ fundo+10). Ele readmite a sombra junto — o que é seguro **só** aqui, porque a fusão a remove.
+4. O **overlay** usa de fundo a foto de melhor luz (menor lóbulo de sombra), warpada pelo registro.
+- **Quando usar:** sombra dura (sol) que nenhum `--shadow` resolve; peça com conectores/metal claro
+  que some no papel branco. É o caminho robusto p/ os dois problemas de uma vez.
+- **Diagnóstico no stderr:** `registro rot=…° shift=…mm score=…` + direções de sombra; **AVISO**
+  "sombras caem do MESMO lado" = a luz mudou pouco entre as fotos → refotografe com a luz oposta
+  (nesse caso o resultado degrada p/ ~AND e sombra∩sombra pode vazar).
+
+### `--fuse-grow <mm>`  · default `0.0`  ·  *(só com `--in2`)*
+Pós-fusão opcional: cresce o resultado **geodesicamente** (dilatação contida na UNIÃO das duas
+máscaras) até este raio. Com a fusão direcional raramente é necessário — fica p/ resíduo de
+paralaxe perto da **bissetriz** das duas direções de sombra (onde nenhuma foto é soberana).
+- **Quando usar:** só se o zoom mostrar a peça roída num trecho onde as duas sombras se encontram.
+- **Custo:** readmite até este raio de sombra onde ela encosta na peça.
 
 ### `--symmetry {none,vertical,horizontal,both}`  · default `none`
 Impõe a simetria do objeto: **espelha e faz a MÉDIA das duas metades** (duas amostras do mesmo
@@ -132,6 +168,9 @@ silhueta **suavizada**:
 - **Subir (+1..2):** tira escadinha/serrilhado — **conflita** com o contém (suaviza para dentro).
 - **Rampa adaptativa (2º lever):** mesma lógica de inversão. Direção padrão ↓. Piso ~2 (abaixo
   de ~1 reintroduz serrilha); teto ~10. Engaja quando min-dist (1ª) esgotou.
+- **Espigões finos (v0.7):** uma protuberância fina real (recuo ≥ 0.3 mm, boca ≤ 3 mm — ex.: o
+  gancho da fita) é **preservada automaticamente** do low-pass (`_preserve_spikes`): não baixe
+  o `--smooth-mm` só por causa de um espigão.
 
 ### `--mask-smooth-mm <mm>`  · default `0.0` (off)  ·  **regulariza a SILHUETA (não a curva)**
 Suaviza a forma da **máscara** ANTES de extrair o contorno: borra o campo de distância com sinal
@@ -140,15 +179,20 @@ e re-corta em 0, removendo **saliências e ondulações** de amplitude menor que
 - **Quando usar:** borda **PRETA** de baixo contraste (carcaça/borracha) que sai **ondulada** mesmo
   com o contém em 0.9999 — a segmentação serrilha onde o objeto quase se funde com a sombra.
 - **Valor:** `~1.5–2` limpa o thermpro sem arredondar os cantos macro (raio ≫ valor). `0` = desligado.
-- **Ortogonal ao contém:** não é um lever das rampas; some com a ondulação **mantendo** o contém
-  (a peça continua contida; o pocket ainda dilata a folga). Não mexa nas rampas por causa disto.
+- **Não é um lever das rampas:** some com a ondulação sem apertar/afrouxar o pocket — não mexa
+  nas rampas por causa disto.
+- **Guarda (v0.7):** se a regularização remover uma **saliência convexa real** (proeminência
+  ≥ 0.8 mm e área ≥ 1 mm² — ex.: o gancho da fita de uma trena), o CLI **avisa** no stderr e o
+  `contém` — agora medido contra a silhueta **pré**-regularização — **cai abaixo do gate**,
+  em vez de validar a silhueta mutilada em silêncio. Resposta típica: `--mask-smooth-keep-bumps`.
 
 ### `--mask-smooth-keep-bumps`  · flag · default off  ·  **(v0.5, Etapa B)**
 Enviesa o `--mask-smooth-mm` para **fechamento** (um *closing* no campo de distância: `max(sdf,blur)`).
 Remove **só as reentrâncias côncavas** (a serrilha de ruído) e **preserva os ressaltos convexos** —
 ex.: a **aba lateral** da peça, que o modo isotrópico arredondaria junto com o ruído.
 - **Quando usar:** com `--mask-smooth-mm` ligado, quando a regularização está comendo uma **saliência
-  real** (convexa) além da serrilha. Sem efeito se `--mask-smooth-mm` for 0.
+  real** (convexa) além da serrilha — em particular sempre que o CLI **avisar** que uma saliência
+  foi removida (v0.7). Sem efeito se `--mask-smooth-mm` for 0.
 - **Cuidado:** também mantém eventuais **picos de ruído convexo** (raros sub-mm; a serrilha de baixo
   contraste é majoritariamente côncava).
 
@@ -214,8 +258,12 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 | corpo **cinza-neutro** + **sombra projetada** vaza no pocket (balão p/ um lado) | `--shadow texture` |
 | corpo cinza-neutro **sem** sombra projetada / obj sai pequeno (só o clipe) | ↑`--val-frac` (~0.68) |
 | `--mask-smooth-mm` arredondou uma **saliência convexa real** (aba) | + `--mask-smooth-keep-bumps` |
+| AVISO `--mask-smooth-mm removeu uma saliência convexa` (e contém caiu) | + `--mask-smooth-keep-bumps` (ou ↓`--mask-smooth-mm`) |
 | peça simétrica com contorno ruidoso/torto | `--symmetry vertical\|horizontal` (eixo do objeto) |
 | bico/canto vivo onde devia arredondar | ↑`--min-radius` (+0.5) |
 | quero o contorno **exato** (não pocket) | `--faithful` |
-| vermelho/contorno vaza p/ o fundo, ou peça clara some no branco | limite de segmentação — sem flag resolve; sinalizar p/ melhoria da CLI |
+| **sombra dura** (sol) que nenhum `--shadow` resolve | `--in2 <foto2>` com a luz do outro lado (girar base+peça juntas ~180°) — fusão direcional elimina as duas sombras |
+| **conector/metal claro** some no papel branco (baía na máscara; pocket bloqueia o conector) | `--in2 <foto2>` — o modo 2 fotos liga o predicado faint-metal e recupera o metal; **conferir no zoom** (o `contém` não acusa, mede contra a própria máscara) |
+| peça roída onde as duas sombras se encontram (só com `--in2`) | `--fuse-grow` (~1–2) |
+| vermelho/contorno vaza p/ o fundo, ou peça clara some no branco (foto única) | limite de segmentação — sem flag resolve; tentar `--in2` ou sinalizar p/ melhoria da CLI |
 | `ERRO: retificação ... ArUco falhou` | problema de foto/base (imprimir base.svg A4 100%, fotografar perto do nadir, marcadores visíveis, `--dict` casando) |

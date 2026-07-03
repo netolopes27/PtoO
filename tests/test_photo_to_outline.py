@@ -410,6 +410,63 @@ class TestProtrusionAnchors(unittest.TestCase):
                             f"nó {k} com bico")
 
 
+class TestCoverageTolerance(unittest.TestCase):
+    """v0.6: `coverage(..., tol_mm=)` mede o contém com tolerância de PROFUNDIDADE —
+    penetração rasa (≤ tol, a serrilha de ruído da referência CRUA) não conta; um corte
+    profundo (feature real perdida, ex.: o gancho da trena) continua furando o gate."""
+
+    def test_shallow_sliver_forgiven(self):
+        inner = rectangle(20, 20)
+        outer = rectangle(19.75, 20, cx=-0.125)     # corta 0.25 mm na borda direita
+        self.assertLess(P.coverage(outer, inner, ppm=16.0), 0.995)
+        self.assertGreaterEqual(P.coverage(outer, inner, ppm=16.0, tol_mm=0.3), 0.9999)
+
+    def test_deep_cut_still_flagged(self):
+        inner = rectangle(20, 20)
+        outer = rectangle(16, 20, cx=-2.0)          # corta 2 mm — feature perdida
+        self.assertLess(P.coverage(outer, inner, ppm=16.0, tol_mm=0.3), 0.99)
+
+    def test_default_tol_zero_unchanged(self):
+        inner = rectangle(20, 20)
+        outer = rectangle(19.75, 20, cx=-0.125)
+        self.assertAlmostEqual(P.coverage(outer, inner, ppm=16.0),
+                               P.coverage(outer, inner, ppm=16.0, tol_mm=0.0), places=9)
+
+
+class TestPreserveSpikes(unittest.TestCase):
+    """Espigão convexo FINO e real (caso 'gancho da trena', v0.6): o low-pass do
+    `smooth_mm` RECUA a ponta antes da seleção de âncoras — o piso de contenção nasce
+    sem ela e o pocket corta o topo do espigão SEM nenhum aviso (o `contém` mal se move).
+    `_preserve_spikes` reinjeta na curva suavizada os trechos crus em torno de picos com
+    proeminência ≥ PROTRUSION_DEV_MM (ruído sub-mm não tem proeminência → intacto)."""
+
+    def test_preserve_spikes_restores_thin_spike_tip(self):
+        # Pino de 1 mm de largura × 5 mm (ponta em x=35): o low-pass 2.5 mm recua a
+        # ponta ≥ 0.3 mm; o preserve devolve a extremidade CRUA.
+        raw = P.resample_uniform(rect_with_right_bump(bump=5.0, half=0.5), 0.15, closed=True)
+        sm = P.lowpass_closed(raw, win_mm=2.5, step=0.15)
+        raw_tip = max(x for x, _ in raw)
+        self.assertLess(max(x for x, _ in sm), raw_tip - 0.3)      # premissa: recuou
+        kept = P._preserve_spikes(raw, sm, span_mm=1.5)
+        self.assertGreaterEqual(max(x for x, _ in kept), raw_tip - 0.05)
+
+    def test_preserve_spikes_noop_on_smooth_shape(self):
+        # Curvatura macro uniforme (cantos arredondados): proeminência ~0 → NENHUM ponto
+        # restaurado, o suavizado volta intacto (o preserve não desfaz o smooth-mm).
+        raw = P.resample_uniform(rounded_rect(60, 44, 8), 0.15, closed=True)
+        sm = P.lowpass_closed(raw, win_mm=8.0, step=0.15)
+        self.assertEqual(P._preserve_spikes(raw, sm, span_mm=10.0), sm)
+
+    def test_pocket_wraps_thin_spike(self):
+        # Ponta-a-ponta do ajuste: o POCKET alcança a ponta CRUA do pino (x=20) em vez
+        # de cortá-la pela versão recuada do low-pass — e contém a peça.
+        shape = rect_with_right_bump(w=30.0, h=24.0, bump=5.0, half=0.5)
+        cub = P.fit_closed_beziers_anchored(shape, smooth_mm=2.5, min_dist_mm=1.5)
+        flat = P.flatten_beziers(cub, seg=40)
+        self.assertGreater(max(x for x, _ in flat), 19.7)          # ponta em x=20
+        self.assertGreaterEqual(P.coverage(flat, shape), 0.999)
+
+
 class TestRegularizeSilhouette(unittest.TestCase):
     """Regularização da silhueta no domínio da MÁSCARA (remove ondulações da borda
     preta de baixo contraste sem arredondar os cantos macro)."""
@@ -505,6 +562,51 @@ class TestRegularizeSilhouette(unittest.TestCase):
         a = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM)
         b = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM, preserve_convex=False)
         self.assertTrue(np.array_equal(a, b))
+
+    # --- v0.6: AVISAR quando a regularização remove saliência convexa real ---------
+    @staticmethod
+    def _body_with_spike():
+        """Corpo macro com um ESPIGÃO fino no topo (1×5 mm a 8 px/mm — o gancho da
+        trena): o modo isotrópico o apaga por inteiro, e nada no `contém` acusa."""
+        import cv2
+        m = np.zeros((400, 400), np.uint8)
+        cv2.rectangle(m, (100, 100), (300, 300), 255, -1)      # corpo macro
+        cv2.rectangle(m, (196, 60), (204, 100), 255, -1)       # espigão 8×40 px = 1×5 mm
+        return m
+
+    def test_warn_when_smoothing_removes_protrusion(self):
+        # O isotrópico REMOVE o espigão (proeminência ≥ PROTRUSION_DEV_MM, área ≥ 1 mm²)
+        # → o CLI tem de AVISAR (a remoção é silenciosa p/ o gate `contém`).
+        import contextlib
+        import io
+        mask = self._body_with_spike()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM)
+        self.assertEqual(int(out[70, 200]), 0)                 # espigão de fato removido
+        self.assertIn("saliência", err.getvalue())
+
+    def test_no_warn_on_subthreshold_waviness(self):
+        # Serrilha de ruído (amplitude 0.5 mm < PROTRUSION_DEV_MM): remover é o TRABALHO
+        # do --mask-smooth-mm — nenhum aviso.
+        import contextlib
+        import io
+        mask = self._mask_from_poly(self._sawtooth_circle(teeth_amp=4.0))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM)
+        self.assertEqual(err.getvalue(), "")
+
+    def test_no_warn_when_keep_bumps_preserves(self):
+        # Com --mask-smooth-keep-bumps o espigão sobrevive → nada removido, nada avisado.
+        import contextlib
+        import io
+        mask = self._body_with_spike()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = P.regularize_silhouette(mask, 2.0, ppmm=P.PX_PER_MM, preserve_convex=True)
+        self.assertGreater(int(out[70, 200]), 0)               # keep-bumps preservou
+        self.assertEqual(err.getvalue(), "")
 
 
 class TestScaleAndHomography(unittest.TestCase):
@@ -796,6 +898,150 @@ class TestTextureShadowSubtractor(unittest.TestCase):
         self.assertGreater(int(off[self.SHADOW]), 0)
 
 
+class TestWatershedEdgeRefine(unittest.TestCase):
+    """v0.8 — refino de borda do modo texture: a UMBRA (sombra de contato, LISA e
+    ESCURA — passa pelo recorte liso-E-mais-claro) é re-decidida pelo GRADIENTE
+    (watershed): a inundação do papel entra pela rampa suave; a da peça esbarra no
+    degrau físico. Numa cena sintética a corrida de inundação é mais frágil que em
+    foto real (regiões planas = vencedor leva tudo), então o teste fixa as
+    INVARIANTES: a borda avança PARA DENTRO da umbra (ganho mínimo), sem comer o
+    corpo, e a guarda sem-marcador é no-op."""
+    BODY_EDGE = 220        # última coluna do corpo texturado
+
+    @staticmethod
+    def _umbra_scene():
+        # Corpo texturado (colunas 60/140) + UMBRA lisa escura (V=120, 5 mm)
+        # decaindo em RAMPA suave (120→200 em 40 px) até o papel; ruído gaussiano
+        # leve (σ=4, seed fixa) reproduz o grão da foto real — sem ele, a inundação
+        # em região perfeitamente plana degenera (quem encosta primeiro leva tudo).
+        import cv2
+        rng = np.random.default_rng(7)
+        H, W = 480, 440
+        hsv = np.zeros((H, W, 3), np.uint8)
+        hsv[:, :, 0] = 15
+        V = np.full((H, W), 200, np.int16)                  # papel neutro
+        for c in range(120, 220):                           # corpo texturado
+            V[100:300, c] = 60 if (c // 3) % 2 == 0 else 140
+        V[100:300, 220:260] = 120                           # umbra: lisa E escura
+        for i, c in enumerate(range(260, 300)):             # rampa suave umbra→papel
+            V[100:300, c] = 120 + int(80 * (i + 1) / 40)
+        hsv[:, :, 2] = np.clip(V + rng.normal(0, 4, (H, W)), 0, 255).astype(np.uint8)
+        return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+    @staticmethod
+    def _right_edge(mask):
+        # Borda direita TÍPICA (mediana por linha): a fronteira do watershed é
+        # irregular no ruído — uma linha atípica não deve decidir o teste.
+        band = mask[150:250] > 0
+        per_row = [int(np.where(r)[0].max()) for r in band if r.any()]
+        return float(np.median(per_row))
+
+    def test_watershed_tightens_umbra_without_eating_body(self):
+        scene = self._umbra_scene()
+        val = P.segment_tool(scene, deshadow=False, val_frac=0.80)  # corte de valor puro
+        tex = P.segment_tool(scene, deshadow="texture")             # + refino watershed
+        self.assertGreater(int(val[200, 240]), 0)       # valor puro ENGOLE a umbra
+        self.assertGreater(int(tex[200, 170]), 0)       # corpo continua segmentado
+        # ganho: a borda re-decidida entra ≥ 2 mm (16 px) na umbra que o valor mantinha…
+        self.assertLessEqual(self._right_edge(tex), self._right_edge(val) - 16)
+        # …sem recuar p/ dentro do corpo (não come a peça)
+        self.assertGreaterEqual(self._right_edge(tex), self.BODY_EDGE - 1)
+
+    def test_refine_noop_without_fg_marker(self):
+        # Corpo LISO e meio-claro inteiro (tudo cai no recorte de umbra provável):
+        # sem marcador FG restante, a guarda devolve a máscara intacta.
+        import cv2
+        img = np.full((200, 200, 3), 200, np.uint8)
+        img[60:140, 60:140] = 130
+        mask = np.zeros((200, 200), np.uint8)
+        mask[60:140, 60:140] = 255
+        Vd = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        smooth = np.ones((200, 200), bool)
+        out = P._refine_edge_watershed(img, mask, Vd, smooth, 200.0)
+        self.assertTrue(bool((out == mask).all()))
+
+
+class TestFaintMetal(unittest.TestCase):
+    """Predicado faint-metal (ligado pelo modo 2 fotos): recupera METAL CLARO liso
+    (S fraca ~fundo+10, V ≈ papel) que nenhum predicado normal pega — caso real:
+    topos de conectores do Raspberry Pi em luz difusa (V = 1.005×fundo)."""
+    METAL = (200, 250)
+
+    @staticmethod
+    def _metal_scene():
+        import cv2
+        H, W = 400, 400
+        hsv = np.zeros((H, W, 3), np.uint8)
+        hsv[:, :, 0] = 15
+        hsv[:, :, 1] = 8                                    # papel: S fraca de JPEG
+        hsv[:, :, 2] = 235
+        hsv[150:250, 150:220, 1] = 8                        # corpo escuro (predicado dark)
+        hsv[150:250, 150:220, 2] = 40
+        hsv[150:250, 220:280, 1] = 8 + P.FUSE_FAINT_SAT_MARGIN + 8   # "conector": S fraca
+        hsv[150:250, 220:280, 2] = 235                               # V = papel
+        return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+    def test_default_misses_faint_metal(self):
+        # Sem o predicado, o metal claro é invisível (V=papel, S abaixo de colored).
+        m = P.segment_tool(self._metal_scene())
+        self.assertEqual(int(m[self.METAL]), 0)
+
+    def test_faint_metal_recovers_bright_connector(self):
+        m = P.segment_tool(self._metal_scene(), faint_metal=True)
+        self.assertGreater(int(m[self.METAL]), 0)
+
+
+class TestFuseMasks(unittest.TestCase):
+    """Fusão direcional 2-fotos (--in2): registro rígido + cada foto soberana no
+    seu lado iluminado (a sombra de cada uma cai; a peça comum fica)."""
+    PPMM = 4.0
+    SHAPE = (320, 320)
+
+    @classmethod
+    def _piece(cls):
+        # Peça em L (assimétrica sob 90/180/270°) — o registro não pode ter empate.
+        m = np.zeros(cls.SHAPE, np.uint8)
+        m[120:200, 80:240] = 255                            # corpo 160×80
+        m[200:260, 80:130] = 255                            # aba inferior-esquerda
+        return m
+
+    @staticmethod
+    def _iou(a, b):
+        A, B = a > 0, b > 0
+        return np.count_nonzero(A & B) / float(np.count_nonzero(A | B))
+
+    def test_identical_masks_pass_through(self):
+        m = self._piece()
+        fused, reg = P.fuse_masks(m, m.copy(), ppmm=self.PPMM)
+        self.assertEqual(reg["angle"] % 360.0, 0.0)
+        self.assertEqual((reg["dx"], reg["dy"]), (0.0, 0.0))
+        self.assertGreater(self._iou(fused, m), 0.99)
+
+    def test_opposite_shadows_both_removed(self):
+        piece = self._piece()
+        m1, m2 = piece.copy(), piece.copy()
+        m1[130:190, 40:80] = 255                            # sombra da foto 1 → esquerda
+        m2[130:190, 240:270] = 255                          # sombra da foto 2 → direita
+        fused, reg = P.fuse_masks(m1, m2, ppmm=self.PPMM)
+        self.assertGreater(int(fused[160, 160]), 0)         # peça fica
+        self.assertEqual(int(fused[160, 60]), 0)            # sombra 1 cai
+        self.assertEqual(int(fused[160, 255]), 0)           # sombra 2 cai
+        # lóbulo maior = foto de PIOR luz (o caller usa isto p/ escolher o overlay)
+        self.assertGreater(reg["lobe1_px"], reg["lobe2_px"])
+
+    def test_registration_recovers_180_rotation_and_shift(self):
+        import cv2
+        m1 = self._piece()
+        mm = cv2.moments(m1, binaryImage=True)
+        c = (mm["m10"] / mm["m00"], mm["m01"] / mm["m00"])
+        M = cv2.getRotationMatrix2D(c, 180.0, 1.0)
+        M[0, 2] += 12; M[1, 2] -= 8                        # peça girada E deslocada (3/2 mm)
+        m2 = cv2.warpAffine(m1, M, (m1.shape[1], m1.shape[0]), flags=cv2.INTER_NEAREST)
+        fused, reg = P.fuse_masks(m1, m2, ppmm=self.PPMM)
+        self.assertLessEqual(abs(reg["angle"] - 180.0), P.FUSE_ANGLE_DEG)
+        self.assertGreater(self._iou(fused, m1), 0.97)      # registro desfaz rot+shift
+
+
 # =============================================================================
 # C. PONTA-A-PONTA — contorno direto de thermpro.jpg (foto na base ArUco)
 # =============================================================================
@@ -889,6 +1135,24 @@ class TestEndToEndThermpro(unittest.TestCase):
         self.assertEqual(P._self_intersecting_indices(cub), set())
         # E a peça continua contida (de-loop só encurta handles → não expõe a peça).
         self.assertGreaterEqual(P.coverage(P.flatten_beziers(cub, seg=40), self.sil), 0.99)
+
+
+class TestSilhouetteRef(unittest.TestCase):
+    """v0.6 (P1): `return_silhouettes=True` devolve, além da silhueta REGULARIZADA (a que
+    gera o SVG), a silhueta de REFERÊNCIA pré `--mask-smooth-mm` — é contra ela que o CLI
+    mede o `contém` (senão o gate valida uma silhueta já mutilada pela regularização)."""
+
+    @unittest.skipUnless(os.path.exists(THERMPRO_JPG), "thermpro.jpg ausente")
+    def test_returns_raw_reference_silhouette(self):
+        out, sil, ref = P.generate_outline(THERMPRO_JPG, mask_smooth_mm=2.0,
+                                           return_silhouettes=True)
+        self.assertGreater(len(out), 8)
+        self.assertGreater(len(ref), 8)
+        # A referência é a silhueta CRUA: mais serrilhada (perímetro ≥ o da regularizada)
+        # e com ~a mesma área (a regularização alisa, não rói).
+        self.assertGreaterEqual(P._perimeter(ref), P._perimeter(sil) - 1e-6)
+        self.assertLess(abs(abs(P.signed_area(ref)) - abs(P.signed_area(sil)))
+                        / abs(P.signed_area(sil)), 0.05)
 
 
 class TestSelfIntersectionGuard(unittest.TestCase):

@@ -91,6 +91,14 @@ SEG_TEX_LIGHT_FRAC = 0.70  # a sombra PROJETADA é LISA e mais clara que isto·f
                            # recorte tira do corpo só o que é (liso E mais claro) → rejeita a sombra
                            # sem comer o corpo escuro. (Sombra de CONTATO é escura → fora deste termo;
                            # pendência da v0.5, ver docs/melhorias/v0.5.md.)
+SEG_WS_ERODE_MM = 2.0      # erosão da máscara p/ virar marcador FG do watershed de refino de borda:
+                           # o miolo é peça certa; a casca de ±band vira zona incerta onde a fronteira
+                           # é re-decidida pelo GRADIENTE (a borda física é degrau; a sombra é rampa).
+SEG_WS_BAND_MM = 3.0       # dilatação da máscara: fora disto = fundo certo (marcador BG).
+SEG_WS_FG_VAL_FRAC = 0.50  # tira do marcador FG o que é LISO e mais claro que isto·fundo — a UMBRA
+                           # (sombra escura, V≈0.55-0.70·fundo) que o recorte por brilho deixa passar;
+                           # ela fica na zona incerta e o watershed a devolve ao fundo (a inundação
+                           # do papel entra pela rampa suave; a da peça esbarra no degrau da borda).
 ILLUM_SCALE = 0.125        # escala reduzida p/ estimar o campo de luz (só velocidade)
 ILLUM_KERNEL_FRAC = 0.9    # kernel do closing ≈ fração do maior lado; DEVE cobrir o objeto
 ILLUM_MAX_GAIN = 3.0       # teto do ganho da divisão (não amplifica ruído/JPEG nas zonas escuras)
@@ -100,6 +108,36 @@ SEG_HUE_SAT_MIN = 60       # saturação mínima p/ aceitar um pixel SÓ pelo ma
                            # saturação abaixo do corte de `colored` mas continua com matiz quente,
                            # bem longe do fundo azulado — sem isso o realce virava uma "mossa".
 SYM_SEARCH_MM = 4.0         # busca do eixo de simetria em torno do centroide (± mm), maximizando IoU
+FUSE_SEARCH_MM = 10.0       # registro da fusão 2-fotos (--in2): busca de TRANSLAÇÃO (± mm) entre as
+                            # duas máscaras retificadas — absorve tanto o resíduo de retificação
+                            # (papel flexionado) quanto o reposicionamento manual da peça entre as
+                            # fotos. Score = IoU × concordância de TEXTURA (ZNCC): a silhueta sozinha
+                            # é ambígua (sombra∩sombra infla a rotação errada em peça retangular).
+FUSE_ANGLE_DEG = 4          # refino de ROTAÇÃO (± graus, passo 1°) em torno do melhor quarto de volta:
+                            # além dos quartos {0,90,180,270}° (girar a peça/papel p/ mudar a luz é o
+                            # protocolo típico), a mão não acerta o ângulo exato — o refino absorve.
+FUSE_MIN_LOBE_MM = 2.0      # fusão direcional: lado mínimo (mm) do lóbulo de discordância p/ ele
+                            # contar como SOMBRA de uma foto (lóbulo = pixels presentes numa máscara
+                            # só). Abaixo disso não há sombra a resolver → cai no AND puro.
+FUSE_ALIGN_MAX = 0.7        # fusão direcional: se as direções de sombra das duas fotos apontam p/
+                            # o MESMO lado (cosseno acima disto), a luz mudou pouco — a regra por
+                            # pixel degrada p/ ~AND sozinha, mas AVISA p/ refotografar melhor.
+FUSE_FAINT_SAT_MARGIN = 10  # predicado "metal apagado" (SÓ no modo 2 fotos): S ≥ fundo+margem, bem
+                            # abaixo de SEG_SAT_MARGIN. Metal claro liso (topo de conector) tem V ≈
+                            # papel e S fraco (~18-31 vs ~8 do papel) — invisível aos predicados
+                            # normais. O corte baixo TAMBÉM pega a sombra (S~25), o que o torna
+                            # proibitivo em foto única; com --in2 a fusão direcional REMOVE a sombra,
+                            # então a captação agressiva é segura e o metal entra na máscara.
+FUSE_FAINT_VAL_MAX = 1.05   # teto de V do predicado acima (× fundo): exclui papel estourado/reflexo
+FUSE_GROW_MM = 0.0          # pós-AND opcional (--fuse-grow): cresce a interseção GEODESICAMENTE de
+                            # volta p/ dentro da UNIÃO das duas máscaras, até este raio. Recupera o que
+                            # a PARALAXE comeu (peça ALTA + câmera em posição diferente nas duas fotos →
+                            # as projeções não coincidem e o AND rói conectores/bordas elevadas), ao
+                            # custo de readmitir até este raio de sombra ONDE ela encosta na peça.
+                            # 0 = desligado. Antes de subir isto, prefira consertar o PROTOCOLO: girar
+                            # base+peça JUNTAS e fotografar do lado oposto com o MESMO enquadramento
+                            # relativo à base (mesma geometria câmera-peça → paralaxe idêntica → AND
+                            # exato); aí o grow é desnecessário.
 MASK_SMOOTH_MM = 0.0        # regularização da SILHUETA (raio mm): borra o campo de distância com
                             # sinal e re-corta em 0, removendo saliências/ondulações de amplitude
                             # < este valor na borda da MÁSCARA (típicas na carcaça PRETA, de baixo
@@ -109,7 +147,6 @@ MIN_RADIUS_MM = 1.5
 SMOOTH_MM = 8.0             # janela do low-pass que remove o serrilhado (≪ features reais)
 CLEARANCE_MM = 0.0          # ETAPA 1 SEM GANHO: contorno no tamanho REAL; a folga é aplicada
                             # depois (a jusante no OpenSCAD/gridfinity, ou escalando à mão).
-DP_EPSILON_MM = 0.4
 FIT_TOL_MM = 0.2            # tolerância do ajuste de Bézier (Schneider): passa pela média
 BEZIER_GUIDE_MM = 0.5      # folga do guia p/ o ajuste (contém a peça; bbox depois é fixada ao objeto)
 CORNER_ANGLE_DEG = 40.0    # ângulo p/ marcar um canto (nó cusp entre curvas suaves)
@@ -135,6 +172,24 @@ PROTRUSION_DEV_MM = 0.8    # proeminência mín. (mm) de uma SALIÊNCIA local p/
                             # Ver _protrusion_anchors.
 CONTAIN_COVERAGE = 0.99    # encaixe mínimo p/ dar a peça por "contida"; abaixo disso, no modo
                             # pocket, o CLI avisa p/ diminuir --min-dist (adensa as âncoras)
+MASK_SMOOTH_WARN_AREA_MM2 = 1.0  # área mínima (mm²) de uma saliência REMOVIDA pelo
+                            # --mask-smooth-mm p/ disparar o aviso (junto com proeminência
+                            # ≥ PROTRUSION_DEV_MM): abaixo disso é ruído de borda, que
+                            # remover é justamente o trabalho da regularização.
+CONTAIN_TOL_MM = 0.3        # tolerância de PROFUNDIDADE do `contém` (v0.6): medindo contra a
+                            # silhueta de REFERÊNCIA crua (pré --mask-smooth-mm), a serrilha de
+                            # ruído da segmentação fura o pocket em lascas rasas por todo o
+                            # perímetro; penetração ≤ este valor não conta (é ruído de medição,
+                            # coberto pelo --clearance a jusante) — um corte profundo (feature
+                            # real perdida, ex.: gancho da trena) continua derrubando o gate.
+SPIKE_MIN_RECEDE_MM = 0.3   # recuo mínimo (mm) da ponta pelo low-pass p/ um pico virar
+                            # candidato a restauração (`_preserve_spikes`): abaixo disso o
+                            # suavizado praticamente cobre o pico — restaurar só reinjetaria
+                            # a serrilha crua (picos de ruído recuam ~0.1-0.2 mm).
+SPIKE_MAX_WIDTH_MM = 3.0    # boca máxima (mm) da base de um ESPIGÃO restaurável: separa a
+                            # protuberância fina real (gancho da trena, ~1-2 mm) dos CANTOS
+                            # e curvaturas macro (boca ≫ 3 mm), cujo recuo é o arredondamento
+                            # LEGÍTIMO do smooth-mm p/ impressão.
 RASTER_PPM = 16.0           # px/mm das operações raster (filete/IoU)
 PEN_SAMPLE_MM = 0.25        # passo (mm) ao amostrar a cúbica p/ medir penetração no piso
 OUTLINE_COLOR = "#ff00ff"      # cor BEM DESTACADA (magenta) do vetor de saída e do overlay
@@ -603,7 +658,30 @@ def normalize_illumination(img, scale=ILLUM_SCALE, kernel_frac=ILLUM_KERNEL_FRAC
     return out
 
 
-def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None):
+def _refine_edge_watershed(img, mask, Vd, smooth, bg_v):
+    """Refino de borda do modo texture: re-decide a fronteira da máscara pelo GRADIENTE
+    via watershed com marcadores. Motivo: o recorte de sombra por brilho (liso E mais
+    claro que LIGHT·fundo) deixa passar a UMBRA — lisa mas ESCURA — que infla a silhueta
+    (~4-5 mm medidos na trena cinza). O cue que separa de verdade é a nitidez: a borda
+    física peça↔fundo é um DEGRAU de V; sombra→papel é RAMPA suave. Soltando a casca da
+    máscara como zona incerta, a inundação do fundo atravessa a rampa e a da peça esbarra
+    no degrau — a fronteira assenta na borda real. Marcadores: FG = miolo erodido MENOS o
+    liso-e-meio-claro (umbra provável, SEG_WS_FG_VAL_FRAC); BG = fora da máscara dilatada."""
+    def kell(mm):
+        d = max(3, int(round(mm * PX_PER_MM)) | 1)
+        return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d, d))
+    sure_fg = cv2.erode(mask, kell(SEG_WS_ERODE_MM))
+    sure_fg[smooth & (Vd > SEG_WS_FG_VAL_FRAC * bg_v)] = 0
+    if not sure_fg.any():
+        return mask                                  # sem marcador FG → não refina
+    markers = np.zeros(mask.shape, np.int32)
+    markers[cv2.dilate(mask, kell(SEG_WS_BAND_MM)) == 0] = 1     # fundo certo
+    markers[sure_fg > 0] = 2                                     # peça certa
+    cv2.watershed(img, markers)
+    return np.where(markers == 2, 255, 0).astype(np.uint8)
+
+
+def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None, faint_metal=False):
     """Estágio 2: máscara da ferramenta sobre o miolo BRANCO da base. O fundo é
     branco conhecido e o objeto está centrado, então a MOLDURA da borda do canvas é
     fundo puro — amostrada p/ modelar o branco (auto-adapta ao balanço de branco e à
@@ -623,7 +701,12 @@ def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None):
       — recuperando a borda real e PARANDO na sombra de contato CINZA desaturada da base.
     - **"texture"** (v0.5, p/ corpo CINZA-NEUTRO sem croma): VALOR pega o corpo escuro inteiro e a
       TEXTURA (std local de V, limiar Otsu adaptativo) RECORTA do corpo as regiões LISAS-E-mais-
-      CLARAS = sombra PROJETADA. Ver docs/melhorias/v0.5.md."""
+      CLARAS = sombra PROJETADA. Ver docs/melhorias/v0.5.md.
+
+    `faint_metal` (ligado pelo modo 2 fotos, --in2): acrescenta o predicado de saturação FRACA
+    (S ≥ fundo + FUSE_FAINT_SAT_MARGIN, V ≤ FUSE_FAINT_VAL_MAX·fundo) que recupera metal claro
+    liso (topos de conectores ≈ brilho do papel). Admite a sombra junto — por isso é EXCLUSIVO
+    do modo 2 fotos, onde a fusão direcional a remove."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     H = hsv[:, :, 0].astype(np.int16)
     S = hsv[:, :, 1].astype(np.int16)
@@ -668,6 +751,8 @@ def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None):
         # `colored|chromatic` ela voltaria por essa porta. A textura é o único cue que a separa.
         cand = body_val | colored | chromatic
         tool = (cand & ~shadow_like).astype(np.uint8) * 255
+        # guarda os cues p/ o refino por watershed no fim (borda física por gradiente)
+        ws_cues = (Vd, tex_u < th)
     else:
         if mode == "remove":
             # Histerese (estilo Canny) p/ recuperar a BORDA arredondada do objeto, dos DOIS
@@ -691,6 +776,11 @@ def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None):
             dark = dark | (seed > 0)                            # une a borda recuperada ao núcleo
         tool = (colored | chromatic | dark).astype(np.uint8) * 255
 
+    if faint_metal:
+        # Metal claro liso (S fraco, V ≈ papel) — só seguro com --in2 (a fusão tira a sombra).
+        faint = (S >= bg_s + FUSE_FAINT_SAT_MARGIN) & (V <= FUSE_FAINT_VAL_MAX * bg_v)
+        tool = cv2.bitwise_or(tool, faint.astype(np.uint8) * 255)
+
     # Abertura remove respingos finos; fechamento tapa vãos internos do corpo.
     tool = cv2.morphologyEx(tool, cv2.MORPH_OPEN,
                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
@@ -707,10 +797,236 @@ def segment_tool(img, deshadow=False, val_frac=SEG_VAL_FRAC, debug_dir=None):
     cv2.floodFill(ff, np.zeros((hh + 2, ww + 2), np.uint8), (0, 0), 255)
     mask = cv2.bitwise_or(mask, cv2.bitwise_not(ff))
 
+    if mode == "texture":
+        # Refino de borda por gradiente (watershed): expulsa a UMBRA que o recorte por
+        # brilho não pega e assenta a fronteira no degrau físico da peça.
+        mask = _refine_edge_watershed(img, mask, ws_cues[0], ws_cues[1], bg_v)
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if n > 1:                       # re-limpa: watershed pode soltar farelos
+            biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            mask = np.where(labels == biggest, 255, 0).astype(np.uint8)
+            ff = mask.copy()
+            cv2.floodFill(ff, np.zeros((hh + 2, ww + 2), np.uint8), (0, 0), 255)
+            mask = cv2.bitwise_or(mask, cv2.bitwise_not(ff))
+
     if debug_dir:
         os.makedirs(debug_dir, exist_ok=True)
         cv2.imwrite(os.path.join(debug_dir, "02_mask.png"), mask)
     return mask
+
+
+def _rot_about(src, angle, center, interp=cv2.INTER_NEAREST):
+    """Rotação rígida de `angle`° em torno de `center`, mantendo o canvas."""
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(src, M, (src.shape[1], src.shape[0]), flags=interp)
+
+
+def _register_masks(mask1, mask2, ppmm=PX_PER_MM, search_mm=FUSE_SEARCH_MM,
+                    gray1=None, gray2=None):
+    """REGISTRO rígido da máscara 2 sobre a 1 (mesmo canvas métrico): rotação em
+    quartos {0,90,180,270}° + refino fino ±FUSE_ANGLE_DEG (passo 1°), em torno do
+    centroide da máscara 2, e translação ±search_mm. Score = IoU × (0.5+0.5·ZNCC⁺)
+    dos `gray*` na sobreposição — a TEXTURA desempata rotações que a silhueta
+    sozinha não distingue (numa peça quase retangular, sombra∩sombra infla o IoU
+    da rotação ERRADA); sem os grays cai no IoU puro. O refino fino roda em TODOS
+    os quartos ANTES de eleger o vencedor (o ZNCC só "encaixa" no ângulo exato;
+    3° de erro descorrelacionam a textura na borda). Busca em escala 1/4, com
+    refino final de translação ±2 px na escala cheia.
+    Devolve `(angle, center, dx, dy, score)`: girar `mask2` de `angle`° em torno
+    de `center` e transladar `(dx, dy)` px a leva sobre `mask1`."""
+    ds = 4                                    # escala da busca (1/4)
+    m1s = cv2.resize(mask1, None, fx=1.0 / ds, fy=1.0 / ds, interpolation=cv2.INTER_NEAREST)
+    m2s = cv2.resize(mask2, None, fx=1.0 / ds, fy=1.0 / ds, interpolation=cv2.INTER_NEAREST)
+    g1s = g2s = g1f = g2f = None
+    if gray1 is not None and gray2 is not None:
+        g1f, g2f = gray1.astype(np.float32), gray2.astype(np.float32)
+        g1s = cv2.resize(g1f, (m1s.shape[1], m1s.shape[0]), interpolation=cv2.INTER_AREA)
+        g2s = cv2.resize(g2f, (m2s.shape[1], m2s.shape[0]), interpolation=cv2.INTER_AREA)
+    mm = cv2.moments(m2s, binaryImage=True)
+    if mm["m00"] <= 0:
+        raise GridDetectionError("fusão 2-fotos: a segunda máscara está vazia")
+    c2s = (mm["m10"] / mm["m00"], mm["m01"] / mm["m00"])   # centroide (escala 1/4)
+
+    def best_shift(a, b, rad, step, seed=(0, 0), ga=None, gb=None):
+        """Melhor translação de `b` sobre `a` numa grade ±rad, passo `step`. Score =
+        IoU das máscaras × (0.5 + 0.5·ZNCC⁺ dos grays na sobreposição) — a textura
+        desempata rotações que a silhueta sozinha não distingue."""
+        A = a > 0
+        bx, by, bs = seed[0], seed[1], -1.0
+        for dy in range(seed[1] - rad, seed[1] + rad + 1, step):
+            for dx in range(seed[0] - rad, seed[0] + rad + 1, step):
+                M = np.float32([[1, 0, dx], [0, 1, dy]])
+                B = cv2.warpAffine(b, M, (b.shape[1], b.shape[0]), flags=cv2.INTER_NEAREST) > 0
+                ov = A & B
+                union = np.count_nonzero(A | B)
+                s = (np.count_nonzero(ov) / union) if union else 0.0
+                if s > 0.0 and ga is not None:
+                    Bg = cv2.warpAffine(gb, M, (gb.shape[1], gb.shape[0]),
+                                        flags=cv2.INTER_NEAREST)
+                    va, vb = ga[ov], Bg[ov]
+                    va, vb = va - va.mean(), vb - vb.mean()
+                    den = math.sqrt(float(np.dot(va, va)) * float(np.dot(vb, vb)))
+                    zncc = (float(np.dot(va, vb)) / den) if den > 0 else 0.0
+                    s *= 0.5 + 0.5 * max(0.0, zncc)
+                if s > bs:
+                    bx, by, bs = dx, dy, s
+        return bx, by, bs
+
+    rad_s = max(2, int(round(search_mm * ppmm / ds)))
+    # Semente da translação = diferença dos centroides das DUAS máscaras: a rotação
+    # gira em torno do centroide da máscara 2 (deslocado do centro da PEÇA pela
+    # sombra), então a 180° a peça cai ~2× esse desvio p/ longe — sem a semente, o
+    # deslocamento estoura a janela ±search_mm e a rotação certa nunca competiria.
+    m1m = cv2.moments(m1s, binaryImage=True)
+    seed0 = ((int(round(m1m["m10"] / m1m["m00"] - c2s[0])),
+              int(round(m1m["m01"] / m1m["m00"] - c2s[1]))) if m1m["m00"] > 0 else (0, 0))
+    best = (-1.0, 0.0, 0, 0)                  # (score, ângulo, dx_s, dy_s)
+    for quarter in (0, 90, 180, 270):         # girar peça/papel p/ mudar a luz é o protocolo típico
+        r = _rot_about(m2s, quarter, c2s)
+        rg = _rot_about(g2s, quarter, c2s, cv2.INTER_LINEAR) if g2s is not None else None
+        dx, dy, s = best_shift(m1s, r, rad_s, 2, seed=seed0, ga=g1s, gb=rg)
+        qbest = (s, float(quarter), dx, dy)
+        for dang in range(-FUSE_ANGLE_DEG, FUSE_ANGLE_DEG + 1):   # ângulo fino (passo 1°)
+            if dang == 0:
+                continue
+            ang = quarter + dang
+            r = _rot_about(m2s, ang, c2s)
+            rg = _rot_about(g2s, ang, c2s, cv2.INTER_LINEAR) if g2s is not None else None
+            dx, dy, s = best_shift(m1s, r, 3, 1, seed=(qbest[2], qbest[3]), ga=g1s, gb=rg)
+            if s > qbest[0]:
+                qbest = (s, ang, dx, dy)
+        if qbest[0] > best[0]:
+            best = qbest
+    # escala cheia: aplica a rotação vencedora e refina a translação ±2 px
+    c2 = (c2s[0] * ds, c2s[1] * ds)
+    r2r = _rot_about(mask2, best[1], c2)
+    g2r = _rot_about(g2f, best[1], c2, cv2.INTER_LINEAR) if g2f is not None else None
+    dx, dy, s = best_shift(mask1, r2r, 2, 1, seed=(best[2] * ds, best[3] * ds), ga=g1f, gb=g2r)
+    return best[1], c2, float(dx), float(dy), s
+
+
+# --- fusão 2-fotos (--in2): melhor lado de CADA foto, com registro fino -------
+# Protocolo: DUAS fotos do MESMO objeto sobre a base, mudando só a LUZ (girar
+# base+peça juntas em relação ao sol/lâmpada). As duas retificações ancoram no
+# MESMO alvo impresso → a peça cai no MESMO lugar do canvas métrico; a sombra
+# muda de lado. Em cada foto o lado ILUMINADO (oposto à sombra) tem a borda
+# limpa — esse lado é SOBERANO. A fusão descobre a direção da sombra de cada
+# foto pela própria discordância das máscaras (o "lóbulo" presente numa máscara
+# só é a sombra dela) e monta a máscara final tomando de cada foto o seu lado
+# iluminado — sem heurística de brilho/textura/croma. É o caminho robusto p/
+# sombra dura (sol) e peças cujo corpo se confunde com a própria sombra.
+def fuse_masks(mask1, mask2, ppmm=PX_PER_MM, search_mm=FUSE_SEARCH_MM, grow_mm=FUSE_GROW_MM,
+               debug_dir=None, gray1=None, gray2=None, reg1=None, reg2=None):
+    """Fusão direcional das máscaras das duas fotos retificadas, em três passos:
+    1. REGISTRO rígido (`_register_masks`): rotação + translação que levam a máscara 2
+       sobre a 1, pontuadas por IoU × textura (ZNCC de `gray1`/`gray2`) — ver a função.
+    2. DIREÇÃO da sombra de cada foto: centroide do lóbulo exclusivo (máscara_i e não
+       na outra) relativo ao centroide do núcleo comum (AND).
+    3. FUSÃO por lado iluminado: o plano é dividido pela bissetriz das duas direções
+       de sombra; em cada metade vale a máscara da foto cuja sombra aponta p/ o OUTRO
+       lado. Cada foto contribui só com a borda que a luz dela deixou limpa — e a
+       PARALAXE deixa de roer a peça alta (não há AND na borda soberana).
+    Fallback: lóbulo minúsculo (sem sombra) ou sombras do mesmo lado (luz não mudou)
+    → AND puro. Devolve `(fused, reg)`: `reg` traz a transformação do registro
+    (angle/center/dx/dy) e as áreas dos lóbulos (px) p/ o caller escolher a foto de
+    melhor luz como fundo do overlay.
+
+    `reg1`/`reg2` (opcionais): máscaras LIMPAS (sombra removida) usadas SÓ no registro.
+    Com o predicado faint-metal as máscaras de conteúdo readmitem a sombra, e o IoU
+    volta a premiar alinhar sombra∩sombra (medido: shift saltou 13mm); registrar nas
+    limpas ancora a transformação na PEÇA, e ela é então aplicada às de conteúdo."""
+    if mask1.shape != mask2.shape:            # canvases devem coincidir (mesma base/layout)
+        hh = min(mask1.shape[0], mask2.shape[0]); ww = min(mask1.shape[1], mask2.shape[1])
+        mask1, mask2 = mask1[:hh, :ww], mask2[:hh, :ww]
+        if gray1 is not None:
+            gray1, gray2 = gray1[:hh, :ww], gray2[:hh, :ww]
+        if reg1 is not None:
+            reg1, reg2 = reg1[:hh, :ww], reg2[:hh, :ww]
+    r1 = reg1 if reg1 is not None else mask1  # máscaras do REGISTRO (limpas se houver)
+    r2 = reg2 if reg2 is not None else mask2
+    # O registro pontua nas máscaras de REGISTRO; a transformação vale p/ as de conteúdo.
+    angle, c2, dx, dy, score = _register_masks(r1, r2, ppmm=ppmm, search_mm=search_mm,
+                                               gray1=gray1, gray2=gray2)
+    print(f"fusão 2-fotos: registro rot={angle:.0f}° shift=({dx / ppmm:+.1f},{dy / ppmm:+.1f})mm "
+          f"score={score:.3f}", file=sys.stderr)
+    M = np.float32([[1, 0, dx], [0, 1, dy]])
+    m2r = _rot_about(mask2, angle, c2)
+    m2f = cv2.warpAffine(m2r, M, (m2r.shape[1], m2r.shape[0]), flags=cv2.INTER_NEAREST)
+
+    # Direção da sombra de cada foto = centroide do lóbulo exclusivo relativo ao núcleo.
+    b1, b2 = mask1 > 0, m2f > 0
+    core = (b1 & b2).astype(np.uint8) * 255
+    lobe1 = (b1 & ~b2).astype(np.uint8) * 255   # só na foto 1 → sombra (e paralaxe) dela
+    lobe2 = (b2 & ~b1).astype(np.uint8) * 255   # só na foto 2 → sombra (e paralaxe) dela
+    mc = cv2.moments(core, binaryImage=True)
+    if mc["m00"] <= 0:
+        raise GridDetectionError("fusão 2-fotos: as máscaras das duas fotos não se "
+                                 "sobrepõem — a peça moveu em relação à base entre as fotos?")
+    cx, cy = mc["m10"] / mc["m00"], mc["m01"] / mc["m00"]
+
+    def shadow_dir(lobe):
+        """Versor centroide(lóbulo)−centroide(núcleo); None se o lóbulo é desprezível."""
+        m = cv2.moments(lobe, binaryImage=True)
+        if m["m00"] < (FUSE_MIN_LOBE_MM * ppmm) ** 2:
+            return None
+        vx, vy = m["m10"] / m["m00"] - cx, m["m01"] / m["m00"] - cy
+        nrm = math.hypot(vx, vy)
+        return (vx / nrm, vy / nrm) if nrm > 1e-6 else None
+
+    s1, s2 = shadow_dir(lobe1), shadow_dir(lobe2)
+    # Fusão direcional POR PIXEL DISPUTADO: o núcleo (AND) sempre entra; um pixel que
+    # só existe na máscara da foto i entra SÓ se estiver no lado ILUMINADO dela
+    # ((p−c)·ŝᵢ ≤ 0) — lá a borda da foto i é limpa, então o excesso é peça real
+    # (paralaxe); na direção da sombra dela, o excesso É a sombra e cai. Não exige
+    # sombras opostas: se a luz mudou pouco, degrada graciosamente p/ ~AND.
+    yy, xx = np.mgrid[0:mask1.shape[0], 0:mask1.shape[1]]
+    px, py = xx - cx, yy - cy
+
+    def lit_part(lobe, s):
+        """Parte do lóbulo no lado iluminado da própria foto (None = lóbulo desprezível
+        → sem sombra a rejeitar, mantém tudo)."""
+        if s is None:
+            return lobe
+        return np.where(px * s[0] + py * s[1] <= 0.0, lobe, 0).astype(np.uint8)
+
+    fused = cv2.bitwise_or(core, cv2.bitwise_or(lit_part(lobe1, s1), lit_part(lobe2, s2)))
+    if s1 and s2:
+        print(f"fusão 2-fotos: direcional — sombra foto1→({s1[0]:+.2f},{s1[1]:+.2f}) "
+              f"foto2→({s2[0]:+.2f},{s2[1]:+.2f}); lado iluminado de cada foto soberano",
+              file=sys.stderr)
+        if s1[0] * s2[0] + s1[1] * s2[1] > FUSE_ALIGN_MAX:
+            print("fusão 2-fotos: AVISO — as sombras das duas fotos caem do MESMO lado "
+                  "(a luz mudou pouco); resultado ≈ AND. Refotografe com a luz oposta.",
+                  file=sys.stderr)
+    if grow_mm and grow_mm > 0:
+        # Recuperação de paralaxe adicional: dilatação geodésica DENTRO da união,
+        # limitada a grow_mm. Com a fusão direcional raramente é necessária (a borda
+        # soberana não sofre AND); mantida p/ o caso de resíduo perto da bissetriz.
+        union = cv2.bitwise_or(mask1, m2f)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        for _ in range(max(1, int(round(grow_mm * ppmm)))):
+            fused = cv2.bitwise_and(cv2.dilate(fused, k), union)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(fused, connectivity=8)
+    if n <= 1:
+        raise GridDetectionError("fusão 2-fotos: as máscaras das duas fotos não se "
+                                 "sobrepõem — a peça moveu em relação à base entre as fotos?")
+    biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    fused = np.where(labels == biggest, 255, 0).astype(np.uint8)
+    ff = fused.copy()
+    hh, ww = fused.shape
+    cv2.floodFill(ff, np.zeros((hh + 2, ww + 2), np.uint8), (0, 0), 255)
+    fused = cv2.bitwise_or(fused, cv2.bitwise_not(ff))
+    # Registro + áreas dos lóbulos p/ o caller: menor lóbulo = foto com MENOS sombra
+    # (melhor luz) → candidata a fundo do overlay (warpada pela mesma transformação).
+    reg = {"angle": angle, "center": c2, "dx": dx, "dy": dy,
+           "lobe1_px": int(np.count_nonzero(lobe1)), "lobe2_px": int(np.count_nonzero(lobe2))}
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(debug_dir, "02e_mask_in2.png"), m2f)
+        split = cv2.merge([m2f // 2 + core // 2, core, mask1 // 2 + core // 2])  # BGR:
+        cv2.imwrite(os.path.join(debug_dir, "02g_fuse_split.png"), split)        # núcleo
+        cv2.imwrite(os.path.join(debug_dir, "02f_fused.png"), fused)  # branco, lóbulo1 verm., lóbulo2 azul
+    return fused, reg
 
 
 # --- simetria: espelha a máscara e tira a MÉDIA das duas metades --------------
@@ -801,6 +1117,24 @@ def regularize_silhouette(mask, radius_mm, ppmm=PX_PER_MM, debug_dir=None,
     # max(sdf,blur) = closing no SDF: escolhe o mais "dentro" → enche côncavos, mantém convexos.
     sdf = np.maximum(sdf, blur) if preserve_convex else blur
     out = _mask_from_sdf(sdf)
+    # v0.6: a remoção de uma saliência convexa REAL (ex.: o gancho da fita de uma trena) é
+    # silenciosa p/ o gate `contém` (medido sobre a silhueta já regularizada) — então AVISA
+    # quando some algo com proeminência ≥ PROTRUSION_DEV_MM e área ≥ o piso (ruído de borda,
+    # que é o alvo legítimo da regularização, fica abaixo dos dois cortes).
+    removed = cv2.bitwise_and(mask, cv2.bitwise_not(out))
+    if np.any(removed):
+        dist = cv2.distanceTransform(cv2.bitwise_not(out), cv2.DIST_L2, 5)
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(removed, 8)
+        for i in range(1, num):
+            area_mm2 = stats[i, cv2.CC_STAT_AREA] / (ppmm * ppmm)
+            if area_mm2 < MASK_SMOOTH_WARN_AREA_MM2:
+                continue
+            prom_mm = float(dist[labels == i].max()) / ppmm
+            if prom_mm >= PROTRUSION_DEV_MM:
+                warn(f"--mask-smooth-mm removeu uma saliência convexa de ~{area_mm2:.1f} mm² "
+                     f"(proeminência ~{prom_mm:.1f} mm) — se ela é uma feature real da peça, "
+                     f"use --mask-smooth-keep-bumps ou um --mask-smooth-mm menor")
+                break
     if debug_dir:
         os.makedirs(debug_dir, exist_ok=True)
         cv2.imwrite(os.path.join(debug_dir, "02c_regularized.png"), out)
@@ -1436,6 +1770,62 @@ def _protrusion_anchors(rp, min_dev_mm, span_mm=ANCHOR_MIN_DIST_MM):
     return sorted(chosen)
 
 
+def _preserve_spikes(raw, smoothed, min_dev_mm=PROTRUSION_DEV_MM, span_mm=ANCHOR_MIN_DIST_MM):
+    """Reinjeta na curva SUAVIZADA os espigões convexos REAIS da curva crua (v0.6, caso
+    "gancho da trena"): o low-pass do `smooth_mm` RECUA a ponta de uma protuberância fina
+    antes da seleção de âncoras — o piso de contenção nasce sem ela e o pocket corta o
+    topo do espigão sem que o `contém` mal se mova. Os picos vêm de `_protrusion_anchors`
+    sobre a curva CRUA (proeminência ≥ `min_dev_mm`) e um pico só é restaurado se for
+    mesmo ESPIGÃO, com dois filtros medidos no trecho contíguo p/ FORA do suavizado
+    (≥ 0.1 mm além, pela distância ao centróide):
+    • recuo da ponta ≥ SPIKE_MIN_RECEDE_MM — pico de serrilha recua ~0.1-0.2 mm; restaurá-lo
+      só reinjetaria o ruído que o smooth-mm removeu;
+    • boca da base ≤ SPIKE_MAX_WIDTH_MM — canto/curvatura macro tem boca larga; seu recuo é
+      o arredondamento LEGÍTIMO p/ impressão, não perda de feature.
+    `raw` e `smoothed` pareiam índice-a-índice (mesmo passo de reamostragem — o mesmo
+    pareamento de `boundary_roughness`)."""
+    n = min(len(raw), len(smoothed))
+    if n < 8 or min_dev_mm <= 0:
+        return smoothed
+    peaks = _protrusion_anchors(raw[:n], min_dev_mm, span_mm=span_mm)
+    if not peaks:
+        return smoothed
+    raw = raw[:n]
+    out = list(smoothed[:n])
+    cx = sum(p[0] for p in raw) / n
+    cy = sum(p[1] for p in raw) / n
+
+    def outward(i):
+        return (math.hypot(raw[i][0] - cx, raw[i][1] - cy)
+                - math.hypot(out[i][0] - cx, out[i][1] - cy))
+
+    for pk in peaks:
+        if outward(pk) < SPIKE_MIN_RECEDE_MM:
+            continue                            # o suavizado praticamente cobre este pico
+        lo = pk                                 # varre as duas flancas até voltar p/ dentro
+        while True:
+            j = (lo - 1) % n
+            if j == pk or outward(j) < 0.1:
+                break
+            lo = j
+        hi = pk
+        while True:
+            j = (hi + 1) % n
+            if j == pk or outward(j) < 0.1:
+                break
+            hi = j
+        mouth = math.hypot(raw[lo][0] - raw[hi][0], raw[lo][1] - raw[hi][1])
+        if mouth > SPIKE_MAX_WIDTH_MM:
+            continue                            # base larga = canto/curvatura, não espigão
+        i = lo
+        while True:                             # restaura o trecho cru lo..hi
+            out[i] = raw[i]
+            if i == hi:
+                break
+            i = (i + 1) % n
+    return out
+
+
 def _one_cubic_contained(seg, field, eps):
     """UMA cúbica suave para o trecho que NÃO corta a peça. Parte do ajuste por mínimos
     quadrados (honra as tangentes das pontas → nó G1) e, se penetrar o piso além de
@@ -1556,8 +1946,11 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
       teto de nós: a densidade emerge só do espaçamento.
     • FIEL (`faithful=True`): ancora nas extremidades do fecho convexo (RDP `simplify_mm`)
       e subdivide cada trecho por contenção até caber (mais nós, contorno fiel à peça)."""
-    clean = ensure_ccw(lowpass_closed(resample_uniform(silhouette, 0.15, closed=True),
-                                      win_mm=smooth_mm, step=0.15))
+    # O low-pass denoisa a silhueta, mas RECUA a ponta de espigões finos reais —
+    # `_preserve_spikes` restaura os trechos crus proeminentes ANTES do piso/âncoras.
+    rp0 = resample_uniform(silhouette, 0.15, closed=True)
+    clean = ensure_ccw(_preserve_spikes(rp0, lowpass_closed(rp0, win_mm=smooth_mm, step=0.15),
+                                        span_mm=min_dist_mm))
     rp = resample_uniform(clean, step, closed=True)
     n = len(rp)
     if n < 4:
@@ -1809,9 +2202,10 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      deshadow=False, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
                      min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
                      mask_smooth_mm=MASK_SMOOTH_MM, mask_smooth_keep_bumps=False,
-                     val_frac=SEG_VAL_FRAC,
+                     val_frac=SEG_VAL_FRAC, in2_path=None, fuse_grow_mm=FUSE_GROW_MM,
                      overlay_path=None, overlay_svg_path=None, debug_dir=None,
-                     return_silhouette=False, return_edit_data=False):
+                     return_silhouette=False, return_silhouettes=False,
+                     return_edit_data=False):
     """Pipeline completo → lista de pontos (x,y) em mm. Usado pelos testes E pelo CLI.
     `symmetry` ∈ {'none','vertical','horizontal','both'} impõe a simetria do objeto
     (espelha + média das metades) p/ limpar o contorno. `deshadow=True` liga a histerese
@@ -1820,14 +2214,46 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     overlay PNG de conferência (contorno segmentado sobre a foto); `overlay_svg_path`
     grava o overlay SVG EDITÁVEL (foto embutida + Béziers do .svg) p/ ajuste no Inkscape.
     `return_silhouette=True` devolve também a silhueta crua (p/ checar encaixe).
+    `return_silhouettes=True` (v0.6) devolve `(out, sil, sil_ref)`: `sil_ref` é a silhueta
+    de REFERÊNCIA pré `--mask-smooth-mm` (o que a segmentação viu) — é contra ela que o CLI
+    mede o `contém`, senão o gate validaria uma silhueta já mutilada pela regularização.
     `return_edit_data=True` devolve `(out, sil, rect, mmpp_x, mmpp_y)` — a foto retificada e a
-    escala, p/ o editor manual de nós (`--edit`); tem precedência sobre `return_silhouette`."""
+    escala, p/ o editor manual de nós (`--edit`); tem precedência sobre os dois anteriores."""
     img = load_image(in_path)
     rect, mmpp_x, mmpp_y, _conf = rectify(img, dict_name=dict_name, debug_dir=debug_dir)
     flat = normalize_illumination(rect, debug_dir=debug_dir)
-    mask = segment_tool(flat, deshadow=deshadow, val_frac=val_frac, debug_dir=debug_dir)
+    mask = segment_tool(flat, deshadow=deshadow, val_frac=val_frac, debug_dir=debug_dir,
+                        faint_metal=bool(in2_path))
+    if in2_path:
+        # Fusão 2-fotos: mesma peça/base, luz de outro lado — cada foto entra com o
+        # seu lado ILUMINADO (fusão direcional; ver fuse_masks).
+        img2 = load_image(in2_path)
+        rect2, _, _, _ = rectify(img2, dict_name=dict_name)
+        flat2 = normalize_illumination(rect2)
+        mask2 = segment_tool(flat2, deshadow=deshadow, val_frac=val_frac, faint_metal=True)
+        # Máscaras LIMPAS (sem faint, sombra removida) só p/ ANCORAR o registro na
+        # peça — as de conteúdo readmitem a sombra e enviesariam o IoU (ver fuse_masks).
+        reg_m1 = segment_tool(flat, deshadow=deshadow, val_frac=val_frac)
+        reg_m2 = segment_tool(flat2, deshadow=deshadow, val_frac=val_frac)
+        if debug_dir:
+            cv2.imwrite(os.path.join(debug_dir, "01d_rectified_in2.png"), rect2)
+        mask, reg = fuse_masks(mask, mask2, ppmm=1.0 / mmpp_x, grow_mm=fuse_grow_mm,
+                               debug_dir=debug_dir,
+                               gray1=cv2.cvtColor(flat, cv2.COLOR_BGR2GRAY),
+                               gray2=cv2.cvtColor(flat2, cv2.COLOR_BGR2GRAY),
+                               reg1=reg_m1, reg2=reg_m2)
+        if reg["lobe2_px"] < reg["lobe1_px"]:
+            # Foto 2 tem MENOS sombra (lóbulo menor) → melhor luz → vira o fundo do
+            # overlay, warpada pelo MESMO registro da máscara (senão o contorno, que
+            # vive no canvas da foto 1, cairia deslocado sobre ela).
+            Mr = cv2.getRotationMatrix2D(reg["center"], reg["angle"], 1.0)
+            Mr[0, 2] += reg["dx"]; Mr[1, 2] += reg["dy"]
+            rect = cv2.warpAffine(rect2, Mr, (rect.shape[1], rect.shape[0]),
+                                  flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            print("fusão 2-fotos: overlay usa a FOTO 2 de fundo (menos sombra)", file=sys.stderr)
     if symmetry and symmetry != "none":
         mask = symmetrize_mask(mask, symmetry, ppmm=1.0 / mmpp_x, debug_dir=debug_dir)
+    raw_mask = mask                    # referência do gate: o que a segmentação viu
     if mask_smooth_mm and mask_smooth_mm > 0:
         mask = regularize_silhouette(mask, mask_smooth_mm, ppmm=1.0 / mmpp_x,
                                      debug_dir=debug_dir, preserve_convex=mask_smooth_keep_bumps)
@@ -1843,6 +2269,10 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     out = process_for_print(sil, min_radius=min_radius, smooth_mm=smooth_mm, clearance=clearance)
     if return_edit_data:
         return out, sil, rect, mmpp_x, mmpp_y
+    if return_silhouettes:
+        # Sem regularização a referência É a própria `sil` (mesmo objeto, sem custo extra).
+        sil_ref = sil if raw_mask is mask else extract_outline(raw_mask, mmpp_x, mmpp_y)
+        return out, sil, sil_ref
     return (out, sil) if return_silhouette else out
 
 
@@ -1857,9 +2287,12 @@ def boundary_roughness(pts, win_mm=2.0, step=0.2):
     return max(math.hypot(rp[i][0] - sm[i][0], rp[i][1] - sm[i][1]) for i in range(n))
 
 
-def coverage(outer, inner, ppm=8.0):
+def coverage(outer, inner, ppm=8.0, tol_mm=0.0):
     """Fração da área de `inner` contida em `outer` (mesmo referencial mm). 1.0 =
-    `inner` totalmente dentro de `outer` (a peça cabe no pocket)."""
+    `inner` totalmente dentro de `outer` (a peça cabe no pocket). `tol_mm` > 0 (v0.6)
+    ERODE `inner` por essa profundidade antes de medir: penetrações rasas (≤ tol — a
+    serrilha de ruído da referência crua) não contam, sem perdoar cortes profundos
+    (uma feature perdida continua descoberta mesmo erodida)."""
     bo, bi = bbox(outer), bbox(inner)
     min_x, min_y = min(bo[0], bi[0]), min(bo[1], bi[1])
     max_x, max_y = max(bo[2], bi[2]), max(bo[3], bi[3])
@@ -1867,6 +2300,10 @@ def coverage(outer, inner, ppm=8.0):
     h = int(math.ceil((max_y - min_y) * ppm)) + 2
     mo = _polys_to_mask([[((x - min_x) * ppm, (y - min_y) * ppm) for (x, y) in _xy(outer)]], w, h)
     mi = _polys_to_mask([[((x - min_x) * ppm, (y - min_y) * ppm) for (x, y) in _xy(inner)]], w, h)
+    r = int(round(tol_mm * ppm))
+    if r > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+        mi = cv2.erode(mi, k)
     inside = np.count_nonzero(cv2.bitwise_and(mo, mi))
     total = np.count_nonzero(mi)
     return (inside / total) if total else 0.0
@@ -1884,6 +2321,9 @@ def _pipeline_kwargs(args, overlay_path, overlay_svg_path):
                 simplify_mm=args.simplify, faithful=args.faithful, min_dist_mm=args.min_dist,
                 pocket_eps=args.pocket_eps, mask_smooth_mm=args.mask_smooth_mm,
                 mask_smooth_keep_bumps=args.mask_smooth_keep_bumps, val_frac=args.val_frac,
+                # getattr: Namespaces sintéticos dos testes antecedem o --in2 (param novo = default)
+                in2_path=getattr(args, "in2_path", None),
+                fuse_grow_mm=getattr(args, "fuse_grow", FUSE_GROW_MM),
                 overlay_path=overlay_path, overlay_svg_path=overlay_svg_path,
                 debug_dir=args.debug_dir)
 
@@ -1951,6 +2391,18 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Foto da ferramenta → SVG de contorno (mm)")
     ap.add_argument("--in", "-i", dest="in_path", required=True)
+    ap.add_argument("--in2", dest="in2_path", default=None,
+                    help="SEGUNDA foto do MESMO objeto sobre a MESMA base, com a LUZ vindo de "
+                         "outro lado (girar base+peça juntas; NÃO mover a peça no papel). As duas "
+                         "máscaras são retificadas p/ o mesmo canvas e INTERSECTADAS: a sombra — "
+                         "que muda de lado — é eliminada por construção. Indicado p/ sombra dura "
+                         "(sol) e peças que se confundem com a própria sombra.")
+    ap.add_argument("--fuse-grow", dest="fuse_grow", type=float, default=FUSE_GROW_MM,
+                    help="(só com --in2) raio (mm) da recuperação de PARALAXE pós-fusão: cresce o "
+                         "AND de volta p/ dentro da união das máscaras, readmitindo a peça alta que "
+                         "o AND roeu (projeções não coincidem quando a câmera muda de posição entre "
+                         "as fotos) — ao custo de até este raio de sombra onde ela encosta na peça. "
+                         "0 (default) = desligado; prefira refotografar com o mesmo enquadramento.")
     ap.add_argument("--out", "-o", dest="out_path")
     ap.add_argument("--dict", dest="dict_name", default=DICT_NAME,
                     choices=sorted(CT.DICT_CAPACITY),
@@ -2032,6 +2484,9 @@ def main(argv=None):
     ap.add_argument("--debug-dir", dest="debug_dir")
     args = ap.parse_args(argv)
 
+    if args.in2_path and not os.path.exists(args.in2_path):
+        print(f"imagem não encontrada: {args.in2_path}", file=sys.stderr)
+        return 2
     if not os.path.exists(args.in_path):
         print(f"imagem não encontrada: {args.in_path}", file=sys.stderr)
         return 2
@@ -2050,8 +2505,10 @@ def main(argv=None):
         return _edit_flow(args, out_path, name, overlay_path, overlay_svg_path)
 
     try:
-        pts, sil = generate_outline(args.in_path, return_silhouette=True,
-                                    **_pipeline_kwargs(args, overlay_path, overlay_svg_path))
+        # `sil` (regularizada) gera o SVG; `sil_ref` (pré --mask-smooth-mm) é a referência
+        # do `contém`/`encaixe` — o gate mede contra o que a SEGMENTAÇÃO viu (v0.6).
+        pts, sil, sil_ref = generate_outline(args.in_path, return_silhouettes=True,
+                                             **_pipeline_kwargs(args, overlay_path, overlay_svg_path))
     except GridDetectionError as e:
         _print_grid_error(e)
         return 3
@@ -2084,7 +2541,7 @@ def main(argv=None):
                               faithful=args.faithful, min_dist_mm=args.min_dist,
                               pocket_eps=args.pocket_eps,
                               symmetry=args.symmetry)     # mesma geometria do SVG emitido
-        cov = coverage(flatten_beziers(cub), sil)
+        cov = coverage(flatten_beziers(cub), sil_ref, tol_mm=CONTAIN_TOL_MM)
         if pocket:
             pw, ph = size(flatten_beziers(cub))     # pocket = ≥ objeto (contém a peça)
             metrics = (f"POCKET {len(cub)} Béziers | {obj} | pocket {pw:.2f}x{ph:.2f} "
@@ -2095,7 +2552,7 @@ def main(argv=None):
     elif floor is not None:
         cub = fit_closed_beziers_contained(dedup_closing_point(guide), sil, c_fit=args.c_fit)
         metrics = (f"{len(cub)} Béziers (mín. contenção) | {obj} | "
-                   f"encaixe {coverage(flatten_beziers(cub), sil):.4f}")
+                   f"encaixe {coverage(flatten_beziers(cub), sil_ref, tol_mm=CONTAIN_TOL_MM):.4f}")
     else:
         n = len(fit_closed_beziers(dedup_closing_point(pts), tol=args.fit_tol))
         metrics = f"{n} Béziers (por tolerância) | {obj}"

@@ -51,9 +51,6 @@ python -m venv .venv
     --shadow remove --min-dist 0.6 --smooth-mm 2 --inkscape --symmetry vertical
 ```
 
-> Nota: `requirements.txt` menciona caminhos `tools/` de uma estrutura antiga — **ignore**;
-> hoje os arquivos ficam na **raiz**.
-
 ## Arquitetura
 
 Quatro módulos na raiz (detalhe completo em [docs/design.md](docs/design.md)):
@@ -62,23 +59,26 @@ Quatro módulos na raiz (detalhe completo em [docs/design.md](docs/design.md)):
   marcadores ArUco e as correspondências nominais em mm (`homography_correspondences`); liga
   *o que se imprime* ao *que o detector assume*.
 - **`make_calibration_target.py`** — CLI que renderiza o layout num `base.svg` impressível.
-- **`photo_to_outline.py`** — a tool (~1450 linhas): todo o pipeline de visão **e** o CLI.
+- **`photo_to_outline.py`** — a tool (~2300 linhas): todo o pipeline de visão **e** o CLI.
 - **`outline_editor.py`** — editor de nós opcional (`--edit`), em duas camadas: **núcleo puro**
   (geometria, testável) + **view tkinter** (glue, não testada). WYSIWYG: Finalize grava exatamente
   a curva exibida (Catmull-Rom G1 pelos nós). GUI em inglês; comentários em pt-BR como o resto.
 
 **Pipeline (foto → SVG):** retificar por homografia ArUco (sai a dimensão real) →
-normalizar luz + segmentar → extrair contorno → suavizar p/ impressão → ajustar Béziers
-+ emitir SVG. **Modo padrão = POCKET de encaixe**: não busca fidelidade, busca uma cavidade
-que **contém** a peça e fica justa (menor `--min-dist` = mais justo, sem teto de nós; `--faithful`
-= modo fiel, bbox = objeto). Todos os nós são suaves (G1). Constantes-chave no topo de
-`photo_to_outline.py`. Ver [docs/design.md](docs/design.md) para estágios, API e constantes.
+normalizar luz + segmentar → *(opcional `--in2`: fusão 2-fotos com luz oposta — registro
+automático + fusão direcional, p/ sombra dura e metal claro)* → extrair contorno → suavizar
+p/ impressão → ajustar Béziers + emitir SVG. **Modo padrão = POCKET de encaixe**: não busca
+fidelidade, busca uma cavidade que **contém** a peça e fica justa (menor `--min-dist` = mais
+justo, sem teto de nós; `--faithful` = modo fiel, bbox = objeto). Todos os nós são suaves (G1).
+Constantes-chave no topo de `photo_to_outline.py`. Ver [docs/design.md](docs/design.md) para
+estágios, API e constantes.
 
 ## Testes
 
 Suíte `unittest` em `tests/`, descoberta por `run_image_tests.py`. Níveis: **A** unidade pura
 (geometria, homografia, Bézier, `TestAnchoredFit`, `TestProtrusionAnchors`); **B** sintético
-ArUco + **B2** histerese de borda; **C** ponta-a-ponta direto de `thermpro.jpg`; **E** núcleo puro
+ArUco + **B2–B5** segmentação/fusão sintéticas (histerese de borda, textura+watershed,
+faint-metal, `TestFuseMasks`); **C** ponta-a-ponta direto de `thermpro.jpg`; **E** núcleo puro
 do editor (`test_outline_editor.py` — spline pelos nós, ops de edição, transforms; a view tkinter
 não é instanciada no runner headless).
 

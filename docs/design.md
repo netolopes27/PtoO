@@ -87,9 +87,37 @@ polui o contorno.
      janela `SEG_TEX_WIN`, limiar **Otsu adaptativo** da própria foto) **recorta** as regiões
      **lisas E mais claras** (`tex < Otsu` **e** `V > SEG_TEX_LIGHT_FRAC×fundo`) = a sombra
      projetada. O recorte vale p/ **todo** o candidato (valor **ou** croma), então a sombra não
-     volta pela porta do cromático em fundo de papel saturado. Sombra de contato (escura) fica fora
-     do termo de recorte (pendência). Padrão `off`.
-2b. **Simetria (opcional, `--symmetry`).** `symmetrize_mask`: num objeto simétrico as duas
+     volta pela porta do cromático em fundo de papel saturado. Padrão `off`.
+     **Refino de borda por watershed (v0.8, embutido no `texture`):** a sombra de **contato/UMBRA**
+     é escura (não "mais clara") e passava pelo recorte, inflando a silhueta ~4–5 mm. Depois do
+     recorte, `_refine_edge_watershed` re-decide a fronteira pelo **gradiente** (watershed com
+     marcadores: FG = miolo erodido `SEG_WS_ERODE_MM` **menos** o liso-e-meio-claro
+     `SEG_WS_FG_VAL_FRAC`; BG = fora da máscara dilatada `SEG_WS_BAND_MM`): a borda física
+     peça↔fundo é um *degrau* de V e a sombra↔papel é *rampa* suave — a inundação do papel
+     atravessa a rampa e a da peça esbarra no degrau. Resíduo típico: ~0,5–1,5 mm.
+2b. **Fusão 2-fotos (opcional, `--in2`, v0.9).** Para **sombra dura** (sol) que nenhum `--shadow`
+   resolve e p/ **metal claro** que some no papel: duas fotos da mesma peça sobre a mesma base,
+   mudando só o **lado da luz** (girar base+peça juntas ~180°). As duas retificações ancoram no
+   mesmo alvo impresso → mesmo canvas métrico. Três passos (`fuse_masks`):
+   - **Registro rígido** (`_register_masks`): rotação (quartos {0,90,180,270}° + refino fino
+     ±`FUSE_ANGLE_DEG`, em torno do centroide da máscara 2) e translação (±`FUSE_SEARCH_MM`,
+     semente = diferença de centroides), pontuadas por **IoU × textura** (ZNCC dos grays na
+     sobreposição; o IoU sozinho é ambíguo — sombra∩sombra infla a rotação errada em peça
+     retangular; o refino fino roda em TODOS os quartos antes de eleger). O registro roda nas
+     máscaras **limpas** (sem faint-metal) p/ ancorar na peça, não na sombra.
+   - **Fusão direcional por pixel disputado:** direção da sombra de cada foto = centroide do
+     **lóbulo exclusivo** (pixels só naquela máscara, mín. `FUSE_MIN_LOBE_MM`) relativo ao núcleo
+     (AND). O núcleo sempre entra; pixel de lóbulo entra **só no lado iluminado da própria foto**
+     ((p−c)·ŝᵢ ≤ 0) — lá a borda dela é limpa (o excesso é paralaxe/peça real); do lado da sombra,
+     o excesso É sombra e cai. Sombras p/ o MESMO lado (cosseno > `FUSE_ALIGN_MAX`) → aviso p/
+     refotografar (degrada p/ ~AND). `--fuse-grow` (`FUSE_GROW_MM`): dilatação geodésica opcional
+     dentro da união p/ resíduo perto da bissetriz.
+   - **Predicado faint-metal** (automático no modo 2 fotos, em `segment_tool(faint_metal=True)`):
+     S ≥ fundo+`FUSE_FAINT_SAT_MARGIN` e V ≤ `FUSE_FAINT_VAL_MAX`×fundo recupera **metal claro
+     liso** (topo de conector ≈ brilho do papel — invisível a colorido/cromático/escuro em luz
+     difusa). Readmite a sombra junto, o que só é seguro aqui: a fusão a remove.
+   O overlay usa de fundo a foto de **menor lóbulo** (melhor luz), warpada pelo registro.
+2c. **Simetria (opcional, `--symmetry`).** `symmetrize_mask`: num objeto simétrico as duas
    metades são **duas medições do mesmo contorno** → espelhar e fazer a **média** cancela o
    ruído assimétrico e força a simetria. Acha o eixo pelo **centroide**, refina por **máx. IoU**
    (±`SYM_SEARCH_MM`) e faz a média pelo **campo de distância COM SINAL** (`_signed_distance`:
@@ -123,6 +151,15 @@ polui o contorno.
    suavizar demais deixa a peça crua vazar por fora → `contém` cai. Baixar `--smooth-mm` (8→2)
    aproxima o piso da peça e raspa o último 0.0x (≲1 reintroduz serrilhado). `--pocket-eps`
    (0.5→0) tem efeito sub-0.001 — ajuste fino, não o lever.
+   **Espigões finos (v0.7, `_preserve_spikes`):** o low-pass do `--smooth-mm` recuaria a ponta de
+   uma protuberância fina real (gancho da trena) antes da seleção de âncoras; os trechos crus
+   proeminentes (recuo ≥ `SPIKE_MIN_RECEDE_MM` e boca ≤ `SPIKE_MAX_WIDTH_MM` — pico de serrilha e
+   canto/curvatura macro ficam de fora) são reinjetados em `clean` antes do piso.
+   **`contém` honesto (v0.7):** o CLI mede `contém`/`encaixe` contra a silhueta de **referência**
+   pré `--mask-smooth-mm` (`sil_ref` de `return_silhouettes=True`), com tolerância de
+   profundidade `CONTAIN_TOL_MM` (erosão no `coverage`): penetração rasa de ruído não conta;
+   feature removida pela regularização derruba o gate (e `regularize_silhouette` **avisa** quando
+   remove saliência convexa ≥ `PROTRUSION_DEV_MM` / `MASK_SMOOTH_WARN_AREA_MM2`).
    **Modo fiel (`--faithful`):** ancora nos pontos mais distantes (fecho convexo destilado por
    RDP `--simplify`), ajusta cúbicas **contidas** entre âncoras (maior tolerância sem penetrar
    além de `ANCHOR_EPS_MM`, via `distanceTransform`) e **fixa a bbox (snap, por eixo) na dimensão
@@ -178,8 +215,13 @@ polui o contorno.
 ## API — pipeline (I/O)
 
 `load_image(path)`; `rectify(img, dict_name)→(rectified, mm_per_px, mm_per_px, conf)`;
-`normalize_illumination(img)→img`; `segment_tool(img, deshadow=False, val_frac)→mask`
-(`deshadow` ∈ {False/"off", True/"remove", "texture"});
+`normalize_illumination(img)→img`; `segment_tool(img, deshadow=False, val_frac, faint_metal=False)→mask`
+(`deshadow` ∈ {False/"off", True/"remove", "texture"}; `faint_metal` = predicado de metal claro,
+ligado pelo modo 2 fotos); `_refine_edge_watershed(img, mask, Vd, smooth, bg_v)→mask` (refino de
+borda do `texture`); `fuse_masks(mask1, mask2, ppmm, search_mm, grow_mm, gray1, gray2, reg1,
+reg2)→(fused, reg)` (fusão 2-fotos; `reg1/reg2` = máscaras limpas só p/ o registro; `reg` =
+transformação + áreas dos lóbulos) e `_register_masks(m1, m2, ppmm, search_mm, gray1, gray2)→
+(angle, center, dx, dy, score)` (registro rígido, testável com máscaras sintéticas);
 `symmetrize_mask(mask, axis, ppmm)→mask`; `extract_outline(mask, mm_per_px_x, mm_per_px_y)→pts`;
 `process_for_print(...)→pts`; `polygon_to_svg(pts, name, …)→str`; `write_overlay(rect, mask,
 path)` (PNG de conferência); `write_overlay_svg(rect, cubics, mm_per_px_x, mm_per_px_y, path)`
@@ -189,6 +231,7 @@ Orquestrador `main(argv)`.
 ### CLI
 ```
 python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
+    [--in2 foto2.jpg] [--fuse-grow 0] \
     [--dict DICT_4X4_50] [--min-radius 1.5] [--smooth-mm 8] [--clearance 0] \
     [--shadow off|remove|texture] [--symmetry none|vertical|horizontal|both] [--inkscape] \
     [--simplify 2.0] [--min-dist 10] [--faithful] [--mask-smooth-mm 0] [--mask-smooth-keep-bumps] \
@@ -199,7 +242,9 @@ Imprima `base.svg` em A4 a 100%, apoie a peça no centro branco, fotografe perto
 `--dict` deve casar com a base impressa. `--min-dist` = densidade do pocket (menor = mais justo,
 **sem teto de nós**); `--faithful` = modo fiel com snap (bbox = objeto); `--simplify` controla a
 densidade no modo fiel. `--shadow remove` = histerese de borda por croma; `--shadow texture` =
-subtrator de sombra por textura (corpo cinza-neutro, v0.5); `--symmetry` = espelho + média. **A cada
+subtrator de sombra por textura (corpo cinza-neutro, v0.5, com refino watershed v0.8); `--in2` =
+fusão 2-fotos com luz oposta (v0.9; registro automático, sombras eliminadas, metal claro
+recuperado); `--symmetry` = espelho + média. **A cada
 execução** sai, antes do `.svg`, o overlay PNG `_overlay_<nome>.png` (contorno em vermelho sobre
 a foto retificada); `--inkscape` gera também `_overlay_<nome>.svg` editável. `--edit` abre o
 **editor de nós** (GUI tkinter, `outline_editor.py`, rótulos em inglês) entre a detecção e a saída:
@@ -220,6 +265,12 @@ fundo; default do `--val-frac`, suba p/ corpo cinza-neutro) · `SEG_VAL_WEAK_FRA
 / `SEG_TEX_BODY_FRAC = 0.80` / `SEG_TEX_LIGHT_FRAC = 0.70` (subtrator de sombra do `--shadow texture`:
 janela da textura, Otsu adaptativo, corte de corpo, corte de sombra-clara) ·
 `SEG_HUE_MARGIN = 25` / `SEG_HUE_SAT_MIN = 60` (matiz) ·
+`SEG_WS_ERODE_MM = 2.0` / `SEG_WS_BAND_MM = 3.0` / `SEG_WS_FG_VAL_FRAC = 0.50` (marcadores do
+refino watershed do `texture`, v0.8) ·
+`FUSE_SEARCH_MM = 10.0` / `FUSE_ANGLE_DEG = 4` (registro da fusão 2-fotos) ·
+`FUSE_MIN_LOBE_MM = 2.0` / `FUSE_ALIGN_MAX = 0.7` (direção de sombra por lóbulo; aviso de
+sombras do mesmo lado) · `FUSE_FAINT_SAT_MARGIN = 10` / `FUSE_FAINT_VAL_MAX = 1.05` (predicado
+faint-metal do modo 2 fotos) · `FUSE_GROW_MM = 0.0` (default do `--fuse-grow`) ·
 `ILLUM_SCALE = 0.125` / `ILLUM_KERNEL_FRAC = 0.9` / `ILLUM_MAX_GAIN = 3.0` (flat-field) ·
 `SYM_SEARCH_MM = 4.0` · `MIN_RADIUS_MM = 1.5` · `SMOOTH_MM = 8.0` · `CLEARANCE_MM = 0.0` (sem
 ganho) · `ANCHOR_SIMPLIFY_MM = 2.0` (modo fiel) · `ANCHOR_EPS_MM = 0.08` (fiel)
@@ -248,7 +299,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 113/113 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 130/130 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -258,7 +309,9 @@ personalizável** a partir do contorno medido.
   G1; o **POCKET** ancora 1 extremidade/quadrante, respeita o **teto** (estrela côncava: livre
   usa muitas, teto 4 sai com ≤4) e **contém a peça** (coverage ~1) em convexa e côncava.
   `TestProtrusionAnchors`: saliência no meio de aresta ganha âncora, o pocket a alcança, círculo
-  **não** gera âncora espúria, nó G1.
+  **não** gera âncora espúria, nó G1. `TestCoverageTolerance` (v0.7): `coverage(tol_mm=)` perdoa
+  penetração rasa e mantém corte profundo. `TestPreserveSpikes` (v0.7): espigão fino restaurado
+  (ponta crua), forma lisa intacta, pocket alcança a ponta.
 - **B. Sintético ArUco (`TestRectifyAruco`):** numpy gera a cena (marcadores + objeto de tamanho
   conhecido); `rectify` devolve canvas métrico, escala uniforme `1/PX_PER_MM`, `conf` 1,0;
   recupera o tamanho real **inclusive sob keystone**; aborta sem marcadores; `estimate_tilt_deg`
@@ -272,14 +325,27 @@ personalizável** a partir do contorno medido.
   numa sombra projetada lisa e mais clara. `--shadow texture` **mantém o corpo** e **recorta a
   sombra**, enquanto o corte de valor sozinho (`--val-frac` alto) a engloba. `TestValFrac`: o
   `--val-frac` alto captura o corpo cinza-neutro que o default 0,30 perde.
+  `TestWatershedEdgeRefine` (v0.8): na cena com UMBRA lisa-e-escura + ruído de foto (seed fixa),
+  o refino **avança a borda ≥ 2 mm p/ dentro** da umbra que o corte de valor mantinha, **sem
+  comer o corpo** (mediana por linha — a corrida de inundação é irregular no ruído); a guarda
+  sem-marcador-FG devolve a máscara intacta.
+- **B5. Fusão 2-fotos (`TestFuseMasks` + `TestFaintMetal`, v0.9):** máscaras sintéticas de peça
+  em L (assimétrica). Idênticas → passa direto (rot 0, shift 0); sombras **opostas** coladas na
+  peça → as DUAS caem e a peça fica (e o lóbulo maior identifica a foto de pior luz p/ o
+  overlay); peça **girada 180° e deslocada** → o registro recupera rot+shift (IoU ≥ 0,97 com a
+  máscara 1). `TestFaintMetal`: o predicado (só do modo 2 fotos) recupera o "conector" claro
+  (S = fundo+18, V = papel) que o default não vê.
 - **B4. Regularização da silhueta (`TestRegularizeSilhouette`):** remove serrilha mantendo a área e
   o tamanho macro; `preserve_convex=True` (`--mask-smooth-keep-bumps`) **preserva o ressalto
-  convexo** que o modo isotrópico arredonda, ainda preenchendo a reentrância côncava.
+  convexo** que o modo isotrópico arredonda, ainda preenchendo a reentrância côncava; **avisa**
+  (v0.7) quando remove saliência convexa relevante (espigão 1×5 mm) e fica calado p/ serrilha
+  sub-limiar ou quando o keep-bumps a preserva.
 - **C. Ponta-a-ponta (`thermpro.jpg`, skip se ausente — `TestEndToEndThermpro`):** 32/32
   marcadores; escala plausível; no **modo ilimitado** a peça cabe (`coverage ≥ 0,99`), linha
   limpa, **bbox do SVG = dimensão medida**; no **default (pocket teto 4)** o pocket **contém** a
   peça (`coverage ≥ 0,99`) ficando ≥ objeto; `min_corner_radius` (sem bicos); contorno único
-  fechado, poucos nós.
+  fechado, poucos nós. `TestSilhouetteRef` (v0.7): `return_silhouettes=True` devolve a silhueta
+  de referência pré `--mask-smooth-mm` (mais serrilhada, ~mesma área).
 - **D. Alvo de calibração (`test_calibration_target.py`).** *Layout puro* (`TestTargetLayout`):
   determinístico; IDs únicos sequenciais; nº de marcadores ≤ capacidade e ≥ 8; tudo dentro da
   margem branca; nenhum marcador invade o miolo; miolo comporta o thermpro; ordem de cantos

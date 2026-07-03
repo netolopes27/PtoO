@@ -211,15 +211,95 @@ traz esse ajuste **para dentro** da CLI.
   Refator: o envelope SVG saiu p/ `_svg_from_cubics`/`_svg_envelope` (fonte única do `.svg` padrão e do
   editado). A skill `/ptoo` acrescenta `--edit` **só no último passe**, após a calibração convergir.
 
+## Gate honesto + espigões finos (v0.7)
+
+Caso real (`/ptoo trena.jpg`): o **gancho metálico da fita** (pino ~1×5 mm) era apagado pelo
+`--mask-smooth-mm 2` e **nenhuma métrica acusava** — o `contém` era medido contra a silhueta
+**pós**-regularização, validando uma silhueta já mutilada. Plano e detalhes em
+[melhorias/v0.7.md](melhorias/v0.7.md). Três mudanças:
+
+- **P1 — `contém` honesto:** o CLI mede o `contém`/`encaixe` contra a silhueta de **REFERÊNCIA**
+  pré `--mask-smooth-mm` (`generate_outline(..., return_silhouettes=True)` → `(out, sil, sil_ref)`),
+  com **tolerância de profundidade** `CONTAIN_TOL_MM = 0.3` (erosão da referência no `coverage`):
+  penetração rasa (serrilha de ruído) não conta; corte profundo (feature perdida) derruba o gate.
+  Sem a tolerância o gate ficava inatingível (~0.9916 só de lascas de ruído no perímetro).
+- **P2 — aviso de remoção:** `regularize_silhouette` compara a máscara antes/depois e **avisa**
+  quando some uma saliência convexa com proeminência ≥ `PROTRUSION_DEV_MM` e área ≥ 1 mm²
+  (`MASK_SMOOTH_WARN_AREA_MM2`), sugerindo `--mask-smooth-keep-bumps`.
+- **P3 — `_preserve_spikes`:** o low-pass do `--smooth-mm` **recuava a ponta** de espigões finos
+  antes da seleção de âncoras (o piso de contenção nascia sem ela). Agora os trechos crus
+  proeminentes são reinjetados na curva suavizada — com dois filtros p/ não desfazer o
+  trabalho do smooth: recuo ≥ `SPIKE_MIN_RECEDE_MM` (0.3; pico de serrilha recua ~0.1-0.2) e
+  boca ≤ `SPIKE_MAX_WIDTH_MM` (3.0; canto/curvatura macro tem boca larga).
+
+Resultado (trena): params antigos → WARNING + contém 0.9968 (acusa o gancho perdido);
+`+ --mask-smooth-keep-bumps` → contém **1.0000** (gancho envolvido pelo pocket).
+Suíte: 113 → **123** testes (`TestCoverageTolerance`, `TestPreserveSpikes`, avisos em
+`TestRegularizeSilhouette`, `TestSilhouetteRef`).
+
+## Refino de borda por watershed no `--shadow texture` (v0.8)
+
+Caso real (`/ptoo trena.jpg`, trena CINZA em luz difusa): o subtrator por textura (v0.5) recorta a
+sombra projetada "lisa E mais clara", mas a **UMBRA/sombra de contato** é lisa e **ESCURA** — passava
+pelo recorte e inflava a silhueta ~4–5 mm na borda virada p/ ela (era a 1ª pendência do texture).
+O cue que separa de verdade não é brilho, é **nitidez**: a borda física peça↔fundo é um **degrau**
+de V; sombra↔papel é **rampa** suave. `_refine_edge_watershed` re-decide a fronteira pelo
+gradiente (watershed com marcadores): FG = miolo erodido (`SEG_WS_ERODE_MM`) **menos** o
+liso-e-meio-claro (`SEG_WS_FG_VAL_FRAC`, umbra provável); BG = fora da máscara dilatada
+(`SEG_WS_BAND_MM`); a casca vira zona incerta — a inundação do papel atravessa a rampa e a da
+peça esbarra no degrau. Medido na trena (perfil de V + zoom 3×): umbra 4–5 mm → resíduo
+~0,5–1,5 mm, contorno colado na borda serrilhada sem comer corpo; obj 65.12×65.50 → 64.50×65.00.
+
+## Fusão 2-fotos direcional + metal claro (v0.9)
+
+Caso real (Raspberry Pi 2 ao sol duro): nenhum modo `--shadow` resolvia a sombra dura, e a
+simetria não se aplica. Ideia (sessão `/ptoo`): **duas fotos, mudando só o lado da luz** —
+girar **base+peça juntas** ~180° em relação ao sol e refotografar. As duas retificações ancoram
+no mesmo alvo impresso → mesmo canvas métrico; em cada foto o lado **iluminado** tem borda limpa.
+`--in2 <foto2>` (tudo automático; ver [design.md](design.md) §Pipeline 2b e [manual.md](manual.md)):
+
+- **Registro rígido** (`_register_masks`): quartos {0,90,180,270}° + refino fino ±4° + translação
+  ±10 mm, pontuados por **IoU × textura (ZNCC)**. Lições que viraram código: o IoU puro elegia
+  rot=3° quando a peça foi girada ~180° (sombra∩sombra infla a rotação ERRADA em peça retangular);
+  o refino fino precisa rodar em **todos** os quartos antes de eleger (o ZNCC só "encaixa" no
+  ângulo exato); a semente de translação = diferença de centroides (a rotação gira em torno do
+  centroide da máscara 2, deslocado pela sombra); e o registro roda nas máscaras **limpas** —
+  com a sombra readmitida (faint-metal, abaixo) o IoU voltava a alinhar sombra com sombra
+  (shift saltava 13 mm).
+- **Fusão direcional por pixel disputado** (`fuse_masks`): direção da sombra de cada foto =
+  centroide do **lóbulo exclusivo** relativo ao núcleo (AND); o núcleo sempre entra; pixel de
+  lóbulo entra **só no lado iluminado da própria foto** — do lado da sombra dela, o excesso É
+  sombra e cai. A 1ª versão (bissetriz/meio-plano) admitia sombra quando as direções não eram
+  opostas; a regra por pixel degrada graciosamente p/ ~AND e **avisa** quando as sombras caem do
+  mesmo lado (`FUSE_ALIGN_MAX`). A paralaxe deixou de roer conectores altos (não há AND na borda
+  soberana) → `--fuse-grow` ficou opcional (resíduo perto da bissetriz, default 0).
+- **Predicado faint-metal** (automático com `--in2`): na 2ª bateria de fotos (luz difusa), os
+  topos METÁLICOS dos conectores sumiram da máscara — medido V = **1,005×fundo** no topo do USB
+  (nenhum `--val-frac`/croma alcança; o pocket sairia com plástico onde os conectores entram, e o
+  gate `contém` **não acusa** porque mede contra a própria máscara — só o zoom pegou). Saída: o
+  metal tem **saturação fraca** (S ~18–31 vs ~8 do papel) → predicado S ≥ fundo+10 (V ≤
+  1,05×fundo). Ele readmite a sombra (S~25) — proibitivo em foto única, **seguro aqui**: a fusão
+  a remove. É o casamento dos dois mecanismos que torna ambos viáveis.
+- **Overlay** usa de fundo a foto de **menor lóbulo** (melhor luz), warpada pelo registro.
+
+Resultado (Pi 2, min-dist 1.2): obj **90.00×58.75 mm** = dimensões físicas reais (85 de placa +
+pontas USB + microSD saltando), contém **1.0000**, folga −0.01/−0.10, 189 Béziers. Resíduo: nick
+~1,5 mm num canto que ficou sombrio nas DUAS fotos (luzes não exatamente opostas) — corrigível
+com `--edit` ou refotografando. Refactor: registro extraído p/ `_register_masks` (testável).
+Suíte: 123 → **130** (`TestWatershedEdgeRefine`, `TestFaintMetal`, `TestFuseMasks`).
+
 ## Pendências / roadmap
 
-- **Objeto claro/dessaturado** (peça metálica fosca) pode confundir-se com o miolo branco — uma
+- **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2
+  fotos, resolvido** pelo predicado faint-metal (v0.9); em **foto única** segue o limite — uma
   variante de **base escura** resolveria.
-- **Paralaxe pela altura** segue sem correção (nenhuma base resolve); hoje só mede e avisa.
-  Futuro: correção por altura conhecida.
+- **Paralaxe pela altura** segue sem correção geral (nenhuma base resolve); hoje só mede e avisa.
+  O modo 2 fotos com protocolo rígido (girar base+peça juntas, câmera no mesmo lugar) a torna
+  simétrica e inócua p/ a fusão. Futuro: correção por altura conhecida.
 - **Ondulação residual** em bordas de alto contraste (laranja↔bezel) — revisitar com **mais
   fotos-exemplo** antes de calibrar mais fino (evitar overfit).
-- **Resíduos do `--shadow texture`** (rumo ao "contorno perfeito"): a **sombra de contato** (escura)
-  fica fora do termo "liso E claro" → ~3 mm de sobra na borda virada p/ ela; e o **gume claro/
-  especular** do corpo cinza some no fundo claro (localização de borda).
+- **Resíduos do `--shadow texture`**: a umbra caiu p/ ~0,5–1,5 mm com o watershed (v0.8); o
+  **gume claro/especular** do corpo cinza ainda some no fundo claro (localização de borda).
+- **Fusão 2-fotos:** canto sombrio nas DUAS fotos vira nick (~1,5 mm no Pi) — candidato a
+  fechamento local guiado pelas bordas das duas máscaras; avaliar com mais peças.
 - **Avisar** quando o contorno tocar a borda da imagem (peça grande/descentrada).

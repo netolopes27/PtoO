@@ -13,6 +13,31 @@ the two CLIs.
 Requires **Python 3.14**. The vision deps (`numpy` + `opencv-python`) live **only** in an
 isolated venv `./.venv/` — never install them globally.
 
+### 1.1 Installing Python + pip on Windows
+
+If `python --version` doesn't print `Python 3.14.x`, install it first (pick one):
+
+- **winget** (built into Windows 10/11), from a terminal:
+
+  ```powershell
+  winget install Python.Python.3.14
+  ```
+
+- **Installer:** download **Python 3.14 (64-bit)** from
+  [python.org/downloads](https://www.python.org/downloads/) and run it, ticking
+  **"Add python.exe to PATH"** on the first screen.
+
+**pip comes bundled** with Python — no separate install. Open a **new** terminal and check:
+
+```powershell
+python --version        # expected: Python 3.14.x
+python -m pip --version # pip must answer
+```
+
+If `python` isn't found (or opens the Microsoft Store), the PATH wasn't set — re-run the
+installer and tick the PATH option, or use the `py` launcher instead: `py -3.14` works in
+every command below in place of `python`.
+
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt    # Windows

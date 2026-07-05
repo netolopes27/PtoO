@@ -321,6 +321,47 @@ Resultado (Pi 2, 2 fotos, **min-dist 10 = default**): 48 Béziers, contém 0.999
 dentro e o pocket cola na peça. `--line-tol 0` reproduz o caminho legado exatamente. Suíte:
 130 → **149** (`TestPrimitiveFit`, `TestStraightSegments`).
 
+## Editor simétrico, régua, auto-nível e giro fino (plano 011, v0.12)
+
+Quatro features em volta do editor (`--edit`) e do nivelamento, planejadas em
+`docs/melhorias/011.md` (hipóteses validadas com experimentos antes do código):
+
+- **F1 — Simetria no editor:** descoberta estrutural — a saída de `symmetrize_beziers` JÁ nasce
+  **pareada por índice** (`i ↔ (N−i)%N`, erro 0.000000 mm no thermpro; nós 0 e N/2 no eixo), então
+  o espelhamento dispensa matching geométrico. Ops-par puras (`move/insert/delete/straighten_
+  _sym`) preservam o invariante (provado em teste, inclusive sequências e re-canonicalização
+  após excluir nó de eixo). O eixo vem FIXO da detecção (bbox da silhueta simetrizada — o cru
+  fica ~0.2 mm fora do espelho real) e é desenhado pontilhado em coordenada de tela contínua.
+- **F1b — Mirror ◀/▶:** o eixo é **arrastável** e o Mirror reconstrói um lado como espelho do
+  outro (`mirror_contour`: nó de emenda na interseção exata; recusa >2 cruzamentos — mesmo
+  critério do CLI; `snap_seam_nodes` evita degrau de 2(c′−c) ao re-parear em eixo movido).
+  Conserta detecção que a sombra inflou de um lado e permite ligar simetria em contorno que veio
+  sem `--symmetry` (a decisão original de desabilitar o toggle nesse caso foi revista).
+- **F2 — Régua mm + cota:** faixas sup./esq. com ticks adaptativos ao zoom, cota W×H fora da
+  bbox e no status (mover o eixo atualiza a largura ao vivo — correção guiada por paquímetro);
+  toggle "Ruler".
+- **F3 — `--level auto`:** auto-nível pelo **envelope** (`minAreaRect` + `snap90`), girando
+  foto+máscara juntas ANTES da simetria, sem re-segmentar. Experimentos: minAreaRect recuperou
+  exato os ângulos injetados e deu 0.00° no thermpro (baseline vira regressão); seleção de reta
+  por comprimento tem viés (+1.4° — a reta mais longa era o topo inclinado), então a variante
+  `bottom` (maior reta de baixo) ficou p/ fase 2. Faixa 0.2–7° + guarda de peça ~quadrada/redonda
+  (disco recusa; quadrado passa pela reta ≥ 8 mm).
+- **F4 — modo Rotate (decisão b, modo explícito):** linha-guia no cursor, cliques/rodinha giram
+  **foto+nós juntos** em passos de 0.1° (0.05° com Shift) — nós no núcleo (`rotate_nodes`),
+  foto por warpAffine **só do viewport** (transformada afim completa; custo constante). Girar
+  desliga a simetria (v1); WYSIWYG: o editor passa a devolver `(cúbicas, foto girada)` e o
+  overlay sai casado. Undo coalesce passos seguidos; Reset zera o ângulo.
+- **Modo Pan (follow-up do F4, a pedido):** gêmeo do Rotate (toggle explícito, cliques/rodinha,
+  linha-guia vertical), mas deslocando o **contorno + eixo de simetria** esquerda/direita em
+  passos de 0.1 mm (0.05 com Shift) com a **foto parada** — corrige viés LATERAL uniforme da
+  detecção (sombra que empurrou o contorno inteiro). Como nós e eixo andam o mesmo dx, o
+  pareamento sobrevive por construção (`translate_nodes`, provado em teste) e a simetria **não**
+  desliga. Exclusivo com o Rotate; Reset zera e devolve o eixo original da detecção.
+
+Suíte: 149 → **188** (`TestSymmetryPairing`/`TestSymmetryOps`/`TestMirrorContour`/
+`TestRotateNodes`/`TestTranslateNodes` no nível E; `TestAutoLevel` A/B; regressão C do
+`--level` no thermpro).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2

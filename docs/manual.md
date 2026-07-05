@@ -97,6 +97,24 @@ paralaxe perto da **bissetriz** das duas direções de sombra (onde nenhuma foto
 - **Quando usar:** só se o zoom mostrar a peça roída num trecho onde as duas sombras se encontram.
 - **Custo:** readmite até este raio de sombra onde ela encosta na peça.
 
+### `--level {off,auto}`  · default `off`  ·  **auto-nível (011/F3)**
+Corrige a **rotação fina** (poucos graus) da peça apoiada levemente torta na base — "coloca no
+nível". Estima pelo **envelope** (`cv2.minAreaRect`, desvio ao múltiplo de 90° mais próximo, mod
+90 em [−45°,+45°)) e gira **foto retificada + máscara juntas** (mesma matriz, centro da peça, sem
+re-segmentar). Roda **antes** de `--symmetry` — o eixo de simetria é sempre vertical/horizontal,
+então nivelar primeiro é o que faz a simetria encaixar. O overlay sai corrigido.
+- **Quando usar:** a peça ficou visivelmente torta na foto (arestas quase-horizontais inclinadas
+  ~0.5–5°) e você quer o SVG alinhado aos eixos sem refotografar.
+- **Salvaguardas:** só aplica se `LEVEL_MIN_DEG (0.2°) ≤ |desvio| ≤ LEVEL_MAX_DEG (7°)` — abaixo
+  já está nivelado (saída **idêntica**, regressão garantida por teste); acima, avisa e segue sem
+  girar (a foto deve vir "o mais no nível possível"; reposicione a peça). Peça **~quadrada ou
+  redonda** (razão de aspecto do envelope < 1.05) sem **reta ≥ 8 mm** alinhável no contorno não é
+  corrigida (aviso): num disco o ângulo do envelope é ruído.
+- **Limite:** "nível" pelo **envelope** ≠ "nível" pela **face de baixo** — no thermpro os dois
+  divergem ~1.2° (a face inferior é genuinamente inclinada). Uma variante `bottom` (maior reta de
+  baixo) fica documentada como possível fase 2, só se o `auto` errar em peças reais.
+- **Alternativa manual:** o modo **Rotate** do editor (`--edit`) gira foto+nós em passos de 0.1°.
+
 ### `--symmetry {none,vertical,horizontal,both}`  · default `none`
 Impõe a simetria do objeto: **espelha e faz a MÉDIA das duas metades** (duas amostras do mesmo
 contorno → menos ruído). `vertical` = eixo vertical (metades esq./dir.), `horizontal` = topo/baixo,
@@ -264,6 +282,32 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
   não grava). A detecção continua automática — você só posiciona os pontos. Parte sempre da curva
   **ancorada** (ignora `--polyline`/`--tol-fit` como ponto de partida) e emite-a **literal** (sem snap
   de bbox). Alternativa fora da CLI: `--inkscape` + Inkscape.
+  Controles do plano 011:
+  - **Symmetry** (F1) — com `--symmetry` vindo do CLI abre **ligada** (se o pareamento por índice
+    se verificar): mover/inserir/excluir/Line num lado **replica no outro** em torno da linha
+    pontilhada do eixo (nó sobre o eixo move só ao longo dele; Undo desfaz o casal de uma vez).
+    A linha do eixo é **arrastável** (perpendicular a si); eixo movido desativa o espelhamento
+    até um **Mirror**. Seletor **V/H** escolhe a orientação quando o CLI não a definiu
+    (`--symmetry both` não é suportado no editor — fase 2).
+  - **Mirror ◀/▶** (F1b) — reconstrói um lado como **espelho do outro** em torno da posição
+    atual do eixo (▶ = a direita é a verdade; com eixo horizontal, ▲/▼). Conserta detecção que a
+    sombra inflou de um lado e **constrói o pareamento a partir de qualquer contorno** — é o
+    caminho p/ ligar a simetria num contorno que veio sem `--symmetry` ou religá-la após edições
+    livres. Recusa (com aviso) contorno que cruza o eixo mais de 2× (mesma limitação do CLI).
+  - **Ruler** (F2, ligada por default) — régua em **mm** nas bordas superior/esquerda (ticks
+    adaptativos ao zoom) + **cota W×H** do objeto fora da bbox; o W×H também fica no status bar
+    (útil p/ ajustar o eixo até a largura bater com o paquímetro).
+  - **Rotate** (F4) — modo explícito de **giro fino**: linha-guia horizontal no cursor,
+    clique-direito = +0.1°, clique-esquerdo = −0.1°, roda = girar (0.05° com Shift); gira
+    **foto + nós juntos** (o SVG e o overlay saem girados — WYSIWYG). Girar desliga a simetria
+    (v1); p/ peça torta COM simetria prefira `--level` no CLI. Reset zera o ângulo.
+  - **Pan** (gêmeo do Rotate) — modo explícito de **deslocamento fino**: linha-guia vertical no
+    cursor, clique-direito = +0.1 mm (→), clique-esquerdo = −0.1 mm (←), roda = deslocar
+    (0.05 mm com Shift). Move o **contorno inteiro (e o eixo de simetria junto)** com a **foto
+    parada** — corrige viés LATERAL da detecção (ex.: sombra que empurrou o contorno p/ um
+    lado). Ao contrário do Rotate, **não** desliga a simetria (nós e eixo andam o mesmo passo,
+    o pareamento sobrevive por construção). Reset zera o deslocamento e devolve o eixo
+    original. Exclusivo com o Rotate (ligar um desliga o outro).
 - **`--debug-dir <dir>`** — grava os estágios intermediários (retificação, iluminação,
   segmentação) para inspeção.
 - **`--name <nome>`** — rótulo do contorno no SVG; default = nome da foto.
@@ -284,6 +328,9 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 | `--mask-smooth-mm` arredondou uma **saliência convexa real** (aba) | + `--mask-smooth-keep-bumps` |
 | AVISO `--mask-smooth-mm removeu uma saliência convexa` (e contém caiu) | + `--mask-smooth-keep-bumps` (ou ↓`--mask-smooth-mm`) |
 | peça simétrica com contorno ruidoso/torto | `--symmetry vertical\|horizontal` (eixo do objeto) |
+| peça apoiada **levemente torta** na base (arestas inclinadas ~0.5–5°) | `--level auto` (antes da simetria); ajuste manual fino = modo **Rotate** do `--edit` |
+| sombra inflou **um lado** de peça simétrica (eixo detectado puxado) | `--edit` → Symmetry on → arrastar o eixo → **Mirror** com o lado bom |
+| contorno inteiro **deslocado lateralmente** da peça (viés uniforme) | `--edit` → modo **Pan** (0.1 mm/passo; simetria acompanha) |
 | bico/canto vivo onde devia arredondar | ↑`--min-radius` (+0.5) |
 | quero o contorno **exato** (não pocket) | `--faithful` |
 | **sombra dura** (sol) que nenhum `--shadow` resolve | `--in2 <foto2>` com a luz do outro lado (girar base+peça juntas ~180°) — fusão direcional elimina as duas sombras |

@@ -198,6 +198,7 @@ PNGs for diagnosis).
 | `--in2` | off | **two-photo fusion** for hard sunlight shadows or bright metal parts: second photo of the same part on the same base with the light coming from the **opposite side** (rotate base+part together ~180° relative to the sun). Registration (rotation+shift) is automatic; each photo is **sovereign on its lit side**, so both shadows drop out. Also auto-enables a faint-saturation predicate that recovers **bright smooth metal** (connector tops ≈ paper brightness) that single-photo segmentation cannot see. The overlay uses the better-lit photo as background |
 | `--fuse-grow` | `0.0` | only with `--in2`: optional geodesic grow (mm) within the union of both masks, for parallax residue near the bisector of the two shadow directions. Rarely needed |
 | `--symmetry` | `none` | `vertical`/`horizontal`/`both`: mirrors the mask and **averages the halves** (less noise). Use on symmetric parts |
+| `--level` | `off` | `auto` = **auto-levelling** (v0.12): fixes the fine rotation of a part laid slightly askew on the base — estimates the deviation from the nearest 90° via the minimum-area envelope and rotates photo+mask together (runs **before** `--symmetry`, so the v/h symmetry axis lines up). Only applies within 0.2–7°; near-square/round parts without a long straight edge are left alone (unstable envelope) |
 | `--mask-smooth-mm` | `0.0` (off) | **regularizes the silhouette** before tracing: blurs the signed-distance field and re-thresholds, removing bumps/waviness smaller than the radius from the **mask** itself. Use when a low-contrast **black** edge comes out wavy even at high containment; `~1.5–2` cleans it without rounding macro corners. Orthogonal to `--smooth-mm` (which acts on the curve) and to containment |
 | `--mask-smooth-keep-bumps` | off | biases `--mask-smooth-mm` toward **closing** (a closing on the distance field): removes only **concave** dents (noise) while **preserving convex bumps** (e.g. a side tab) that the isotropic mode would round off |
 
@@ -235,6 +236,27 @@ the **rectified photo** as background and the curve's **nodes as draggable handl
   **Ctrl + left-drag** = pan.
 - **Re-trace** draws a smooth (G1) Catmull-Rom curve through your nodes; moving, inserting or
   deleting a node re-traces automatically. **Undo** / **Reset** as usual.
+- **Shift+click** selects up to 2 nodes (red) and **Line** replaces the shortest path between
+  them with an exact straight segment (neighbours leave tangent to it).
+- **Symmetry** (v0.12) — with `--symmetry` from the CLI the editor opens with it ON: moving/
+  inserting/deleting a node (and Line) is **mirrored** across the dashed axis; a node on the axis
+  slides along it. The axis line is **draggable**, and **Mirror ◀/▶** rebuilds one side as the
+  mirror of the other (pick the good side when a shadow inflated the detection — this also lets
+  you turn symmetry on for a contour that came without `--symmetry`). The **V/H** selector picks
+  the axis orientation when the CLI didn't.
+- **Ruler** (v0.12, on by default) — mm ruler on the top/left edges (ticks adapt to zoom) plus a
+  live **W×H dimension** of the object (also in the status bar) — handy for matching a caliper
+  measurement while dragging the symmetry axis.
+- **Rotate** (v0.12) — explicit fine-rotation mode: a dashed guide line follows the cursor;
+  right-click = +0.1°, left-click = −0.1°, wheel rotates too (0.05° with Shift). Photo and nodes
+  turn **together** (the SVG and overlay come out rotated — true WYSIWYG). Entering the mode
+  turns Symmetry off; prefer `--level auto` for a tilted part that is also symmetric.
+- **Pan** (v0.12) — Rotate's twin for fine **sideways nudging**: right-click = +0.1 mm (right),
+  left-click = −0.1 mm (left), wheel too (0.05 mm with Shift), vertical guide line at the
+  cursor. It shifts the **whole outline (and the symmetry axis with it)** while the photo stays
+  put — fixes a uniform lateral bias of the detection (e.g. a shadow that pushed the entire
+  contour to one side). Unlike Rotate it does **not** turn Symmetry off (nodes and axis move by
+  the same step, so the pairing survives). Mutually exclusive with Rotate; Reset zeroes it.
 - **Finalize** is **WYSIWYG**: it closes the window and writes the same outputs from **exactly the
   curve on screen** — nothing is recomputed (closing the window without Finalize writes nothing).
 
@@ -283,6 +305,8 @@ touch-up. Full behavior is documented in the skill's own [SKILL.md](.claude/skil
 | **Hard sunlight shadow** no `--shadow` mode fixes | second photo with opposite light + `--in2 photo2.jpg` |
 | **Bright metal connector** vanishing into the white paper | same: `--in2` (auto-recovers faint metal) |
 | **Symmetric** part, noisy outline | `--symmetry vertical` (or `horizontal`/`both`) |
+| Part laid **slightly askew** on the base (~0.5–5°) | `--level auto` (or the editor's **Rotate** mode) |
+| Shadow **inflated one side** of a symmetric part | `--edit` → Symmetry on → drag the axis → **Mirror** with the good side |
 | **Jagged** outline | raise `--smooth-mm` (e.g. `12`) |
 | Pocket **too loose** | lower `--min-dist`: `2`, `1`, `0.5`… |
 | Want the **faithful outline** (bbox = object) | `--faithful` |

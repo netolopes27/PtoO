@@ -1164,6 +1164,81 @@ class TestFuseMasks(unittest.TestCase):
         self.assertGreater(self._iou(fused, m1), 0.97)      # registro desfaz rot+shift
 
 
+class TestAutoLevel(unittest.TestCase):
+    """F3 (plano 011): --level auto — snap90 + estimador minAreaRect (desvio ao
+    múltiplo de 90° mais próximo) + correção fina de rect+mask, com salvaguardas
+    (faixa LEVEL_MIN/MAX e guarda de peça ~quadrada/redonda)."""
+
+    @staticmethod
+    def _rect_mask(angle_deg, w=400, h=240, canvas=800):
+        import cv2
+        m = np.zeros((canvas, canvas), np.uint8)
+        box = cv2.boxPoints(((canvas / 2, canvas / 2), (w, h), angle_deg))
+        cv2.fillPoly(m, [np.int32(np.round(box))], 255)
+        return m
+
+    def test_snap90_table(self):
+        for a, want in ((0.0, 0.0), (90.0, 0.0), (180.0, 0.0), (93.0, 3.0),
+                        (87.0, -3.0), (-2.0, -2.0), (178.0, -2.0),
+                        (44.0, 44.0), (46.0, -44.0), (45.0, -45.0)):
+            self.assertAlmostEqual(P.snap90(a), want, places=9, msg=f"snap90({a})")
+
+    def test_estimator_recovers_injected_angles(self):
+        # tabela do experimento do plano 011: o minAreaRect recupera o ângulo injetado
+        for inj in (0.0, 0.5, 1.5, 3.0, -2.0, -4.0):
+            dev, _center, reason = P.estimate_level_angle(self._rect_mask(inj), ppmm=8.0)
+            self.assertIsNotNone(dev, f"inj={inj}: {reason}")
+            self.assertAlmostEqual(abs(dev), abs(inj), delta=0.15)
+
+    def test_round_piece_refused(self):
+        # peça REDONDA (aspecto ~1, nenhuma reta): minAreaRect instável → não corrige
+        import cv2
+        m = np.zeros((600, 600), np.uint8)
+        cv2.circle(m, (300, 300), 200, 255, -1)
+        dev, _center, reason = P.estimate_level_angle(m, ppmm=8.0)
+        self.assertIsNone(dev)
+        self.assertTrue(reason)
+
+    def test_square_with_straight_edges_allowed(self):
+        # QUADRADA (aspecto ~1) mas com RETAS longas alinháveis: a guarda deixa passar
+        # (a instabilidade do minAreaRect é das formas SEM aresta, tipo disco)
+        dev, _center, _r = P.estimate_level_angle(self._rect_mask(2.0, w=300, h=300),
+                                                  ppmm=8.0)
+        self.assertIsNotNone(dev)
+        self.assertAlmostEqual(abs(dev), 2.0, delta=0.2)
+
+    def test_level_correction_residual(self):
+        # nível B (ponta-a-ponta sintético): máscara girada X° → correção → resíduo <0.3°
+        for inj in (3.0, -2.0, 1.5):
+            m = self._rect_mask(inj)
+            rect = np.dstack([m, m, m])
+            rect2, m2, applied = P.level_rect_and_mask(rect, m, ppmm=8.0)
+            self.assertIsNotNone(applied, f"inj={inj}: correção não aplicada")
+            dev, _center, _r = P.estimate_level_angle(m2, ppmm=8.0)
+            self.assertIsNotNone(dev)
+            self.assertLess(abs(dev), 0.3, f"resíduo {dev}° p/ inj={inj}")
+            self.assertEqual(rect2.shape, rect.shape)
+
+    def test_level_range_guards(self):
+        import io
+        from contextlib import redirect_stderr
+        # abaixo de LEVEL_MIN_DEG: já nivelado — NÃO mexe (rect/mask passam intactos)
+        m0 = self._rect_mask(0.0)
+        r0 = np.dstack([m0, m0, m0])
+        rect_out, mask_out, applied = P.level_rect_and_mask(r0, m0, ppmm=8.0)
+        self.assertIsNone(applied)
+        self.assertIs(mask_out, m0)
+        self.assertIs(rect_out, r0)
+        # acima de LEVEL_MAX_DEG: foto torta demais p/ correção FINA — warn, sem girar
+        m12 = self._rect_mask(12.0)
+        with redirect_stderr(io.StringIO()) as err:
+            _rect, mask_out, applied = P.level_rect_and_mask(np.dstack([m12] * 3), m12,
+                                                             ppmm=8.0)
+        self.assertIsNone(applied)
+        self.assertIs(mask_out, m12)
+        self.assertIn("--level", err.getvalue())
+
+
 # =============================================================================
 # C. PONTA-A-PONTA — contorno direto de thermpro.jpg (foto na base ArUco)
 # =============================================================================
@@ -1246,6 +1321,18 @@ class TestEndToEndThermpro(unittest.TestCase):
         # é o coverage acima; aqui só garantimos que não colapsou nem inflou muito.
         self.assertLess(abs(pw - tw), 2.0)
         self.assertLess(abs(ph - th), 2.0)
+
+    def test_level_auto_is_noop_on_leveled_photo(self):
+        # F3 (plano 011): o thermpro JÁ está nivelado (estimador deu 0.00° no
+        # experimento) → `--level auto` fica abaixo de LEVEL_MIN_DEG e NÃO gira nada —
+        # saída idêntica ao baseline (regressão de "não mexer no que está nivelado").
+        out2, sil2 = P.generate_outline(THERMPRO_JPG, min_radius=1.5, smooth_mm=8.0,
+                                        clearance=0.0, return_silhouette=True,
+                                        level="auto")
+        self.assertEqual(len(sil2), len(self.sil))
+        for a, b in zip(sil2, self.sil):
+            self.assertAlmostEqual(a[0], b[0], places=9)
+            self.assertAlmostEqual(a[1], b[1], places=9)
 
     def test_dense_pocket_contour_is_simple(self):
         # REGRESSÃO v0.4 (de-loop): com âncoras DENSAS (--min-dist pequeno) os handles
@@ -1484,9 +1571,10 @@ class TestEditFlowGuards(unittest.TestCase):
             mask_smooth_mm=P.MASK_SMOOTH_MM, mask_smooth_keep_bumps=False,
             val_frac=P.SEG_VAL_FRAC, debug_dir=None)
 
-    def _run(self, fit_result, editor_result):
+    def _run(self, fit_result, editor_cubics):
         """Roda `_edit_flow` com o pipeline e o editor MOCKADOS (sem foto nem GUI):
-        `fit_result` = cúbicas detectadas (cub0); `editor_result` = retorno do editor.
+        `fit_result` = cúbicas detectadas (cub0); `editor_cubics` = cúbicas devolvidas
+        pelo editor (None = cancelar; o editor devolve `(cúbicas, foto)` desde o F4).
         Devolve (código de saída, out_path foi escrito?, editor foi aberto?)."""
         import io
         import tempfile
@@ -1496,6 +1584,7 @@ class TestEditFlowGuards(unittest.TestCase):
         rect = np.full((16, 16, 3), 255, np.uint8)
         sil = [(0.0, 0.0), (2.0, 0.0), (2.0, -2.0), (0.0, -2.0)]
         gen = (sil, sil, rect, 0.125, 0.125)
+        editor_result = None if editor_cubics is None else (editor_cubics, rect)
         with tempfile.TemporaryDirectory() as td:
             out = os.path.join(td, "x.svg")
             with mock.patch.object(P, "generate_outline", return_value=gen), \

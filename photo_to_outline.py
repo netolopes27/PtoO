@@ -108,6 +108,17 @@ SEG_HUE_SAT_MIN = 60       # saturação mínima p/ aceitar um pixel SÓ pelo ma
                            # saturação abaixo do corte de `colored` mas continua com matiz quente,
                            # bem longe do fundo azulado — sem isso o realce virava uma "mossa".
 SYM_SEARCH_MM = 4.0         # busca do eixo de simetria em torno do centroide (± mm), maximizando IoU
+LEVEL_MIN_DEG = 0.2         # --level (F3): desvio MÍNIMO p/ aplicar a correção — abaixo disto a
+                            # peça já está nivelada e girar só degradaria a foto (INTER_LINEAR);
+                            # garante saída IDÊNTICA ao baseline no que já está no nível.
+LEVEL_MAX_DEG = 7.0         # --level: teto da correção FINA. A foto deve vir "o mais no nível
+                            # possível"; acima disto a inclinação não é acidente de apoio — warn
+                            # e segue sem girar (reposicione a peça em vez de confiar no giro).
+LEVEL_ASPECT_MIN = 1.05     # --level: razão de aspecto do minAreaRect abaixo disto = peça
+                            # ~quadrada/redonda → envelope instável (num disco o ângulo é ruído).
+                            # Só corrige se uma RETA longa do contorno confirmar que há aresta.
+LEVEL_LINE_MIN_MM = 8.0     # --level: comprimento mínimo (mm) da reta "alinhável" que resgata a
+                            # peça ~quadrada da guarda acima (quadrado tem aresta; disco não).
 FUSE_SEARCH_MM = 10.0       # registro da fusão 2-fotos (--in2): busca de TRANSLAÇÃO (± mm) entre as
                             # duas máscaras retificadas — absorve tanto o resíduo de retificação
                             # (papel flexionado) quanto o reposicionamento manual da peça entre as
@@ -1078,6 +1089,75 @@ def _reflect_mask(mask, axis, c):
     else:
         M = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 2.0 * c]], np.float32)
     return cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_NEAREST, borderValue=0)
+
+
+def snap90(angle_deg):
+    """Desvio (graus) de `angle_deg` ao múltiplo de 90° mais próximo, em [−45°, +45°).
+    É o "quanto falta p/ ficar no nível" de um envelope retangular (F3/--level)."""
+    return (angle_deg + 45.0) % 90.0 - 45.0
+
+
+def estimate_level_angle(mask, ppmm=PX_PER_MM):
+    """F3 (--level auto): estima a inclinação FINA da peça pelo ENVELOPE —
+    `cv2.minAreaRect` da maior componente, desvio ao múltiplo de 90° mais próximo
+    (mod 90 em [−45°,+45°)). Recuperou EXATO os ângulos injetados no experimento do
+    plano 011. Devolve `(desvio°, centro_px, None)`, ou `(None, None, motivo)` quando
+    não dá p/ confiar: peça ~quadrada/redonda (aspecto < LEVEL_ASPECT_MIN) SEM nenhuma
+    reta ≥ LEVEL_LINE_MIN_MM alinhável no contorno — um disco deixa o envelope
+    instável; um quadrado tem arestas que o confirmam."""
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None, None, "nenhum contorno na máscara"
+    c = max(cnts, key=cv2.contourArea)
+    (cx, cy), (w, h), ang = cv2.minAreaRect(c)
+    if min(w, h) < 1e-6:
+        return None, None, "máscara degenerada"
+    dev = snap90(ang)
+    if max(w, h) / min(w, h) < LEVEL_ASPECT_MIN:
+        step = 0.4
+        rp = resample_uniform(extract_outline(mask, 1.0 / ppmm), step, closed=True)
+        n = len(rp)
+        aligned = False
+        for (i0, i1) in _detect_line_runs(rp, step, min_len_mm=LEVEL_LINE_MIN_MM):
+            a, b = rp[i0 % n], rp[i1 % n]
+            la = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+            if abs(snap90(la)) <= LEVEL_MAX_DEG:
+                aligned = True
+                break
+        if not aligned:
+            return None, None, "peça ~quadrada/redonda sem reta alinhável (envelope instável)"
+    return dev, (cx, cy), None
+
+
+def level_rect_and_mask(rect, mask, ppmm=PX_PER_MM, debug_dir=None):
+    """F3 (--level auto): "coloca no nível" a peça apoiada levemente torta na base —
+    estima o desvio (estimate_level_angle) e gira `rect` E `mask` com a MESMA matriz
+    (centro da peça; máscara em NEAREST), SEM re-segmentar: overlay e todos os
+    estágios seguintes consomem o par já nivelado de graça. Aplica só na faixa
+    LEVEL_MIN_DEG ≤ |desvio| ≤ LEVEL_MAX_DEG (abaixo: já nivelado, não mexe — saída
+    idêntica; acima: warn e segue sem girar). Devolve (rect, mask, desvio | None)."""
+    dev, center, reason = estimate_level_angle(mask, ppmm=ppmm)
+    if dev is None:
+        warn(f"--level: sem correção — {reason}.")
+        return rect, mask, None
+    if abs(dev) < LEVEL_MIN_DEG:
+        return rect, mask, None
+    if abs(dev) > LEVEL_MAX_DEG:
+        warn(f"--level: inclinação estimada {dev:+.2f}° fora da faixa fina "
+             f"(±{LEVEL_MAX_DEG:.0f}°) — apoie a peça mais no nível; sem correção.")
+        return rect, mask, None
+    # Sinal validado em sintético: girar por +desvio (getRotationMatrix2D) ZERA o
+    # resíduo (o referencial mm tem Y p/ cima e a imagem p/ baixo — a convenção do
+    # OpenCV já absorve a inversão; ver TestAutoLevel).
+    M = cv2.getRotationMatrix2D(center, dev, 1.0)
+    h, w = mask.shape[:2]
+    rect2 = cv2.warpAffine(rect, M, (w, h), flags=cv2.INTER_LINEAR,
+                           borderMode=cv2.BORDER_REPLICATE)
+    mask2 = cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_NEAREST, borderValue=0)
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(debug_dir, "02a_leveled.png"), mask2)
+    return rect2, mask2, dev
 
 
 def symmetrize_mask(mask, axis, ppmm=PX_PER_MM, search_mm=SYM_SEARCH_MM, debug_dir=None):
@@ -2588,7 +2668,7 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
                      mask_smooth_mm=MASK_SMOOTH_MM, mask_smooth_keep_bumps=False,
                      val_frac=SEG_VAL_FRAC, in2_path=None, fuse_grow_mm=FUSE_GROW_MM,
-                     line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
+                     line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM, level="off",
                      overlay_path=None, overlay_svg_path=None, debug_dir=None,
                      return_silhouette=False, return_silhouettes=False,
                      return_edit_data=False):
@@ -2637,6 +2717,14 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
             rect = cv2.warpAffine(rect2, Mr, (rect.shape[1], rect.shape[0]),
                                   flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
             print("fusão 2-fotos: overlay usa a FOTO 2 de fundo (menos sombra)", file=sys.stderr)
+    if level and level != "off":
+        # F3 (--level): auto-nível ANTES da simetria — o eixo de simetria é sempre
+        # vertical/horizontal, então nivelar primeiro é o que faz a simetria encaixar.
+        rect, mask, applied = level_rect_and_mask(rect, mask, ppmm=1.0 / mmpp_x,
+                                                  debug_dir=debug_dir)
+        if applied is not None:
+            print(f"auto-nível: peça girada {applied:+.2f}° (--level {level})",
+                  file=sys.stderr)
     if symmetry and symmetry != "none":
         mask = symmetrize_mask(mask, symmetry, ppmm=1.0 / mmpp_x, debug_dir=debug_dir)
     raw_mask = mask                    # referência do gate: o que a segmentação viu
@@ -2713,6 +2801,7 @@ def _pipeline_kwargs(args, overlay_path, overlay_svg_path):
                 fuse_grow_mm=getattr(args, "fuse_grow", FUSE_GROW_MM),
                 line_tol_mm=getattr(args, "line_tol", LINE_TOL_MM),
                 arc_tol_mm=getattr(args, "arc_tol", ARC_TOL_MM),
+                level=getattr(args, "level", "off"),
                 overlay_path=overlay_path, overlay_svg_path=overlay_svg_path,
                 debug_dir=args.debug_dir)
 
@@ -2754,15 +2843,26 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
         return 4
     nodes0 = OE.nodes_from_cubics(cub0)
 
+    # F1 (plano 011): o eixo de simetria vai PRONTO p/ o editor — o mesmo da detecção
+    # (bbox da silhueta JÁ simetrizada, como em fit_closed_beziers_anchored); o editor
+    # não o recalcula (edições mudariam a bbox e o eixo "andaria").
+    sym_c = None
+    if args.symmetry in ("vertical", "horizontal"):
+        min_x, min_y, max_x, max_y = bbox(sil)
+        sym_c = 0.5 * (min_x + max_x) if args.symmetry == "vertical" \
+            else 0.5 * (min_y + max_y)
     try:
-        cub = OE.run_editor(rect, nodes0, mmpp_x, mmpp_y)
+        res = OE.run_editor(rect, nodes0, mmpp_x, mmpp_y,
+                            symmetry=args.symmetry, sym_c=sym_c)
     except Exception as e:                          # tkinter ausente/sem display etc.
         print(f"ERRO: não consegui abrir o editor ({e}). Rode sem --edit p/ a saída automática.",
               file=sys.stderr)
         return 4
-    if cub is None:
+    if res is None:
         print("editor cancelado — nada gravado (rode de novo ou sem --edit).")
         return 0
+    # F4: a foto volta com o giro acumulado do modo Rotate (p/ o overlay casar)
+    cub, rect_edit = res
     if not cub:                                 # lista vazia ≠ cancelar: nada p/ gravar
         print("ERRO: contorno vazio ao finalizar — nada gravado.", file=sys.stderr)
         return 4
@@ -2770,7 +2870,7 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(_svg_from_cubics(cub, name))       # EXATAMENTE a curva exibida no editor (WYSIWYG)
     if overlay_svg_path:
-        write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
+        write_overlay_svg(rect_edit, cub, mmpp_x, mmpp_y, overlay_svg_path)
     ow, oh = size(sil)
     pw, ph = size(flatten_beziers(cub)) if cub else (0.0, 0.0)
     print(f"OK  {args.in_path}  ->  {out_path}  (editado)")
@@ -2820,6 +2920,13 @@ def main(argv=None):
                          "p/ capturar CORPO CINZA-NEUTRO de baixo contraste, que não tem croma p/ "
                          "os outros predicados; pareie com --mask-smooth-mm p/ limpar a borda "
                          "corpo↔sombra. Acima disso a sombra de contato pode vazar.")
+    ap.add_argument("--level", dest="level", default="off", choices=["off", "auto"],
+                    help="AUTO-NÍVEL (F3): corrige a rotação FINA da peça apoiada torta na "
+                         "base — estima pelo envelope (minAreaRect, desvio ao múltiplo de 90° "
+                         f"mais próximo) e gira foto+máscara juntas se {LEVEL_MIN_DEG}° ≤ "
+                         f"|desvio| ≤ {LEVEL_MAX_DEG}°. Roda ANTES de --symmetry (nivelar "
+                         "primeiro faz a simetria encaixar). Peça ~quadrada/redonda sem reta "
+                         "longa não é corrigida (envelope instável). PADRÃO off.")
     ap.add_argument("--symmetry", dest="symmetry", default="none",
                     choices=["none", "vertical", "horizontal", "both"],
                     help="impõe a simetria do objeto: espelha e faz a MÉDIA das duas metades "

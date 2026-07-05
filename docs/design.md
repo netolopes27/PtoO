@@ -117,7 +117,18 @@ polui o contorno.
      liso** (topo de conector ≈ brilho do papel — invisível a colorido/cromático/escuro em luz
      difusa). Readmite a sombra junto, o que só é seguro aqui: a fusão a remove.
    O overlay usa de fundo a foto de **menor lóbulo** (melhor luz), warpada pelo registro.
-2c. **Simetria (opcional, `--symmetry`).** `symmetrize_mask`: num objeto simétrico as duas
+2c. **Auto-nível (opcional, `--level auto`, 011/F3).** `level_rect_and_mask`: corrige a rotação
+   **fina** da peça apoiada torta na base. Estima pelo **envelope** (`estimate_level_angle`:
+   `cv2.minAreaRect` da maior componente → `snap90` = desvio ao múltiplo de 90° mais próximo,
+   mod 90 em [−45°,+45°); recuperou EXATO os ângulos injetados no experimento) e gira `rect` E
+   `mask` com a **mesma matriz** (centro da peça; máscara em NEAREST), **sem re-segmentar** —
+   overlay e estágios seguintes consomem o par nivelado de graça. Salvaguardas: aplica só em
+   `LEVEL_MIN_DEG ≤ |desvio| ≤ LEVEL_MAX_DEG` (abaixo = já nivelado, saída **idêntica**; acima =
+   warn e segue); peça ~quadrada/redonda (aspecto < `LEVEL_ASPECT_MIN`) sem reta ≥
+   `LEVEL_LINE_MIN_MM` alinhável não é corrigida (num disco o envelope é instável). Roda **antes**
+   da simetria (o eixo é sempre v/h — nivelar primeiro é o que faz a simetria encaixar). Sinal:
+   girar por **+desvio** (`getRotationMatrix2D`) zera o resíduo (validado em sintético).
+2d. **Simetria (opcional, `--symmetry`).** `symmetrize_mask`: num objeto simétrico as duas
    metades são **duas medições do mesmo contorno** → espelhar e fazer a **média** cancela o
    ruído assimétrico e força a simetria. Acha o eixo pelo **centroide**, refina por **máx. IoU**
    (±`SYM_SEARCH_MM`) e faz a média pelo **campo de distância COM SINAL** (`_signed_distance`:
@@ -238,6 +249,8 @@ borda do `texture`); `fuse_masks(mask1, mask2, ppmm, search_mm, grow_mm, gray1, 
 reg2)→(fused, reg)` (fusão 2-fotos; `reg1/reg2` = máscaras limpas só p/ o registro; `reg` =
 transformação + áreas dos lóbulos) e `_register_masks(m1, m2, ppmm, search_mm, gray1, gray2)→
 (angle, center, dx, dy, score)` (registro rígido, testável com máscaras sintéticas);
+`snap90(deg)→deg` / `estimate_level_angle(mask, ppmm)→(desvio, centro, motivo)` /
+`level_rect_and_mask(rect, mask, ppmm)→(rect, mask, desvio|None)` (auto-nível, `--level`);
 `symmetrize_mask(mask, axis, ppmm)→mask`; `extract_outline(mask, mm_per_px_x, mm_per_px_y)→pts`;
 `process_for_print(...)→pts`; `polygon_to_svg(pts, name, …)→str`; `write_overlay(rect, mask,
 path)` (PNG de conferência); `write_overlay_svg(rect, cubics, mm_per_px_x, mm_per_px_y, path)`
@@ -249,7 +262,8 @@ Orquestrador `main(argv)`.
 python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
     [--in2 foto2.jpg] [--fuse-grow 0] \
     [--dict DICT_4X4_50] [--min-radius 1.5] [--smooth-mm 8] [--clearance 0] \
-    [--shadow off|remove|texture] [--symmetry none|vertical|horizontal|both] [--inkscape] \
+    [--shadow off|remove|texture] [--symmetry none|vertical|horizontal|both] [--level off|auto] \
+    [--inkscape] \
     [--simplify 2.0] [--min-dist 10] [--faithful] [--mask-smooth-mm 0] [--mask-smooth-keep-bumps] \
     [--tol-fit --fit-tol 0.2 --guide 0.5 --c-fit 0] [--polyline] [--edit] \
     [--name thermpro] [--debug-dir _debug]
@@ -263,14 +277,13 @@ fusão 2-fotos com luz oposta (v0.9; registro automático, sombras eliminadas, m
 recuperado); `--symmetry` = espelho + média. **A cada
 execução** sai, antes do `.svg`, o overlay PNG `_overlay_<nome>.png` (contorno em vermelho sobre
 a foto retificada); `--inkscape` gera também `_overlay_<nome>.svg` editável. `--edit` abre o
-**editor de nós** (GUI tkinter, `outline_editor.py`, rótulos em inglês) entre a detecção e a saída:
-foto retificada de fundo + nós da curva como alças (rodinha = zoom no cursor, Ctrl+arrasto = pan; fundo
-renderizado por recorte do viewport, custo independente do zoom); o usuário move/inclui/exclui nós.
-"Re-trace" traça a curva G1 pelos nós (spline Catmull-Rom, `cubics_through_nodes`) — mover/inserir/
-excluir um nó já re-traça. **WYSIWYG:** "Finalize" grava as mesmas saídas a partir de **EXATAMENTE a
-curva que está na tela** (as cúbicas do último Re-trace; emitidas literal, sem recalcular nem snap).
-`--debug-dir` grava intermediários. Marcadores insuficientes → aborta
-com mensagem clara. (Guia de flags completo: [README.md](../README.md) §4.)
+**editor de nós** (GUI tkinter, `outline_editor.py`) entre a detecção e a saída: fundo renderizado
+por **recorte do viewport** (custo independente do zoom); "Re-trace" traça a curva G1 pelos nós
+(`cubics_through_nodes`); **WYSIWYG** — "Finalize" grava **EXATAMENTE a curva na tela** (literal,
+sem recalcular nem snap). Além das ops de nó, expõe (011) Symmetry/Mirror (`mirror_contour`),
+Ruler, Rotate (`rotate_nodes`) e Pan (`translate_nodes`) — mecânica no §Testes E, operação no
+[manual](../manual.md) §`--edit`. `--debug-dir` grava intermediários. Marcadores insuficientes →
+aborta com mensagem clara. (Guia de flags completo: [README.md](../README.md) §4.)
 
 ## Constantes (defaults, topo de `photo_to_outline.py`)
 
@@ -288,7 +301,9 @@ refino watershed do `texture`, v0.8) ·
 sombras do mesmo lado) · `FUSE_FAINT_SAT_MARGIN = 10` / `FUSE_FAINT_VAL_MAX = 1.05` (predicado
 faint-metal do modo 2 fotos) · `FUSE_GROW_MM = 0.0` (default do `--fuse-grow`) ·
 `ILLUM_SCALE = 0.125` / `ILLUM_KERNEL_FRAC = 0.9` / `ILLUM_MAX_GAIN = 3.0` (flat-field) ·
-`SYM_SEARCH_MM = 4.0` · `MIN_RADIUS_MM = 1.5` · `SMOOTH_MM = 8.0` · `CLEARANCE_MM = 0.0` (sem
+`SYM_SEARCH_MM = 4.0` · `LEVEL_MIN_DEG = 0.2` / `LEVEL_MAX_DEG = 7.0` / `LEVEL_ASPECT_MIN = 1.05`
+/ `LEVEL_LINE_MIN_MM = 8.0` (auto-nível `--level`, 011/F3: faixa fina da correção; guarda de peça
+~quadrada/redonda + reta que a resgata) · `MIN_RADIUS_MM = 1.5` · `SMOOTH_MM = 8.0` · `CLEARANCE_MM = 0.0` (sem
 ganho) · `ANCHOR_SIMPLIFY_MM = 2.0` (modo fiel) · `ANCHOR_EPS_MM = 0.08` (fiel)
 · `POCKET_EPS_MM = 0.5` (penetração tolerada) · `ANCHOR_HANDLE_CAP = 0.40` (teto do handle =
 fração da corda, anti-laço) · `ANCHOR_MIN_DIST_MM = 10.0` (densidade do pocket) ·
@@ -319,7 +334,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 149/149 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 188/188 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -337,6 +352,11 @@ personalizável** a partir do contorno medido.
   (spread < 0.08 mm) e **nunca corta a peça** (reta-suporte externa); menos nós que o legado;
   todo nó G1; `line_tol_mm=0` reproduz o legado; kwargs com default em toda a cadeia
   (`generate_outline`, `polygon_to_svg`, `fit_closed_beziers_anchored`, `fit_anchored_cached`).
+  `TestAutoLevel` (011/F3): tabela do `snap90`; o estimador recupera os ângulos injetados
+  (retângulos girados — a tabela do experimento virou caso de teste); disco é recusado
+  (envelope instável), quadrado com arestas passa; correção fecha o laço com **resíduo < 0.3°**
+  (nível B sintético); guardas da faixa (`LEVEL_MIN` intacto por identidade de objeto,
+  `LEVEL_MAX` warn sem girar).
 - **B. Sintético ArUco (`TestRectifyAruco`):** numpy gera a cena (marcadores + objeto de tamanho
   conhecido); `rectify` devolve canvas métrico, escala uniforme `1/PX_PER_MM`, `conf` 1,0;
   recupera o tamanho real **inclusive sob keystone**; aborta sem marcadores; `estimate_tilt_deg`
@@ -370,7 +390,9 @@ personalizável** a partir do contorno medido.
   limpa, **bbox do SVG = dimensão medida**; no **default (pocket teto 4)** o pocket **contém** a
   peça (`coverage ≥ 0,99`) ficando ≥ objeto; `min_corner_radius` (sem bicos); contorno único
   fechado, poucos nós. `TestSilhouetteRef` (v0.7): `return_silhouettes=True` devolve a silhueta
-  de referência pré `--mask-smooth-mm` (mais serrilhada, ~mesma área).
+  de referência pré `--mask-smooth-mm` (mais serrilhada, ~mesma área). **`--level auto` no
+  thermpro = saída idêntica ao baseline** (estimador dá ~0° → abaixo de `LEVEL_MIN_DEG` →
+  regressão de "não mexer no que está nivelado", 011/F3).
 - **D. Alvo de calibração (`test_calibration_target.py`).** *Layout puro* (`TestTargetLayout`):
   determinístico; IDs únicos sequenciais; nº de marcadores ≤ capacidade e ≥ 8; tudo dentro da
   margem branca; nenhum marcador invade o miolo; miolo comporta o thermpro; ordem de cantos
@@ -386,8 +408,20 @@ personalizável** a partir do contorno medido.
   remapeadas (`remap_lines_insert`/`remap_lines_delete`: inserir divide em 2 retas, excluir funde
   — reto só se ambos); `cubics_through_nodes(line_segs=)` emite a reta NA corda, vizinho sai
   tangente (G1), duas retas consecutivas = canto legítimo, e o índice sobrevive à inversão CCW.
+  **Simetria (011/F1):** `mirror_index`/`sym_check_pairing` (aceita a saída REAL de
+  `symmetrize_beziers`, rejeita edição livre/eixo errado); ops-par (`move_node_sym`/
+  `insert_node_sym`/`delete_node_sym`/`straighten_between_sym`) **preservam o invariante
+  `i↔(N−i)%N`** inclusive em sequência (inserir→mover→excluir) e re-canonicalizam quando a
+  exclusão do nó de eixo desloca o pareamento; nó de eixo travado em `x=c`. **Mirror (F1b,
+  `mirror_contour`):** constrói pareamento válido a partir de contorno ARBITRÁRIO com nós de
+  emenda na interseção exata; recusa >2 cruzamentos; eixo movido + `snap_seam_nodes` não deixa
+  degrau na emenda; retas do lado-mestre sobrevivem espelhadas; eixo horizontal idem.
+  **Rotação (F4, `rotate_nodes`):** preserva distâncias/área, centro fixo, ida-e-volta.
+  **Pan (`translate_nodes`):** translação pura preserva a forma e o pareamento sobrevive com o
+  eixo deslocado do MESMO dx (é o que permite o modo Pan não desligar a simetria).
   A view tkinter é glue fino e **não** é instanciada (runner
-  headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG), sem recalcular.
+  headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG) e a foto com o giro
+  acumulado do modo Rotate, sem recalcular.
 - **F. Saída/CLI (`TestOutputFitSourceOfTruth`, `TestSvgNameEscaping`, `TestCliDictValidation`,
   `TestMakeTargetCli`).** `_fit_for_output` é a **fonte única** do ajuste emitido (.svg final,
   overlay Inkscape e métricas — o overlay recebe a MESMA `--symmetry`; snap de bbox só no modo

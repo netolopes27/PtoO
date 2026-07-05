@@ -61,11 +61,11 @@ de tentativas = `--pass N`.
 
 `/ptoo <foto.jpg> --pass N [--debug]`
 
-- `<foto>`: 1º argumento. Se for nome simples, resolva na raiz do repo (`C:\PtoO\<foto>`).
+- `<foto>`: 1º argumento. Se for nome simples, resolva na raiz do repo (`<repo>/<foto>`).
 - `--pass N`: máximo de tentativas de calibração (default 3 se omitido). É um **teto rígido**.
 - `--debug`: ativa o modo crítico (ver seção própria) **além** de calibrar.
 
-**Sempre** use o Python do venv: `.venv/Scripts/python`. Trabalhe a partir de `C:\PtoO`.
+**Sempre** use o Python do venv: `.venv/Scripts/python`. Trabalhe a partir da raiz do repo.
 
 ## Antes do laço
 
@@ -120,6 +120,7 @@ de tentativas = `--pass N`.
    | segmentado come a peça / borda arredondada some (peça CROMÁTICA) | `--shadow remove` |
    | corpo CINZA-NEUTRO + sombra projetada vaza (balão p/ um lado) | `--shadow texture` (recorta a sombra pela textura); SEM sombra projetada use ↑`--val-frac ~0.68` |
    | peça simétrica e contorno ruidoso/torto | `--symmetry vertical\|horizontal` |
+   | peça apoiada levemente torta (arestas inclinadas ~0.5-5°) | `--level auto` (nivela antes da simetria) |
    | bico/canto vivo | ↑`--min-radius` (+0.5) |
    | quero o contorno EXATO (não pocket) | `--faithful` (bbox = objeto, com snap) |
    | vermelho vaza p/ fundo ou peça clara some no branco | limite de segmentação — sem flag que
@@ -148,12 +149,18 @@ com `--edit` e os params vencedores:
 ```
 .venv/Scripts/python photo_to_outline.py --in <foto> --out <name>.svg <params-vencedores> --edit --inkscape
 ```
-Abre a GUI (foto retificada + nós da curva como alças; zoom no cursor, pan). O usuário move/inclui/
-exclui nós e clica **Re-traçar** (spline Catmull-Rom G1 pelos nós); ao **Finalizar**, o `.svg` final é
-**EXATAMENTE a curva que está na tela** (WYSIWYG — nada é recalculado). A janela **bloqueia** até
-Finalizar (ou cancelar; cancelar não grava). **Só no ÚLTIMO passe**: a calibração automática já fez
-o melhor possível — não faz sentido ajustar à mão enquanto ainda se itera parâmetro. **Nunca**
-acrescente `--edit` nos passes de calibração (eles precisam do stdout/overlay p/ diagnóstico).
+Abre a GUI (foto retificada de fundo + nós da curva como alças). WYSIWYG: ao **Finalize**, o `.svg`
+final é **EXATAMENTE a curva na tela** (nada recalculado); a janela **bloqueia** até Finalize (ou
+cancelar, que não grava). Controles (todos na barra, rótulos em inglês):
+- **Básico** — arrastar = mover · clique na curva = inserir · botão-direito = excluir · roda = zoom
+  no cursor · Ctrl+arrasto = pan de vista · shift+clique (2 nós) + **Line** = reta entre eles.
+- **Symmetry** (se `--symmetry`) — espelha cada edição no par; eixo pontilhado arrastável, **Mirror
+  ◀/▶** reconstrói um lado como espelho do outro (conserta lado inflado por sombra).
+- **Ruler** — régua mm + cota W×H (bate a largura com o paquímetro).
+- **Rotate** / **Pan** — modos de giro (0.1°) e deslocamento lateral (0.1 mm) finos de foto+contorno.
+
+**Só no ÚLTIMO passe**: a calibração já fez o melhor possível — **nunca** use `--edit` nos passes de
+calibração (eles precisam do stdout/overlay p/ diagnóstico).
 
 ## Depois do laço
 
@@ -174,12 +181,12 @@ acrescente `--edit` nos passes de calibração (eles precisam do stdout/overlay 
 Após o laço (mesmo tendo convergido), produza um pacote de melhorias da CLI — **não altere a CLI**:
 1. Liste o **erro residual** que os parâmetros não resolveram (visto nos tiles/métricas): ex. peça
    clara somindo no branco, leak de fundo, protuberância abaixo do limiar de proeminência, etc.
-2. Leia as funções-fonte relevantes e referencie `file:line`:
-   `normalize_illumination` ([photo_to_outline.py:569](../../../photo_to_outline.py)),
-   `segment_tool` (:600, modos `--shadow remove`/`texture`), `symmetrize_mask` (:736),
-   `regularize_silhouette` (:773, base do `--mask-smooth-mm`/`--mask-smooth-keep-bumps`),
-   `extract_outline` (:799), `enforce_min_radius` (:394), `fit_closed_beziers_anchored` (:1516) e a
-   lógica de protuberância (`PROTRUSION_DEV_MM`, :129).
+2. Leia as funções-fonte relevantes e referencie `file:line` (confirme a linha com um grep — o
+   arquivo evolui): `normalize_illumination` (~:661), `segment_tool` (~:715, modos `--shadow
+   remove`/`texture`), `estimate_level_angle`/`level_rect_and_mask` (~:1100/:1132, `--level`),
+   `symmetrize_mask` (~:1163), `regularize_silhouette` (~:1200, base do `--mask-smooth-mm`/
+   `--mask-smooth-keep-bumps`), `extract_outline` (~:1244), `enforce_min_radius` (~:481),
+   `fit_closed_beziers_anchored` (~:2389) e a lógica de protuberância (`PROTRUSION_DEV_MM`, ~:178).
 3. Entregue três coisas:
    - **(a)** diagnóstico em prosa, citando `file:line`;
    - **(b)** um **patch/diff proposto** (NÃO aplicado) com as mudanças sugeridas;

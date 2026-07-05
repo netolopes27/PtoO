@@ -230,6 +230,13 @@ class TestSymmetryPairing(unittest.TestCase):
         self.assertEqual(E.mirror_point((8.0, -1.0), "vertical", 5.0), (2.0, -1.0))
         self.assertEqual(E.mirror_point((8.0, -1.0), "horizontal", -2.0), (8.0, -3.0))
 
+    def test_mirror_button_labels(self):
+        # Os rótulos dos botões Mirror seguem o eixo: ◀/▶ no vertical, ▼/▲ no horizontal.
+        # Regressão: com --symmetry horizontal vindo do CLI (rádio V/H travado, on_axis_change
+        # nunca roda) os botões nasciam ◀/▶ errados.
+        self.assertEqual(E.mirror_button_labels("vertical"), ("Mirror ◀", "Mirror ▶"))
+        self.assertEqual(E.mirror_button_labels("horizontal"), ("Mirror ▼", "Mirror ▲"))
+
     def test_check_pairing_accepts_canonical(self):
         self.assertTrue(E.sym_check_pairing(sym_hex(), "vertical", 5.0))
         self.assertTrue(E.sym_check_pairing(sym_ring(), "vertical", 10.0))

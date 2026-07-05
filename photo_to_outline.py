@@ -2683,8 +2683,10 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     `return_silhouettes=True` (v0.6) devolve `(out, sil, sil_ref)`: `sil_ref` é a silhueta
     de REFERÊNCIA pré `--mask-smooth-mm` (o que a segmentação viu) — é contra ela que o CLI
     mede o `contém`, senão o gate validaria uma silhueta já mutilada pela regularização.
-    `return_edit_data=True` devolve `(out, sil, rect, mmpp_x, mmpp_y)` — a foto retificada e a
-    escala, p/ o editor manual de nós (`--edit`); tem precedência sobre os dois anteriores."""
+    `return_edit_data=True` devolve `(out, sil, sil_ref, rect, mmpp_x, mmpp_y)` — inclui a
+    silhueta de REFERÊNCIA (como `return_silhouettes`) p/ o `--edit` medir o `contém` pelo mesmo
+    gate honesto, mais a foto retificada e a escala p/ o editor manual de nós; tem precedência
+    sobre os dois anteriores."""
     img = load_image(in_path)
     rect, mmpp_x, mmpp_y, _conf = rectify(img, dict_name=dict_name, debug_dir=debug_dir)
     flat = normalize_illumination(rect, debug_dir=debug_dir)
@@ -2742,11 +2744,14 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                               line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
         write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
     out = process_for_print(sil, min_radius=min_radius, smooth_mm=smooth_mm, clearance=clearance)
-    if return_edit_data:
-        return out, sil, rect, mmpp_x, mmpp_y
-    if return_silhouettes:
-        # Sem regularização a referência É a própria `sil` (mesmo objeto, sem custo extra).
+    if return_edit_data or return_silhouettes:
+        # Silhueta de REFERÊNCIA (pré --mask-smooth-mm) do gate honesto (v0.7): é contra ela
+        # que o `contém`/`encaixe` é medido — nos DOIS fluxos (padrão e --edit). Sem
+        # regularização a referência É a própria `sil` (mesmo objeto, sem custo extra).
         sil_ref = sil if raw_mask is mask else extract_outline(raw_mask, mmpp_x, mmpp_y)
+    if return_edit_data:
+        return out, sil, sil_ref, rect, mmpp_x, mmpp_y
+    if return_silhouettes:
         return out, sil, sil_ref
     return (out, sil) if return_silhouette else out
 
@@ -2821,7 +2826,7 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     sem recalcular)."""
     import outline_editor as OE
     try:
-        _out, sil, rect, mmpp_x, mmpp_y = generate_outline(
+        _out, sil, sil_ref, rect, mmpp_x, mmpp_y = generate_outline(
             args.in_path, return_edit_data=True,
             **_pipeline_kwargs(args, overlay_path, None))   # o overlay editável sai DEPOIS
     except GridDetectionError as e:
@@ -2875,8 +2880,8 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     pw, ph = size(flatten_beziers(cub)) if cub else (0.0, 0.0)
     print(f"OK  {args.in_path}  ->  {out_path}  (editado)")
     print(f"    overlay {overlay_path}" + (f" | inkscape {overlay_svg_path}" if overlay_svg_path else ""))
-    print(f"    EDITADO {len(cub)} Béziers | obj {ow:.2f}x{oh:.2f} | "
-          f"contorno {pw:.2f}x{ph:.2f} | contém {coverage(flatten_beziers(cub), sil):.4f}")
+    print(f"    EDITADO {len(cub)} Béziers | obj {ow:.2f}x{oh:.2f} | contorno {pw:.2f}x{ph:.2f} "
+          f"| contém {coverage(flatten_beziers(cub), sil_ref, tol_mm=CONTAIN_TOL_MM):.4f}")
     return 0
 
 

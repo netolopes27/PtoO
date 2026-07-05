@@ -1,80 +1,42 @@
-# ptoo memory  (manter < 100 linhas; ao exceder, podar a linha de cache mais antiga)
+# ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
+# Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta atual  (NÃO é fixo — é a média/consenso do cache, recalculado a cada update)
+## start = melhor aposta p/ objeto NOVO (derivado do cache, n=4; recalcular a cada update)
 SEMPRE:      --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
-CONDICIONAL: --symmetry vertical|horizontal (eixo do objeto); SÓ em peça com eixo de espelho claro; desligar em assimétrica (trena é assimétrica → sem symmetry; em foto com sombra a simetria UNE o vazamento p/ os dois lados → piora)
-CONDICIONAL: --mask-smooth-keep-bumps QUANDO o CLI avisar "--mask-smooth-mm removeu uma saliência convexa" (feature real, ex.: gancho da trena; v0.7)
-CONDICIONAL: --shadow texture p/ CORPO CINZA-NEUTRO (sem croma) COM SOMBRA PROJETADA (v0.5): valor pega o corpo, textura (Otsu adaptativo) recorta a sombra lisa-e-clara; funciona até em fundo de papel cromático. Trena cinza luz difusa: obj 76→64.5mm (some o balão de sombra), contém 1.0000. Fallback antigo (--val-frac ~0.68 --shadow OFF) só onde NÃO há sombra projetada — ele VAZA a sombra. v0.8: a sombra de CONTATO/UMBRA (escura) agora é expulsa pelo refino de borda watershed embutido no texture (residual ~0.5-1.5mm)
-<!-- cache ATUALIZADO (n=4). Ponto de partida p/ objeto NOVO; quando houver
-     linha de cache do objeto, prefira a linha dele.
-     TODAS as rampas são ADAPTATIVAS com INVERSÃO: direção padrão ↓, enquanto melhorar continue;
-     parou de melhorar → inverta p/ ↑; piorou na invertida → volte ao melhor e próxima rampa.
-     "Melhor" = cruza 0.9999 vence não-cruza; entre cruzas, menos nós vence; entre não-cruzas,
-     maior contém vence; empate → menor clearance.
-     1ª --min-dist (piso 1, teto ~10)  2ª --smooth-mm (piso ~2, teto ~10)  3ª --pocket-eps (piso 0,
-     teto 0.5). Se esgotou uma rampa, passe p/ a seguinte.
-     Demais derivados (RECALCULAR ao mexer no cache):
-     - numéricos (min-dist, smooth-mm, pocket-eps): MEDIANA das linhas do cache.
-     - categóricos (shadow): o valor que venceu na MAIORIA → entra no SEMPRE.
-     - symmetry: por-peça; avaliar no passe 1. -->
+CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
+             assimétrica; com sombra vazando, a simetria UNE o vazamento p/ os dois lados (piora)
+CONDICIONAL: --mask-smooth-keep-bumps — quando o CLI avisar "removeu uma saliência convexa"
+             (feature real, ex.: gancho da trena)
+CONDICIONAL: --shadow texture — corpo CINZA-NEUTRO (sem croma) COM sombra projetada; SEM sombra
+             projetada use ↑--val-frac ~0.68 (val-frac alto + sombra projetada VAZA)
+CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 10 (v0.10; ver heurísticas)
 
-## cache último-bom (≤5 linhas; evicta a mais antiga; 1 linha por objeto)
-<!-- formato: - ~WxH mm | <params> | contém=0.NNNN clearance=+x/+y -->
-- ~67.62x70.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --symmetry vertical --mask-smooth-mm 2 | contém=0.9999 clearance=-0.06/+0.01
-- ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 (trena azul, assimétrica: aba lateral → SEM symmetry) | contém=1.0000 clearance=+0.01/-0.04
-- ~90.00x58.75 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --in2 <foto2> (Raspberry Pi 2, 2 FOTOS luz oposta, fusão DIRECIONAL: registro rot=181° por IoU×ZNCC sobre máscaras LIMPAS. --in2 liga AUTOMÁTICO o faint-metal (S≥fundo+10) que recupera CONECTORES METÁLICOS claros ≈ papel — baía na máscara NÃO derruba o contém, SÓ o zoom pega. v0.10 PRIMITIVAS default: as arestas retas da placa viram RETAS exatas e os cantos ARCOS — md10 DEFAULT dá 48 nós, folga +0.07/-0.05; o problema antigo "Bézier longo arqueia no canto do Ethernet" (md7.5, 46 nós, folga +0.83) SUMIU. Legado p/ comparar: --line-tol 0) | contém=0.9999 clearance=+0.07/-0.05
-- ~65.12x65.50 mm | --shadow texture --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps (trena CINZA-neutra + sombra projetada, luz difusa; SEM symmetry; rampa min-dist FECHADA em md1.5; v0.7: keep-bumps preserva o GANCHO da fita → obj cresce p/ 65.5 de altura e contém=1.0000; SEM keep-bumps o CLI avisa "removeu saliência convexa" e contém cai a 0.9968. v0.8: texture ganhou REFINO DE BORDA por watershed (fronteira re-decidida pelo gradiente) — a UMBRA que vazava ~4-5mm caiu p/ ~0.5-1.5mm residual (verificado por perfil de V e zoom 3x: contorno colado na borda serrilhada, sem comer corpo); obj 65.12x65.50 → 64.50x65.00) | contém=1.0000 clearance=-0.21/-0.24
+## cache último-bom (≤5 linhas; 1 linha por objeto; evicta a mais antiga)
+<!-- formato: - ~WxH mm | <params> | contém=… clearance=… | nota curta -->
+- ~67.62x70.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --symmetry vertical --mask-smooth-mm 2 | contém=0.9999 clearance=-0.06/+0.01 | thermpro (cromático, simétrico)
+- ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 | contém=1.0000 clearance=+0.01/-0.04 | trena azul; assimétrica (aba lateral) → SEM symmetry
+- ~90.00x58.75 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --in2 <foto2> | contém=0.9999 clearance=+0.07/-0.05 | Raspberry Pi 2, 2 FOTOS luz oposta; retilínea → md10 DEFAULT já cola (48 nós, v0.10); A/B legado: --line-tol 0 (md7.5, 46 nós, folga +0.83)
+- ~65.12x65.50 mm | --shadow texture --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps | contém=1.0000 clearance=-0.21/-0.24 | trena CINZA-neutra, sombra projetada, luz difusa; SEM symmetry; sem keep-bumps o gancho some (contém 0.9968 + aviso)
 
-## heurísticas (sintoma → delta)  — estável, não duplicar
-- v0.10 PRIMITIVAS (retas+arcos, --line-tol/--arc-tol default 0.3, LIGADO): aresta reta vira RETA
-  exata (não arqueia p/ dentro) e canto vira ARCO → --min-dist só rege trechos LIVRES. Em peça
-  RETILÍNEA comece a rampa min-dist NO DEFAULT 10 (não desça por reflexo — no Pi md10 já colou:
-  folga +0.07). Facetou curva gentil ou faltou aresta → mexa --line-tol (↓0.2 conservador,
-  ↑0.5 agressivo); --line-tol 0 = legado puro (comparação A/B barata).
-- RAMPAS ADAPTATIVAS com INVERSÃO: 1ª --min-dist (piso 1, teto ~10) → 2ª --smooth-mm (piso ~2,
-  teto ~10) → 3ª --pocket-eps (piso 0, teto 0.5). Em cada rampa, a partir do start/cache:
-  • Direção padrão ↓ (baixar parâmetro → tipicamente sobe contém). Continue enquanto melhorar.
-  • Parou de melhorar → inverta a direção (↑) a partir do start.
-  • Piorou também na invertida → volte ao melhor encontrado, rampa esgotou → próxima.
-  "Melhor" = cruza 0.9999 > não-cruza; entre cruzas: menos nós; entre não-cruzas: maior contém.
-  CONTRA-INTUITIVO: min-dist GRANDE = âncoras esparsas → Béziers longos arqueiam p/ dentro nos
-  cantos → contém MENOR (pocket frouxo E contém ~0.998).
-- a rampa min-dist fecha onde a FORMA manda: contorno com cantos arredondados/orgânico fecha
-  baixo (~1-1.5); PLACA RETANGULAR (lados retos) fecha alto (~7-7.5) — reta longa não arqueia.
-  Se o 1º passe (start folgado ~4) JÁ cruzar 0.9999, suba o min-dist (menos nós) em vez de descer.
-- smooth-mm: baixar aproxima o piso da silhueta crua e sobe contém; subir tira serrilhado. Abaixo
-  de ~2 reintroduz serrilha.
-- pocket-eps: baixar reduz penetração tolerada e sobe contém (~+0.0001–0.0003/degrau). Degraus
-  típicos: 0.5, 0.3, 0.1, 0.
-- serrilhado/escadinha → ↑smooth-mm (+1..2). CONFLITA com o contém: ache o equilíbrio (smooth ~2).
-- ondulações/saliências na borda PRETA (baixo contraste, mesmo com contém ok) → --mask-smooth-mm
-  ~1.5-2: regulariza a SILHUETA na fonte (não é rampa).
-- v0.7: contém é HONESTO — medido contra a silhueta PRÉ-mask-smooth com tolerância de 0.3mm de
-  profundidade. AVISO "--mask-smooth-mm removeu uma saliência convexa" no stderr → ligar
-  --mask-smooth-keep-bumps (NÃO mexa nas rampas: o défice não é densidade). Espigões finos são
-  preservados do smooth-mm automaticamente. Contém de sessões < v0.7 NÃO é comparável.
-- borda arredondada some / segmentação come a peça → --shadow remove
-- CORPO CINZA-NEUTRO (só o clipe/botão segmenta; obj sai pequeno demais) → COM sombra projetada use
-  --shadow texture (recorta a sombra pela textura, Otsu adaptativo); SEM sombra, ↑--val-frac (~0.68).
-  NÃO combine val-frac alto + shadow OFF se houver sombra projetada: ela vaza no mesmo brilho.
-- SEMPRE avaliar simetria no passe 1 (pelo overview): se a peça tem eixo de espelho claro, ligar
-  --symmetry vertical|horizontal (eixo do objeto). Limpa ruído e sobe contém. NÃO usar em peça
-  assimétrica (distorce).
-- bico/canto vivo de 90° → ↑min-radius (+0.5)
-- contorno EXATO (não pocket, bbox = objeto) → --faithful (substitui o antigo --max-nodes 0)
-- vermelho vaza p/ fora (fundo) ou peça clara some no branco → limite de segmentação; não há flag
-  que resolva → sinalizar p/ --debug
-- SOMBRA DURA (sol) que nenhum modo --shadow resolve, OU peça com METAL CLARO (conector prata ≈
-  papel, some da máscara em luz difusa) → 2 FOTOS: --in2 <foto2> com a luz do outro lado; fusão
-  DIRECIONAL (registro rot+shift por IoU×ZNCC sobre máscaras LIMPAS; cada foto soberana no seu
-  lado iluminado) elimina sombra E liga o predicado faint-metal (recupera o metal; a sombra que
-  ele readmite a fusão tira). --fuse-grow só p/ resíduo perto da bissetriz. AVISO "sombras caem
-  do MESMO lado" → refotografar com luz realmente oposta. CONFERIR NO ZOOM se conectores/metal
-  estão DENTRO do contorno: baía na máscara não derruba o contém (ele mede contra a própria máscara).
-- DEPOIS de cruzar o gate, explorar os demais flags (1/passe) rumo a "quase default" da peça; ler
-  docs/manual.md p/ o efeito completo de cada um.
-
-## notas de aceite
-- ALVO RÍGIDO: só parar com contém ≥ 0.9999 (gate mantido). A folga real vem do --clearance a jusante.
-- DESEMPATE: entre resultados que batem 0.9999, vence MENOS nós (Béziers) = MAIOR valor dos
-  parâmetros de rampa que ainda cruza; empate → menor clearance.
+## heurísticas (fatos medidos ALÉM do manual §6; não duplicar manual nem SKILL)
+- A rampa min-dist fecha onde a FORMA manda: contorno orgânico/cantos arredondados fecha baixo
+  (~1–1.5); PLACA retangular fecha alto (7.5–10; com primitivas v0.10, o default 10 já cola —
+  folga +0.07 no Pi). Se o 1º passe JÁ cruza o gate, SUBA min-dist (menos nós) em vez de descer.
+- v0.10 primitivas (--line-tol/--arc-tol 0.3, LIGADO por default): aresta reta vira RETA exata e
+  canto vira ARCO → min-dist rege só trechos LIVRES. Facetou curva gentil ou perdeu aresta →
+  --line-tol ↓0.2 (conservador) / ↑0.5 (agressivo). --line-tol 0 = legado puro (A/B barato).
+- v0.7: contém é medido contra a silhueta PRÉ-mask-smooth com tolerância 0.3 mm de profundidade —
+  contém de sessões < v0.7 NÃO é comparável. AVISO "removeu uma saliência convexa" → ligar
+  --mask-smooth-keep-bumps e NÃO mexer nas rampas (o défice não é densidade). Espigões finos
+  (recuo ≥0.3, boca ≤3 mm) são preservados do smooth-mm automaticamente.
+- --mask-smooth-mm ~1.5–2 p/ ondulação de borda PRETA de baixo contraste: regulariza a silhueta
+  na FONTE, ortogonal ao contém — não é rampa, não mexa nas rampas por causa disto.
+- v0.8: no --shadow texture o watershed embutido expulsa a UMBRA; resíduo típico ~0.5–1.5 mm
+  (antes vazava ~4–5 mm) — verificar no zoom, não nas métricas.
+- 2 FOTOS (--in2), p/ sombra dura (sol) OU metal claro ≈ papel: registro roda nas máscaras
+  LIMPAS (IoU×ZNCC); AVISO "sombras caem do MESMO lado" → refotografar com luz realmente oposta.
+  CONFERIR NO ZOOM se conectores/metal ficaram DENTRO do contorno: baía na máscara NÃO derruba o
+  contém (ele mede contra a própria máscara — só o zoom pega). --fuse-grow só p/ resíduo perto da
+  bissetriz das sombras.
+- Vermelho vaza p/ o fundo ou peça clara some no branco (foto única) → limite de segmentação, sem
+  flag que resolva → anotar p/ o --debug.

@@ -1583,7 +1583,8 @@ class TestEditFlowGuards(unittest.TestCase):
         import outline_editor as OE
         rect = np.full((16, 16, 3), 255, np.uint8)
         sil = [(0.0, 0.0), (2.0, 0.0), (2.0, -2.0), (0.0, -2.0)]
-        gen = (sil, sil, rect, 0.125, 0.125)
+        # return_edit_data devolve (out, sil, sil_ref, rect, mmpp_x, mmpp_y)
+        gen = (sil, sil, sil, rect, 0.125, 0.125)
         editor_result = None if editor_cubics is None else (editor_cubics, rect)
         with tempfile.TemporaryDirectory() as td:
             out = os.path.join(td, "x.svg")
@@ -1612,6 +1613,42 @@ class TestEditFlowGuards(unittest.TestCase):
         code, wrote, _ = self._run(tri, [])
         self.assertNotEqual(code, 0)
         self.assertFalse(wrote)
+
+    def test_containment_measured_against_ref_with_tolerance(self):
+        # O `contém` que o --edit imprime deve usar o MESMO gate honesto (v0.7) do fluxo
+        # padrão: medido contra a silhueta de REFERÊNCIA (pré --mask-smooth-mm, o 3º item
+        # de return_edit_data) e com tolerância CONTAIN_TOL_MM — senão os números do editor
+        # não são comparáveis aos da calibração.
+        import io
+        import tempfile
+        from contextlib import redirect_stdout, redirect_stderr
+        from unittest import mock
+        import outline_editor as OE
+        rect = np.full((16, 16, 3), 255, np.uint8)
+        sil = [(0.0, 0.0), (2.0, 0.0), (2.0, -2.0), (0.0, -2.0)]
+        sil_ref = [(0.0, 0.0), (2.1, 0.0), (2.1, -2.1), (0.0, -2.1)]   # distinta da `sil`
+        gen = (sil, sil, sil_ref, rect, 0.125, 0.125)
+        tri = [((0.0, 0.0), (0.5, 0.5), (1.5, 0.5), (2.0, 0.0)),
+               ((2.0, 0.0), (1.5, -1.5), (1.0, -2.0), (0.0, -2.0)),
+               ((0.0, -2.0), (0.0, -1.0), (0.0, -0.5), (0.0, 0.0))]
+        seen = {}
+
+        def fake_cov(_outer, inner, **kw):
+            seen["inner"] = inner
+            seen["tol"] = kw.get("tol_mm", 0.0)
+            return 1.0
+
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "x.svg")
+            with mock.patch.object(P, "generate_outline", return_value=gen), \
+                 mock.patch.object(P, "_fit_for_output", return_value=tri), \
+                 mock.patch.object(OE, "run_editor", return_value=(tri, rect)), \
+                 mock.patch.object(P, "coverage", side_effect=fake_cov), \
+                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                P._edit_flow(self._cli_args(), out, "x",
+                             os.path.join(td, "_overlay_x.png"), None)
+        self.assertIs(seen["inner"], sil_ref)
+        self.assertEqual(seen["tol"], P.CONTAIN_TOL_MM)
 
 
 class TestCubicRoots(unittest.TestCase):

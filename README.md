@@ -47,7 +47,7 @@ python -m venv .venv
 ⚠️ **Always** run the tool and tests with the venv's Python, not the system `python`. Check:
 
 ```bash
-.venv/Scripts/python tests/run_image_tests.py     # expected: 67 tests, OK
+.venv/Scripts/python tests/run_image_tests.py     # expected: OK (all tests green)
 ```
 
 ## 2. The full flow in 4 steps
@@ -87,7 +87,7 @@ white center **233×146 mm**.
 
 | Flag | Default | What it does |
 |------|---------|--------------|
-| `--out` | `tools/base.svg` | path of the generated SVG (pass `--out base.svg` for the root) |
+| `--out` | `base.svg` | path of the generated SVG |
 | `--orientation` | `landscape` | `landscape` or `portrait` |
 | `--page-margin` | `10.0` | margin from page to marker frame (mm) |
 | `--marker-mm` | `16.0` | side of each ArUco marker (mm) |

@@ -195,6 +195,13 @@ def mirror_point(pt, axis, c):
     return (pt[0], 2.0 * c - pt[1])
 
 
+def mirror_button_labels(axis):
+    """Rótulos (lado 'low', lado 'high') dos botões Mirror p/ o eixo: ◀/▶ no vertical
+    (esq./dir.), ▼/▲ no horizontal (base/topo). Fonte única — criação dos botões E o
+    on_axis_change usam este mapa, p/ o eixo horizontal vindo do CLI nascer com a seta certa."""
+    return ("Mirror ◀", "Mirror ▶") if axis == "vertical" else ("Mirror ▼", "Mirror ▲")
+
+
 def sym_check_pairing(nodes, axis, c, eps=1e-6):
     """Verifica o invariante canônico: max_i |nó_i − espelho(nó_{(N−i)%N})| < eps.
     Também valida os nós de eixo (i == (N−i)%N exige o nó SOBRE o eixo)."""
@@ -580,8 +587,9 @@ class EditorApp:
         for lbl in ("V", "H"):
             tk.Radiobutton(bar, text=lbl, value=lbl, variable=self.axis_var,
                            command=self.on_axis_change, state=st).pack(side=tk.LEFT)
-        self.mirror_lo = tk.Button(bar, text="Mirror ◀", command=lambda: self.do_mirror("low"))
-        self.mirror_hi = tk.Button(bar, text="Mirror ▶", command=lambda: self.do_mirror("high"))
+        lo_lbl, hi_lbl = mirror_button_labels(self.sym_axis)   # seta certa já no eixo do CLI
+        self.mirror_lo = tk.Button(bar, text=lo_lbl, command=lambda: self.do_mirror("low"))
+        self.mirror_hi = tk.Button(bar, text=hi_lbl, command=lambda: self.do_mirror("high"))
         self.mirror_lo.pack(side=tk.LEFT)
         self.mirror_hi.pack(side=tk.LEFT)
         # F2: régua mm + cota W×H (toggle p/ peças que ocupam o quadro inteiro)
@@ -834,9 +842,9 @@ class EditorApp:
 
     def on_axis_change(self):
         self.sym_axis = "vertical" if self.axis_var.get() == "V" else "horizontal"
-        v = self.sym_axis == "vertical"
-        self.mirror_lo.config(text="Mirror ◀" if v else "Mirror ▼")
-        self.mirror_hi.config(text="Mirror ▶" if v else "Mirror ▲")
+        lo_lbl, hi_lbl = mirror_button_labels(self.sym_axis)
+        self.mirror_lo.config(text=lo_lbl)
+        self.mirror_hi.config(text=hi_lbl)
         if self.sym_var.get():
             self.sym_c = self._default_axis_c()
             self.paired_c = self.sym_c if sym_check_pairing(

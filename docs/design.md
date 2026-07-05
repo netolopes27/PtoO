@@ -19,8 +19,9 @@ sai **direto do JPG** (escala pelos marcadores) — sem referência desenhada à
 **Arquivos:** `photo_to_outline.py` (a tool) · `calibration_target.py` (layout puro) ·
 `make_calibration_target.py` (gera `base.svg`) · `outline_editor.py` (editor de nós opcional,
 `--edit`) · `base.svg` · `requirements.txt` · `./.venv/`.
-**Testes:** `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` (runner
-`tests/run_image_tests.py`). **E/S:** `thermpro.jpg` → `thermpro.svg`.
+**Testes:** `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
+`tests/test_outline_editor.py` (runner `tests/run_image_tests.py`). **E/S:** `thermpro.jpg` →
+`thermpro.svg`.
 
 ## Base de calibração — "moldura ArUco + centro branco"
 
@@ -282,7 +283,7 @@ por **recorte do viewport** (custo independente do zoom); "Re-trace" traça a cu
 (`cubics_through_nodes`); **WYSIWYG** — "Finalize" grava **EXATAMENTE a curva na tela** (literal,
 sem recalcular nem snap). Além das ops de nó, expõe (011) Symmetry/Mirror (`mirror_contour`),
 Ruler, Rotate (`rotate_nodes`) e Pan (`translate_nodes`) — mecânica no §Testes E, operação no
-[manual](../manual.md) §`--edit`. `--debug-dir` grava intermediários. Marcadores insuficientes →
+[manual](manual.md) §`--edit`. `--debug-dir` grava intermediários. Marcadores insuficientes →
 aborta com mensagem clara. (Guia de flags completo: [README.md](../README.md) §4.)
 
 ## Constantes (defaults, topo de `photo_to_outline.py`)
@@ -334,15 +335,16 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 188/188 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 190/190 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
   (`min_corner_radius ≥ r_min`); `px_per_mm`; `homography_from_corners`+`apply_homography`
   (recupera 4 cantos); `coverage`/`boundary_roughness`; **Bézier** (`fit_closed_beziers` fita
   círculo em poucas cúbicas; `_corner_indices` acha 4 cantos). `TestAnchoredFit`: todos os nós
-  G1; o **POCKET** ancora 1 extremidade/quadrante, respeita o **teto** (estrela côncava: livre
-  usa muitas, teto 4 sai com ≤4) e **contém a peça** (coverage ~1) em convexa e côncava.
+  G1; o **POCKET** ancora 1 extremidade/quadrante quando `min_dist` é grande, a densidade emerge
+  só do `min_dist` (estrela: menor distância ⇒ mais cúbicas; **sem teto de nós** — `MAX_NODES`
+  não existe mais) e **contém a peça** (coverage ~1) em convexa e côncava.
   `TestProtrusionAnchors`: saliência no meio de aresta ganha âncora, o pocket a alcança, círculo
   **não** gera âncora espúria, nó G1. `TestCoverageTolerance` (v0.7): `coverage(tol_mm=)` perdoa
   penetração rasa e mantém corte profundo. `TestPreserveSpikes` (v0.7): espigão fino restaurado
@@ -386,9 +388,9 @@ personalizável** a partir do contorno medido.
   (v0.7) quando remove saliência convexa relevante (espigão 1×5 mm) e fica calado p/ serrilha
   sub-limiar ou quando o keep-bumps a preserva.
 - **C. Ponta-a-ponta (`thermpro.jpg`, skip se ausente — `TestEndToEndThermpro`):** 32/32
-  marcadores; escala plausível; no **modo ilimitado** a peça cabe (`coverage ≥ 0,99`), linha
-  limpa, **bbox do SVG = dimensão medida**; no **default (pocket teto 4)** o pocket **contém** a
-  peça (`coverage ≥ 0,99`) ficando ≥ objeto; `min_corner_radius` (sem bicos); contorno único
+  marcadores; escala plausível; no **modo fiel** a peça cabe (`coverage ≥ 0,99`), linha
+  limpa, **bbox do SVG = dimensão medida**; no **default (POCKET, `min-dist` 10)** o pocket
+  **contém** a peça (`coverage ≥ 0,99`) ficando ≥ objeto; `min_corner_radius` (sem bicos); contorno único
   fechado, poucos nós. `TestSilhouetteRef` (v0.7): `return_silhouettes=True` devolve a silhueta
   de referência pré `--mask-smooth-mm` (mais serrilhada, ~mesma área). **`--level auto` no
   thermpro = saída idêntica ao baseline** (estimador dá ~0° → abaixo de `LEVEL_MIN_DEG` →
@@ -434,8 +436,10 @@ personalizável** a partir do contorno medido.
   e página pequena demais (miolo degenerado) levanta `ValueError`. `estimate_tilt_deg` recebe a
   homografia mm→imagem PRONTA (o inverso da que `rectify` já resolveu — sem 2º RANSAC).
   `TestEditFlowGuards`: `--edit` com detecção degenerada (cub0 vazio) aborta com erro ANTES de
-  abrir o editor, e editor devolvendo lista vazia não grava nada (antes: crash em `min()` de
-  bbox vazia ao Finalizar). `TestSymmetrizeBeziers`: 2 cruzamentos do eixo → espelhado, fechado
+  abrir o editor; editor devolvendo lista vazia não grava nada (antes: crash em `min()` de
+  bbox vazia ao Finalizar); e o `contém` impresso pelo `--edit` é medido contra a silhueta de
+  **referência** (`return_edit_data` devolve `sil_ref`) com `CONTAIN_TOL_MM` — o MESMO gate
+  honesto (v0.7) do fluxo padrão, não mais contra a silhueta pós `--mask-smooth-mm` sem tolerância. `TestSymmetrizeBeziers`: 2 cruzamentos do eixo → espelhado, fechado
   e simétrico; **>2 cruzamentos** (côncava através do eixo: 2+ arcos no lado mantido, cada
   arco+espelho = laço separado) → **fallback com aviso**, contorno original intacto (antes só o
   1º arco sobrevivia e o resto era descartado em silêncio).

@@ -323,8 +323,8 @@ dentro e o pocket cola na peça. `--line-tol 0` reproduz o caminho legado exatam
 
 ## Editor simétrico, régua, auto-nível e giro fino (plano 011, v0.12)
 
-Quatro features em volta do editor (`--edit`) e do nivelamento, planejadas em
-`docs/melhorias/011.md` (hipóteses validadas com experimentos antes do código):
+Quatro features em volta do editor (`--edit`) e do nivelamento (hipóteses validadas com
+experimentos descartáveis antes do código):
 
 - **F1 — Simetria no editor:** descoberta estrutural — a saída de `symmetrize_beziers` JÁ nasce
   **pareada por índice** (`i ↔ (N−i)%N`, erro 0.000000 mm no thermpro; nós 0 e N/2 no eixo), então

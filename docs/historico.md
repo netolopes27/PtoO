@@ -321,7 +321,7 @@ Resultado (Pi 2, 2 fotos, **min-dist 10 = default**): 48 Béziers, contém 0.999
 dentro e o pocket cola na peça. `--line-tol 0` reproduz o caminho legado exatamente. Suíte:
 130 → **149** (`TestPrimitiveFit`, `TestStraightSegments`).
 
-## Editor simétrico, régua, auto-nível e giro fino (plano 011, v0.12)
+## Editor simétrico, régua, auto-nível e giro fino (plano 011)
 
 Quatro features em volta do editor (`--edit`) e do nivelamento (hipóteses validadas com
 experimentos descartáveis antes do código):
@@ -362,11 +362,38 @@ Suíte: 149 → **188** (`TestSymmetryPairing`/`TestSymmetryOps`/`TestMirrorCont
 `TestRotateNodes`/`TestTranslateNodes` no nível E; `TestAutoLevel` A/B; regressão C do
 `--level` no thermpro).
 
+## Contorno humilde — cordas entre trechos firmes (v0.12)
+
+Origem: sessão de calibração do **TC1** (multi_tester, 2026-07-06) — carcaça **creme sobre
+papel branco**, sem contraste; a curva **editada à mão** pelo usuário serviu de ground truth.
+Medição-chave: só **17% da borda** da máscara estava apoiada num degrau real da imagem; os
+outros 83% eram chute (halo de penumbra readmitida p/ FORA + mordida no bisel lavado p/ DENTRO,
+invisível ao `contém`, que mede contra a própria máscara). Antes, a **v0.11** reservou um pacote
+de correções "espertas" (registro 2-fotos por ZNCC de gradiente, faint-metal adaptativo,
+watershed com guardas) — protótipos com ganho real, mas **rejeitados conscientemente** pelo
+usuário: em vez de perseguir a segmentação perfeita, **admitir a incerteza** e degradar de forma
+controlada. Plano completo (regras, spec, riscos): `docs/melhorias/v0.12.md`.
+
+A forma concreta é o estágio 2e do pipeline (`humble_rewrite` + flag `--humble`; mecanismo,
+constantes e API em [design.md](design.md) §Pipeline 2e; operação no [manual](manual.md)
+§`--humble`). Desvio único vs o spec do plano: o limiar de firmeza ganhou um **teto**
+(`HUMBLE_GRAD_CAP` = 3× o piso) além do Otsu — sem ele o Otsu dividia a borda toda-forte do
+thermpro e dava 43% firme (o gatilho dispararia numa foto boa); com o teto, 92%. A 2ª guarda
+por saturação (§4 do plano, opcional) ficou de fora: a de textura bastou nos casos de teste.
+
+Resultado no TC1 (receita da memória da skill, `--in2` com a mesma foto): **firme 9% → humilde
+ativa**, pocket 73.77×97.68 (obj 73.62×97.50, contém 1.0000, 14 Béziers — as cordas viram RETAS
+de verdade pelas primitivas v0.10), contra o halo de 2–5 mm folgado que antes exigia `--edit` à
+mão; no protótipo da sessão, p95 +1.67 mm vs a curva editada, sem cortar a peça além de 1.3 mm.
+Fotos boas não mudam nada (thermpro 92% firme, **byte-idêntico** por teste; trena 62%, Pi 94%).
+Suíte: 190 → **200** (`TestHumbleRewrite`, nível B6).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2
-  fotos, resolvido** pelo predicado faint-metal (v0.9); em **foto única** segue o limite — uma
-  variante de **base escura** resolveria.
+  fotos, resolvido** pelo predicado faint-metal (v0.9); carcaça **creme≈papel** coberta pelo
+  truque `--in2` com a MESMA foto + contorno humilde (v0.12), que remove o halo readmitido; em
+  **foto única** segue o limite — uma variante de **base escura** resolveria.
 - **Paralaxe pela altura** segue sem correção geral (nenhuma base resolve); hoje só mede e avisa.
   O modo 2 fotos com protocolo rígido (girar base+peça juntas, câmera no mesmo lugar) a torna
   simétrica e inócua p/ a fusão. Futuro: correção por altura conhecida.

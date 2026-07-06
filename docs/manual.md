@@ -47,11 +47,9 @@ sombra projetada. O recorte vale p/ todo o candidato (valor **ou** croma), entã
 fundo de papel cromático (a sombra sobre o papel lavanda também é cromática, mas é lisa → recortada).
 - **Quando usar:** corpo cinza-neutro **com sombra projetada** que `--val-frac` sozinho engloba.
   Substitui o antigo paliativo `--val-frac 0.68 --shadow off`.
-- **Refino de borda por watershed (v0.8, embutido):** a sombra de **contato/UMBRA** é *escura*
-  (não "mais clara") e passava pelo recorte, inflando a silhueta ~4–5 mm. O modo agora re-decide a
-  fronteira pelo **gradiente** (watershed com marcadores): a borda física peça↔fundo é um *degrau*
-  de V, sombra↔papel é *rampa* suave — a inundação do papel atravessa a rampa e a da peça esbarra
-  no degrau. Resíduo típico de umbra: ~0,5–1,5 mm (medido na trena cinza).
+- **Refino de borda por watershed (v0.8, embutido):** re-decide a fronteira pelo gradiente e
+  expulsa a sombra de **contato/UMBRA** (escura, que passava pelo recorte). Resíduo típico:
+  ~0,5–1,5 mm. Mecanismo em [design.md](design.md) §Pipeline 2.
 - **Efeito geral:** sobe a fidelidade da silhueta → pocket mais correto.
 
 ### `--val-frac <f>`  · default `0.30`
@@ -73,17 +71,11 @@ Corte de **valor** do predicado "escuro" da segmentação: um pixel é objeto se
 Segunda foto da **mesma peça sobre a mesma base**, com a **luz vindo do outro lado** (protocolo:
 girar **base+peça juntas** ~180° em relação ao sol/lâmpada e refotografar). As duas retificações
 ancoram no mesmo alvo impresso → a peça cai no mesmo canvas métrico; só a sombra muda de lado.
-A CLI então faz tudo sozinha:
-1. **Registro rígido automático** da foto 2 sobre a 1 (quartos de volta + refino fino de ângulo
-   + translação), pontuado por IoU × **textura** (ZNCC) sobre as máscaras **limpas** — pode girar a
-   peça à mão livre entre as fotos, o registro absorve.
-2. **Fusão direcional**: a direção da sombra de cada foto sai do próprio lóbulo de discordância
-   das máscaras; cada foto é **soberana no seu lado iluminado** (a borda que a luz dela deixou
-   limpa), e a sombra de cada uma cai. A paralaxe não rói peça alta (não há AND na borda soberana).
-3. **Predicado faint-metal** (ligado automaticamente): recupera **metal claro liso** (topo de
-   conector ≈ brilho do papel, invisível aos predicados normais em luz difusa) via saturação fraca
-   (S ≥ fundo+10). Ele readmite a sombra junto — o que é seguro **só** aqui, porque a fusão a remove.
-4. O **overlay** usa de fundo a foto de melhor luz (menor lóbulo de sombra), warpada pelo registro.
+A CLI então faz tudo sozinha: **registro rígido automático** (pode girar a peça à mão livre entre
+as fotos, o registro absorve), **fusão direcional** (cada foto é soberana no seu lado iluminado →
+as duas sombras caem, e a paralaxe não rói peça alta) e o **predicado faint-metal** (recupera
+metal claro liso ≈ brilho do papel — seguro só aqui, porque a fusão remove a sombra readmitida).
+O overlay usa de fundo a foto de melhor luz. Mecanismo em [design.md](design.md) §Pipeline 2b.
 - **Quando usar:** sombra dura (sol) que nenhum `--shadow` resolve; peça com conectores/metal claro
   que some no papel branco. É o caminho robusto p/ os dois problemas de uma vez.
 - **Diagnóstico no stderr:** `registro rot=…° shift=…mm score=…` + direções de sombra; **AVISO**
@@ -97,12 +89,33 @@ paralaxe perto da **bissetriz** das duas direções de sombra (onde nenhuma foto
 - **Quando usar:** só se o zoom mostrar a peça roída num trecho onde as duas sombras se encontram.
 - **Custo:** readmite até este raio de sombra onde ela encosta na peça.
 
+### `--humble {auto,on,off}`  · default `auto`  ·  **contorno humilde (v0.12)**
+Fallback p/ quando **não existe borda visível clara em quase todo o objeto** (peça clara em
+papel branco, bisel lavado pela luz): troca os trechos da borda **sem apoio visual** por
+**cordas retas** entre os trechos firmes vizinhos — desde que a região descartada seja lisa
+(papel/sombra, sem textura de peça) — e **FLAGRA** o que ficou incerto: aviso no stdout com
+posição/extensão e trecho pintado de **laranja** no overlay (PNG e camada própria no
+`--inkscape`), o alvo natural da revisão no `--edit`. É o "melhor palpite honesto + onde
+conferir"; mecanismo completo em [design.md](design.md) §Pipeline 2e.
+- **`auto` (default):** a fração firme é computada em toda execução (métrica `firme NN%`); o
+  fallback só ativa abaixo de 50%, com aviso `só NN% da borda tem apoio visual`. Foto boa
+  (thermpro ~92% firme) **não muda em nada** (regressão garantida por teste).
+- **`on`:** força a reescrita mesmo com borda majoritariamente firme (útil p/ atacar um halo
+  localizado). **`off`:** nunca reescreve.
+- **Fora de escopo:** ignorado com `--faithful`/`--tol-fit` (fidelidade e humilde se
+  contradizem; com `on` explícito, avisa). Quando ativa, o `contém` passa a ser medido contra a
+  silhueta **pós-humilde** (a pré é sabidamente errada nos vãos incertos); a honestidade migra
+  p/ os flags.
+- **Limite conhecido:** peça **lisa** com borda curva genuína sem contraste — a guarda de
+  textura não distingue bojo real liso de halo, e a corda rasparia o bojo. O gatilho
+  conservador (só em cena degradada) e o aviso sempre presente mitigam; confira o overlay.
+
 ### `--level {off,auto}`  · default `off`  ·  **auto-nível (011/F3)**
 Corrige a **rotação fina** (poucos graus) da peça apoiada levemente torta na base — "coloca no
-nível". Estima pelo **envelope** (`cv2.minAreaRect`, desvio ao múltiplo de 90° mais próximo, mod
-90 em [−45°,+45°)) e gira **foto retificada + máscara juntas** (mesma matriz, centro da peça, sem
-re-segmentar). Roda **antes** de `--symmetry` — o eixo de simetria é sempre vertical/horizontal,
-então nivelar primeiro é o que faz a simetria encaixar. O overlay sai corrigido.
+nível". Estima o desvio pelo envelope e gira **foto retificada + máscara juntas**, sem
+re-segmentar (mecanismo em [design.md](design.md) §Pipeline 2c). Roda **antes** de `--symmetry` —
+o eixo de simetria é sempre vertical/horizontal, então nivelar primeiro é o que faz a simetria
+encaixar. O overlay sai corrigido.
 - **Quando usar:** a peça ficou visivelmente torta na foto (arestas quase-horizontais inclinadas
   ~0.5–5°) e você quer o SVG alinhado aos eixos sem refotografar.
 - **Salvaguardas:** só aplica se `LEVEL_MIN_DEG (0.2°) ≤ |desvio| ≤ LEVEL_MAX_DEG (7°)` — abaixo
@@ -336,5 +349,6 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 | **sombra dura** (sol) que nenhum `--shadow` resolve | `--in2 <foto2>` com a luz do outro lado (girar base+peça juntas ~180°) — fusão direcional elimina as duas sombras |
 | **conector/metal claro** some no papel branco (baía na máscara; pocket bloqueia o conector) | `--in2 <foto2>` — o modo 2 fotos liga o predicado faint-metal e recupera o metal; **conferir no zoom** (o `contém` não acusa, mede contra a própria máscara) |
 | peça roída onde as duas sombras se encontram (só com `--in2`) | `--fuse-grow` (~1–2) |
-| vermelho/contorno vaza p/ o fundo, ou peça clara some no branco (foto única) | limite de segmentação — sem flag resolve; tentar `--in2` ou sinalizar p/ melhoria da CLI |
+| borda **sem contraste em quase todo o objeto** (peça clara em papel branco; CLI avisou `só NN% da borda tem apoio visual`) | `--humble` (auto, já ativou sozinho) — cordas entre trechos firmes + flags laranja p/ conferir no `--edit`; halo localizado com borda boa no resto → `--humble on` |
+| vermelho/contorno vaza p/ o fundo, ou peça clara some no branco (foto única) | limite de segmentação — tentar `--in2` (até com a **mesma** foto: liga o faint-metal, e o halo readmitido é removido pelo `--humble`); persiste → sinalizar p/ melhoria da CLI |
 | `ERRO: retificação ... ArUco falhou` | problema de foto/base (imprimir base.svg A4 100%, fotografar perto do nadir, marcadores visíveis, `--dict` casando) |

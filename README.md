@@ -145,85 +145,64 @@ display; drop `--edit` to get the automatic output only. Full editor guide in §
 
 By default the tool produces **not** the most faithful outline but a **fit pocket**: the cavity
 where the part rests (e.g. a recess in a 3D-printed case). Twofold priority: the part **fits**
-(pocket never smaller) and sits **snug**. How:
+(pocket never smaller) and sits **snug**. It anchors the outermost points of the part (plus every
+local protrusion, so a grip or side button isn't rounded over) and traces smooth curves that
+**contain** the part; straight stretches and corner fillets are emitted as **exact lines and
+tangent arcs** (v0.10, on by default), so a straight edge never bows inward.
 
-1. **Quadrants.** Splits the part into 4 angular sectors around its center.
-2. **Extremities.** In each sector it anchors the **outermost tips** with smooth-curve nodes
-   and traces curves that **contain** the part (touching/cutting ≤ ~0.5 mm, `POCKET_EPS_MM`, so
-   sub-mm noise doesn't inflate it).
-3. **Density (`--min-dist`, default 10 mm) — the one tightness lever.** There is **no node
-   cap**: each quadrant takes **all** the outermost points that stay ≥ `--min-dist` apart, so the
-   anchor count emerges purely from the spacing. **Smaller `--min-dist` = more anchors = tighter
-   pocket and higher containment.** Lower it (e.g. `1`, `0.6`) until "contains the part" crosses
-   your target; stop at the **largest `--min-dist` that still crosses** (fewer nodes is better).
-4. **Side protrusions (auto).** A **bump in the middle of an edge** (grip, side button) isn't
-   "outermost", so the smooth curve would round over it. The pocket **forces an anchor at each
-   local protrusion** whose prominence exceeds `PROTRUSION_DEV_MM` (0.8 mm). Smooth/uniform
-   curvature (a circle) doesn't trigger it.
-5. **Geometric primitives (v0.10, on by default — `--line-tol`/`--arc-tol`).** Straight
-   stretches of the contour become **exact straight lines** (chord shifted outward by the
-   residual, so containment is guaranteed and a straight edge never bows inward) and the gaps
-   between them become **tangent arcs** (a corner turns into a clean fillet, one cubic per
-   90°). Interior anchors are suppressed — fewer nodes, CAD-like output — and `--min-dist`
-   only governs the remaining free-form stretches. `--line-tol 0` disables both and restores
-   the legacy behavior.
+**`--min-dist` is the one tightness lever** — there is no node cap; the anchor count emerges
+purely from the spacing. Lower it (e.g. `1`, `0.6`) until "contains the part" crosses your
+target; stop at the **largest** value that still crosses (fewer nodes is better).
 
 | `--min-dist` | result (thermpro) |
 |---|---|
 | `10` (default) | contains the part, **loose** on the sides |
 | `1` | snug (~201 Béziers, contains 0.9998) |
 | `0.6` | flush (305 Béziers, **contains 0.9999**) |
-| `--faithful` | **faithful mode** (no quadrants): tight outline, bbox = object |
+| `--faithful` | **faithful mode**: tight outline, bbox = object |
 
 > **Counter-intuitive:** a **large** `--min-dist` (few anchors) makes the pocket **both looser
 > and less contained** — sparse anchors give long Béziers that bow **inward** at rounded corners,
 > cutting the part. To contain more, **lower** `--min-dist`.
 >
 > In pocket mode the SVG comes out **close to the part's size** (the output reports the
-> clearance). The curve may **lightly touch/cut** the part (up to `POCKET_EPS_MM`); the real fit
-> is guaranteed by the print clearance you apply downstream (see `--clearance`). For the part's
-> **exact** outline (bbox = measured size), use `--faithful`.
+> clearance). The real fit is guaranteed by the print clearance you apply downstream (see
+> `--clearance`). For the part's **exact** outline (bbox = measured size), use `--faithful`.
 
-### Flags
+Full mechanism (quadrants, protrusion anchors, geometric primitives, containment floor):
+[docs/design.md](docs/design.md) §Pipeline (pt-BR).
 
-**I/O:** `--in/-i` (required, input photo) · `--out/-o` (`<in>.svg`) · `--name` (label in
-SVG/overlay) · `--dict` (`DICT_4X4_50`, must match `base.svg`) · `--debug-dir` (intermediate
-PNGs for diagnosis).
+### Flags (summary)
 
-**Segmentation:**
+The **authoritative per-flag reference** — defaults, when to change each one, interactions and
+their effect on containment — is [docs/manual.md](docs/manual.md) (pt-BR). Quick map:
 
-| Flag | Default | What it does |
-|------|---------|--------------|
-| `--shadow` | `off` | `remove` = **edge hysteresis** by chroma: recovers the rounded edge curving toward the base (black bevel on top, desaturated orange toe at the bottom), growing only through chroma pixels and **stopping at the gray contact shadow**. `texture` = **shadow subtractor** for **gray-neutral bodies**: value grabs the dark body, then local-texture (adaptive Otsu threshold) **carves out** the smooth-and-lighter cast shadow that a plain value cut would swallow — works even over a chromatic paper background; a built-in **watershed edge refinement** then re-decides the boundary on the physical gradient, expelling the dark contact shadow (umbra) |
-| `--in2` | off | **two-photo fusion** for hard sunlight shadows or bright metal parts: second photo of the same part on the same base with the light coming from the **opposite side** (rotate base+part together ~180° relative to the sun). Registration (rotation+shift) is automatic; each photo is **sovereign on its lit side**, so both shadows drop out. Also auto-enables a faint-saturation predicate that recovers **bright smooth metal** (connector tops ≈ paper brightness) that single-photo segmentation cannot see. The overlay uses the better-lit photo as background |
-| `--fuse-grow` | `0.0` | only with `--in2`: optional geodesic grow (mm) within the union of both masks, for parallax residue near the bisector of the two shadow directions. Rarely needed |
-| `--symmetry` | `none` | `vertical`/`horizontal`/`both`: mirrors the mask and **averages the halves** (less noise). Use on symmetric parts |
-| `--level` | `off` | `auto` = **auto-levelling** (v0.12): fixes the fine rotation of a part laid slightly askew on the base — estimates the deviation from the nearest 90° via the minimum-area envelope and rotates photo+mask together (runs **before** `--symmetry`, so the v/h symmetry axis lines up). Only applies within 0.2–7°; near-square/round parts without a long straight edge are left alone (unstable envelope) |
-| `--mask-smooth-mm` | `0.0` (off) | **regularizes the silhouette** before tracing: blurs the signed-distance field and re-thresholds, removing bumps/waviness smaller than the radius from the **mask** itself. Use when a low-contrast **black** edge comes out wavy even at high containment; `~1.5–2` cleans it without rounding macro corners. Orthogonal to `--smooth-mm` (which acts on the curve) and to containment |
-| `--mask-smooth-keep-bumps` | off | biases `--mask-smooth-mm` toward **closing** (a closing on the distance field): removes only **concave** dents (noise) while **preserving convex bumps** (e.g. a side tab) that the isotropic mode would round off |
-
-**Outline shape:**
-
-| Flag | Default | What it does |
-|------|---------|--------------|
-| `--min-dist` | `10` | **the pocket tightness lever** (mm): min distance between same-quadrant anchors. **No node cap** — smaller `--min-dist` = more anchors = tighter pocket and higher containment. With primitives on (v0.10) it only governs the free-form stretches. See §4.1 |
-| `--line-tol` | `0.3` | **straight-line detection** (mm, v0.10): a maximal stretch deviating less than this from its chord becomes one exact straight line (never bowing inward). `0` disables lines **and** arcs (legacy path). See §4.1 |
-| `--arc-tol` | `0.3` | **arc detection** (mm, v0.10): in the gaps between lines, a least-squares circle within this radial residual becomes a tangent arc (corners = clean fillets). `0` disables arcs only |
-| `--smooth-mm` | `8.0` | low-pass window (mm) removing the jaggies; larger = smoother. **Fine lever for containment:** the floor is built from the *smoothed* silhouette, so a large window lets the raw part poke out — lower it (e.g. `2`) to scrape the last 0.0x once `--min-dist` is close, but too low (`≲1`) reintroduces jaggies |
-| `--faithful` | off | **faithful mode**: exact outline of the part (bbox = object, with snap) instead of the fit pocket. Replaces the old `--max-nodes 0`. Ignored if `--tol-fit` |
-| `--simplify` | `2.0` | anchor density (mm) in **faithful** mode: larger = fewer nodes; smaller = tighter |
-| `--pocket-eps` | `0.5` | tolerated penetration (mm) in pocket mode: how far the curve may touch/cut the part. Lower = the curve cuts the part less; `0` = doesn't cut at all. Small effect on containment (fine-tuning only — see `--min-dist` for the real lever) |
-| `--min-radius` | `1.5` | minimum corner radius (mm); avoids 90° corners / spikes |
-| `--guide` | `0.5` | smoothing budget (mm) for `--tol-fit`: larger = fewer Béziers, looser cavity |
-
-**Clearance/size:** `--clearance` (`0` = REAL size; apply fit clearance downstream) ·
-`--c-fit` (`0.0`, clearance baked into the SVG).
-
-**Output format:** `--inkscape` (also emit the editable overlay) · `--polyline` (raw `L`
-polyline instead of `C` curves) · `--edit` (open the built-in node editor before saving).
-
-**Advanced Bézier (rarely needed):** `--tol-fit` (fit by tolerance instead of containment
-minimum) · `--fit-tol` (tolerance mm, only with `--tol-fit`).
+| Flag | Default | One-liner |
+|------|---------|-----------|
+| `--in/-i` · `--out/-o` · `--name` | — | input photo (required) · output SVG (`<in>.svg`) · label |
+| `--dict` | `DICT_4X4_50` | ArUco dictionary — **must match** the printed `base.svg` |
+| `--shadow` | `off` | `remove` = chroma edge hysteresis (chromatic parts); `texture` = texture shadow subtractor + watershed edge refine (gray-neutral bodies) |
+| `--val-frac` | `0.30` | dark-pixel cut; raise (~0.7) for low-contrast gray bodies |
+| `--in2` | off | two-photo fusion with opposite light: kills hard shadows, recovers bright metal |
+| `--fuse-grow` | `0.0` | optional geodesic grow after fusion (rarely needed) |
+| `--symmetry` | `none` | mirror the mask and average the halves (`vertical`/`horizontal`/`both`) |
+| `--level` | `off` | `auto` = fix the fine rotation (0.2–7°) of a part laid slightly askew |
+| `--humble` | `auto` | straight chords where the edge has no visual support; leftovers flagged in orange |
+| `--mask-smooth-mm` | `0.0` | regularize the silhouette itself (wavy low-contrast black edge) |
+| `--mask-smooth-keep-bumps` | off | bias regularization to keep convex bumps (side tabs) |
+| `--min-dist` | `10` | **pocket tightness lever**: smaller = more anchors = tighter (§4.1) |
+| `--line-tol` / `--arc-tol` | `0.3` | exact straight lines / tangent arcs; `--line-tol 0` disables both |
+| `--smooth-mm` | `8.0` | low-pass window; fine containment lever (lower toward `2`) |
+| `--pocket-eps` | `0.5` | tolerated penetration in pocket mode (fine-tuning only) |
+| `--min-radius` | `1.5` | minimum corner radius (no 90° corners / spikes) |
+| `--faithful` | off | faithful outline (bbox = object) instead of the fit pocket |
+| `--simplify` | `2.0` | anchor density in faithful mode |
+| `--clearance` / `--c-fit` | `0.0` | clearance baked into the SVG — normally applied downstream instead |
+| `--inkscape` | off | also emit the editable SVG overlay (§5b) |
+| `--edit` | off | open the built-in node editor before saving (§5) |
+| `--polyline` | off | raw `L` polyline instead of Bézier `C` curves |
+| `--tol-fit` / `--fit-tol` / `--guide` | off | tolerance-based fit (rarely needed) |
+| `--debug-dir` | off | dump intermediate stages for diagnosis |
 
 ## 5. Adjust nodes in the built-in editor (`--edit`)
 
@@ -232,36 +211,16 @@ With `--edit`, the tool detects as usual and then opens a small window (tkinter,
 the **rectified photo** as background and the curve's **nodes as draggable handles**.
 
 - **Drag** a handle to move a node · **click on the curve** to insert a node · **right-click** a
-  handle to delete it · mouse wheel = **zoom at the cursor** (the point under the mouse stays put),
-  **Ctrl + left-drag** = pan.
-- **Re-trace** draws a smooth (G1) Catmull-Rom curve through your nodes; moving, inserting or
-  deleting a node re-traces automatically. **Undo** / **Reset** as usual.
-- **Shift+click** selects up to 2 nodes (red) and **Line** replaces the shortest path between
-  them with an exact straight segment (neighbours leave tangent to it).
-- **Symmetry** (v0.12) — with `--symmetry` from the CLI the editor opens with it ON: moving/
-  inserting/deleting a node (and Line) is **mirrored** across the dashed axis; a node on the axis
-  slides along it. The axis line is **draggable**, and **Mirror ◀/▶** rebuilds one side as the
-  mirror of the other (pick the good side when a shadow inflated the detection — this also lets
-  you turn symmetry on for a contour that came without `--symmetry`). The **V/H** selector picks
-  the axis orientation when the CLI didn't.
-- **Ruler** (v0.12, on by default) — mm ruler on the top/left edges (ticks adapt to zoom) plus a
-  live **W×H dimension** of the object (also in the status bar) — handy for matching a caliper
-  measurement while dragging the symmetry axis.
-- **Rotate** (v0.12) — explicit fine-rotation mode: a dashed guide line follows the cursor;
-  right-click = +0.1°, left-click = −0.1°, wheel rotates too (0.05° with Shift). Photo and nodes
-  turn **together** (the SVG and overlay come out rotated — true WYSIWYG). Entering the mode
-  turns Symmetry off; prefer `--level auto` for a tilted part that is also symmetric.
-- **Pan** (v0.12) — Rotate's twin for fine **sideways nudging**: right-click = +0.1 mm (right),
-  left-click = −0.1 mm (left), wheel too (0.05 mm with Shift), vertical guide line at the
-  cursor. It shifts the **whole outline (and the symmetry axis with it)** while the photo stays
-  put — fixes a uniform lateral bias of the detection (e.g. a shadow that pushed the entire
-  contour to one side). Unlike Rotate it does **not** turn Symmetry off (nodes and axis move by
-  the same step, so the pairing survives). Mutually exclusive with Rotate; Reset zeroes it.
+  handle to delete it · mouse wheel = **zoom at the cursor**, **Ctrl + left-drag** = pan.
+- **Re-trace** draws a smooth (G1) curve through your nodes (editing re-traces automatically);
+  **Undo** / **Reset** as usual.
+- Toolbar (one-liners; full operation in [docs/manual.md](docs/manual.md) §`--edit`, pt-BR):
+  **Line** (Shift+click 2 nodes → exact straight segment) · **Symmetry** (edits mirrored across a
+  draggable axis) · **Mirror ◀/▶** (rebuild one side as the mirror of the other) · **Ruler**
+  (mm ruler + live W×H dimension) · **Rotate** (fine rotation of photo+nodes, 0.1° steps) ·
+  **Pan** (fine sideways nudge of the outline, 0.1 mm steps).
 - **Finalize** is **WYSIWYG**: it closes the window and writes the same outputs from **exactly the
   curve on screen** — nothing is recomputed (closing the window without Finalize writes nothing).
-
-You place the nodes and see the curve; Finalize saves precisely that. The final `<out>.svg` is that
-curve (and `_overlay_<out>.svg` too, with `--inkscape`).
 
 ## 5b. Fine-tuning in Inkscape (alternative)
 
@@ -287,11 +246,10 @@ applying them).
 - `--debug` — after converging, also emit a CLI-improvement package (diagnosis + proposed
   diff + a next-version plan under `docs/melhorias/`); does **not** touch the CLI.
 
-**Acceptance target:** the skill keeps lowering `--min-dist` (and, if needed, `--smooth-mm` then
-`--pocket-eps`) until *contains the part* ≥ **0.9999**, preferring the result with the **fewest
-nodes** among those that cross. It keeps a small memory (`memory.md`) of good parameters per part
-size to shorten future searches, and finishes with one optional `--edit` pass for a manual
-touch-up. Full behavior is documented in the skill's own [SKILL.md](.claude/skills/ptoo/SKILL.md).
+It calibrates toward *contains the part* ≥ **0.9999** with the fewest nodes, keeps a small
+memory of good parameters per part, and finishes with one optional `--edit` pass. Full behavior
+(levers, heuristics, memory) is documented in the skill's own
+[SKILL.md](.claude/skills/ptoo/SKILL.md) — the single source for the procedure.
 
 > The skill is Claude-Code-only and is invoked by typing `/ptoo …` in a Claude Code session; it
 > is not a shell command. Under the hood it just calls the same `photo_to_outline.py` you can run
@@ -304,6 +262,7 @@ touch-up. Full behavior is documented in the skill's own [SKILL.md](.claude/skil
 | **Rounded edge** (black top / colored rim) disappearing | `--shadow remove` |
 | **Hard sunlight shadow** no `--shadow` mode fixes | second photo with opposite light + `--in2 photo2.jpg` |
 | **Bright metal connector** vanishing into the white paper | same: `--in2` (auto-recovers faint metal) |
+| **Light part ≈ white paper** — edge with no contrast almost everywhere (CLI warns `só NN% da borda tem apoio visual`) | `--humble` already activated by itself: check the **orange flagged stretches** in the overlay, touch up in `--edit` if needed |
 | **Symmetric** part, noisy outline | `--symmetry vertical` (or `horizontal`/`both`) |
 | Part laid **slightly askew** on the base (~0.5–5°) | `--level auto` (or the editor's **Rotate** mode) |
 | Shadow **inflated one side** of a symmetric part | `--edit` → Symmetry on → drag the axis → **Mirror** with the good side |

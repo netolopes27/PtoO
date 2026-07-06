@@ -193,6 +193,33 @@ CONTAIN_TOL_MM = 0.3        # tolerância de PROFUNDIDADE do `contém` (v0.6): m
                             # perímetro; penetração ≤ este valor não conta (é ruído de medição,
                             # coberto pelo --clearance a jusante) — um corte profundo (feature
                             # real perdida, ex.: gancho da trena) continua derrubando o gate.
+HUMBLE_MIN_FIRM_FRAC = 0.5  # gatilho do modo AUTO do contorno HUMILDE (v0.12): fração da
+                            # borda com apoio visual (gradiente) abaixo disto = "não existe
+                            # borda clara em quase todo o objeto" → ativa o fallback de
+                            # cordas entre trechos firmes. Ver humble_rewrite.
+HUMBLE_GRAD_WIN_MM = 0.5    # janela de tolerância da FIRMEZA: a borda da máscara pode estar
+                            # a ~meio mm do degrau real da foto — dilata |Sobel| por este
+                            # raio antes de amostrar sob cada ponto do contorno.
+HUMBLE_SLIVER_TEX_FRAC = 0.03  # guarda de LISURA do descarte: a lasca entre o vão original e
+                            # a corda só é descartável se MENOS disto dos pixels têm gradiente
+                            # acima do limiar (papel/sombra são lisos; peça real tem textura).
+HUMBLE_SLIVER_MIN_MM2 = 4.0 # lasca menor que isto (mm²) é descartável SEM olhar a textura:
+                            # pequena demais p/ conter feature real (e a fração seria ruidosa).
+HUMBLE_MIN_GAP_MM = 10.0    # piso da SUBDIVISÃO: vão texturizado menor que isto não divide
+                            # mais — mantém a borda original e FLAGRA p/ revisão no --edit.
+HUMBLE_FIRM_CLOSE_MM = 1.0  # limpeza da classificação: buraco INCERTO < isto entre firmes
+                            # fecha (vira firme) — evita retalhar um degrau real por ruído.
+HUMBLE_FIRM_ISLAND_MM = 2.0 # ...e ilha FIRME < isto vira incerta (âncora de chatter não
+                            # sustenta corda; melhor cair no vão vizinho).
+HUMBLE_CHORD_STEP_MM = 1.0  # densificação das cordas (~1 ponto/mm): o resto do pipeline
+                            # (low-pass, reamostragem, primitivas) espera contorno denso.
+HUMBLE_GRAD_FLOOR = 8.0     # piso ABSOLUTO de |Sobel| do "apoio visual": abaixo disto (e de
+                            # 4× a mediana global do gradiente) é ruído de papel/JPEG, não
+                            # degrau. Borda sem NENHUM valor acima do piso = 0% firme (§9).
+HUMBLE_GRAD_CAP = 3.0       # teto do limiar de firmeza = este fator × o piso: impede o Otsu
+                            # de dividir uma borda TODA forte (thermpro: p5=51 ≫ papel ~6)
+                            # e chamar a metade menos contrastada de incerta — acima de
+                            # 3× o nível liso da foto já é degrau real, não halo.
 SPIKE_MIN_RECEDE_MM = 0.3   # recuo mínimo (mm) da ponta pelo low-pass p/ um pico virar
                             # candidato a restauração (`_preserve_spikes`): abaixo disso o
                             # suavizado praticamente cobre o pico — restaurar só reinjetaria
@@ -1239,6 +1266,221 @@ def regularize_silhouette(mask, radius_mm, ppmm=PX_PER_MM, debug_dir=None,
         os.makedirs(debug_dir, exist_ok=True)
         cv2.imwrite(os.path.join(debug_dir, "02c_regularized.png"), out)
     return out
+
+
+def _cyclic_true_runs(flags):
+    """Runs cíclicos de True no array booleano `flags`: [(start, stop)] com stop
+    EXCLUSIVO em índice DESENROLADO (stop > n quando o run cruza a emenda do anel)."""
+    n = len(flags)
+    if flags.all():
+        return [(0, n)]
+    if not flags.any():
+        return []
+    # Gira p/ começar num False: no array girado nenhum run de True cruza a emenda.
+    off = int(np.flatnonzero(~flags)[0])
+    f = np.roll(flags, -off)
+    d = np.diff(f.astype(np.int8))
+    starts = np.flatnonzero(d == 1) + 1
+    stops = list(np.flatnonzero(d == -1) + 1) + [n]
+    runs = []
+    for s in starts:
+        e = next(x for x in stops if x > s)
+        runs.append((int((s + off) % n), int((s + off) % n + (e - s))))
+    return runs
+
+
+def _flip_short_runs(flags, seglen, value, max_mm):
+    """Limpeza da classificação firme/incerto: inverte os runs cíclicos de `value`
+    com comprimento de arco < `max_mm` (fecha buracos incertos curtos / derruba
+    ilhas firmes de chatter). Modifica e devolve `flags`."""
+    n = len(flags)
+    for s, e in _cyclic_true_runs(flags if value else ~flags):
+        idx = np.arange(s, e) % n
+        if float(seglen[idx].sum()) < max_mm:
+            flags[idx] = not value
+    return flags
+
+
+def _humble_classify(mask, gray, ppmm):
+    """Classifica cada ponto do contorno externo da máscara como FIRME (apoiado num
+    degrau de gradiente da foto retificada) ou INCERTO. Limiar por Otsu sobre os
+    valores da própria borda (adaptativo por foto, mesmo espírito do --shadow texture),
+    com guarda p/ distribuição unimodal (borda toda parecida → decide contra o piso
+    absoluto). Devolve (contorno Nx2 px, firm bool[N], seglen mm[N], gm, thr,
+    firm_frac) ou None se não há contorno utilizável."""
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return None
+    c = max(cnts, key=cv2.contourArea).reshape(-1, 2)
+    if len(c) < 8:
+        return None
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    gm = cv2.magnitude(cv2.Sobel(blur, cv2.CV_32F, 1, 0, ksize=3),
+                       cv2.Sobel(blur, cv2.CV_32F, 0, 1, ksize=3))
+    r = max(1, int(round(HUMBLE_GRAD_WIN_MM * ppmm)))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    gmd = cv2.dilate(gm, k)                      # máximo local = janela de tolerância
+    vals = gmd[c[:, 1], c[:, 0]]
+    floor = max(HUMBLE_GRAD_FLOOR, 4.0 * float(np.median(gm)))
+    vmax = float(vals.max())
+    if vmax <= floor:                            # foto sem degrau NENHUM sob a borda
+        firm = np.zeros(len(c), bool)
+        thr = floor
+    else:
+        v8 = np.clip(vals * (255.0 / vmax), 0, 255).astype(np.uint8)
+        t8, _ = cv2.threshold(v8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Teto: numa borda TODA forte o Otsu divide a própria moda e chamaria a metade
+        # menos contrastada de incerta; acima de CAP× o nível liso já é degrau real.
+        thr = min(float(t8) * vmax / 255.0, HUMBLE_GRAD_CAP * floor)
+        firm = vals > thr
+    seglen = np.hypot(*(np.roll(c, -1, axis=0) - c).T) / ppmm     # mm, ponto i → i+1
+    firm = _flip_short_runs(firm.copy(), seglen, False, HUMBLE_FIRM_CLOSE_MM)
+    firm = _flip_short_runs(firm, seglen, True, HUMBLE_FIRM_ISLAND_MM)
+    total = float(seglen.sum())
+    firm_frac = float(seglen[firm].sum() / total) if total > 0 else 1.0
+    return c, firm, seglen, gm, float(thr), firm_frac
+
+
+def _sliver_stats(ring_px, gm, thr, ppmm):
+    """(área mm², fração texturizada) da LASCA delimitada pelo anel de pontos px
+    `ring_px` — a região que uma corda descartaria. Rasteriza só no ROI da lasca."""
+    p = np.asarray(np.rint(ring_px), np.int32)
+    x0, y0 = p.min(axis=0); x1, y1 = p.max(axis=0)
+    x0 = max(0, int(x0) - 1); y0 = max(0, int(y0) - 1)
+    x1 = min(gm.shape[1] - 1, int(x1) + 1); y1 = min(gm.shape[0] - 1, int(y1) + 1)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0, 0.0
+    roi = np.zeros((y1 - y0 + 1, x1 - x0 + 1), np.uint8)
+    cv2.fillPoly(roi, [p - (x0, y0)], 255)
+    area_px = int(np.count_nonzero(roi))
+    if area_px == 0:
+        return 0.0, 0.0
+    tex = int(np.count_nonzero((gm[y0:y1 + 1, x0:x1 + 1] > thr) & (roi > 0)))
+    return area_px / (ppmm * ppmm), tex / area_px
+
+
+def _sliver_is_smooth(ring_px, gm, thr, ppmm):
+    """Guarda de lisura do descarte (§2 do plano v0.12): a lasca é descartável se for
+    LISA (sem textura de peça) ou pequena demais p/ conter feature real."""
+    area_mm2, tex = _sliver_stats(ring_px, gm, thr, ppmm)
+    return area_mm2 < HUMBLE_SLIVER_MIN_MM2 or tex < HUMBLE_SLIVER_TEX_FRAC
+
+
+def _humble_gap(c, seglen, gm, thr, ppmm, i0, i1, out, depth=0):
+    """Processa o vão INCERTO entre os pontos firmes c[i0] e c[i1] (índices
+    desenrolados, i1 > i0): corda se o descarte é liso; senão subdivide ao meio (por
+    arco) e recursa; vão pequeno e ainda texturizado mantém a borda original (flag).
+    Anexa segmentos ['chord'|'keep', i0, i1] a `out`."""
+    n = len(c)
+    ring = [c[j % n] for j in range(i0, i1 + 1)]     # vão + corda de volta (implícita)
+    if _sliver_is_smooth(ring, gm, thr, ppmm):
+        out.append(["chord", i0, i1])
+        return
+    arclen = float(sum(seglen[j % n] for j in range(i0, i1)))
+    if arclen < HUMBLE_MIN_GAP_MM or i1 - i0 < 4 or depth > 12:
+        out.append(["keep", i0, i1])                 # regra 3: honestidade > palpite
+        return
+    acc, m = 0.0, i0 + (i1 - i0) // 2                # divide no MEIO do arco
+    for j in range(i0, i1):
+        acc += seglen[j % n]
+        if acc >= arclen / 2:
+            m = j + 1
+            break
+    m = min(max(m, i0 + 2), i1 - 2)
+    _humble_gap(c, seglen, gm, thr, ppmm, i0, m, out, depth + 1)
+    _humble_gap(c, seglen, gm, thr, ppmm, m, i1, out, depth + 1)
+
+
+def _humble_merge(c, gm, thr, ppmm, segs):
+    """Passada 2b: tenta derrubar cada VÉRTICE DE EMENDA entre cordas adjacentes da
+    subdivisão — se o triângulo (a, emenda, b) entre as duas cordas e a corda fundida
+    for liso, funde (remove a 'tenda' que a subdivisão deixa no ápice do halo)."""
+    n = len(c)
+    changed = True
+    while changed:
+        changed = False
+        k = 0
+        while k + 1 < len(segs):
+            a, b = segs[k], segs[k + 1]
+            if (a[0] == "chord" and b[0] == "chord" and a[2] == b[1]
+                    and _sliver_is_smooth([c[a[1] % n], c[a[2] % n], c[b[2] % n]],
+                                          gm, thr, ppmm)):
+                segs[k] = ["chord", a[1], b[2]]
+                del segs[k + 1]
+                changed = True
+            else:
+                k += 1
+    return segs
+
+
+def humble_rewrite(mask, gray, ppmm, mode="auto", merge=True):
+    """Contorno HUMILDE (v0.12): quando a borda da máscara não tem apoio visual na
+    foto (fração firme < HUMBLE_MIN_FIRM_FRAC no modo `auto`, ou sempre com `on`),
+    troca o CHUTE da segmentação nos vãos incertos por CORDAS RETAS entre os trechos
+    firmes vizinhos — halo de penumbra some, concavidade real fecha (ambos seguros
+    p/ um pocket que deve CONTER a peça) — e FLAGRA o que ficou sem resposta.
+
+    Devolve `(mask2, report)`: `mask2` é a máscara reescrita (ou a PRÓPRIA `mask`
+    quando nada muda) e `report` = {firm_frac, active, chords [((x0,y0),(x1,y1)) px],
+    flags [((cx,cy) mm frame da foto, extensão mm)], flag_runs_px [ndarray Nx2 p/ o
+    overlay], note}. Pura (não faz I/O) — testável com fixtures sintéticas."""
+    report = {"firm_frac": 1.0, "active": False, "chords": [], "flags": [],
+              "flag_runs_px": [], "note": None}
+    res = _humble_classify(mask, gray, ppmm)
+    if res is None:
+        return mask, report
+    c, firm, seglen, gm, thr, firm_frac = res
+    report["firm_frac"] = firm_frac
+    if mode != "on" and firm_frac >= HUMBLE_MIN_FIRM_FRAC:
+        return mask, report                          # gatilho auto não dispara
+    report["active"] = True
+    if not firm.any():
+        report["note"] = ("nenhum trecho da borda tem apoio visual — sem âncoras p/ "
+                          "cordas; contorno original mantido")
+        return mask, report
+    if firm.all():
+        return mask, report                          # nada a reescrever
+    n = len(c)
+    runs = sorted(_cyclic_true_runs(firm))
+    gaps = []                                        # [((s,e) firme, [segmentos do vão])]
+    for k, (s, e) in enumerate(runs):
+        s2 = runs[(k + 1) % len(runs)][0]
+        i0 = e - 1                                   # último ponto firme deste run
+        i1 = s2 if s2 > i0 % n else s2 + n           # primeiro firme do próximo
+        while i1 <= i0:
+            i1 += n
+        segs = []
+        _humble_gap(c, seglen, gm, thr, ppmm, i0, i1, segs)
+        if merge:
+            _humble_merge(c, gm, thr, ppmm, segs)
+        gaps.append(((s, e), segs))
+    poly, chords, flags, flag_runs = [], [], [], []
+    step_px = max(1.0, HUMBLE_CHORD_STEP_MM * ppmm)
+    for (s, e), segs in gaps:
+        poly.extend(c[j % n] for j in range(s, e))   # trecho firme: mantém como está
+        for si, (kind, i0, i1) in enumerate(segs):
+            p0, p1 = c[i0 % n].astype(float), c[i1 % n].astype(float)
+            if kind == "chord":
+                m = max(1, int(round(math.hypot(*(p1 - p0)) / step_px)))
+                poly.extend(p0 + (p1 - p0) * (t / m) for t in range(1, m))
+                chords.append((tuple(int(v) for v in c[i0 % n]),
+                               tuple(int(v) for v in c[i1 % n])))
+            else:                                    # keep: borda original + flag
+                run = [c[j % n] for j in range(i0 + 1, i1)]
+                poly.extend(run)
+                arclen = float(sum(seglen[j % n] for j in range(i0, i1)))
+                mid = c[(i0 + (i1 - i0) // 2) % n]
+                flags.append(((float(mid[0]) / ppmm, float(mid[1]) / ppmm), arclen))
+                flag_runs.append(np.asarray([c[j % n] for j in range(i0, i1 + 1)],
+                                            np.int32))
+            if si < len(segs) - 1:                   # emenda interna do vão
+                poly.append(c[i1 % n])
+    report.update(chords=chords, flags=flags, flag_runs_px=flag_runs)
+    if not chords:
+        return mask, report                          # só keeps = máscara original intacta
+    mask2 = np.zeros_like(mask)
+    cv2.fillPoly(mask2, [np.asarray(np.rint(np.asarray(poly, float)), np.int32)], 255)
+    return mask2, report
 
 
 def extract_outline(mask, mm_per_px_x, mm_per_px_y=None, debug_dir=None):
@@ -2608,24 +2850,32 @@ def encode_png_b64(img):
     return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
-def write_overlay(rect, mask, path):
+def write_overlay(rect, mask, path, flag_runs=None):
     """Grava o OVERLAY de conferência: o contorno SEGMENTADO (já com a simetria, se
     houver) desenhado em vermelho sobre a foto retificada — o "o que o tool enxergou
     da peça". Mesma resolução px do `rect`, então é exato (sem remapeamento). Serve p/
-    validar de relance a segmentação/iluminação ANTES de aceitar o .svg."""
+    validar de relance a segmentação/iluminação ANTES de aceitar o .svg. `flag_runs`
+    (v0.12): trechos INCERTOS flagrados pelo contorno humilde (ndarray Nx2 px),
+    pintados em LARANJA por cima — onde conferir/revisar no --edit."""
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     ov = rect.copy()
     cv2.drawContours(ov, cnts, -1, (0, 0, 255), 2)
+    for run in (flag_runs or []):
+        cv2.polylines(ov, [np.asarray(run, np.int32).reshape(-1, 1, 2)], False,
+                      (0, 165, 255), 3)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     cv2.imwrite(path, ov)
 
 
-def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
+def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno",
+                      flag_polylines_mm=None):
     """Overlay EDITÁVEL p/ Inkscape: a foto retificada embutida (raster, em camada
     TRAVADA) + o MESMO contorno de Béziers do `.svg` por cima (camada editável), tudo no
     referencial MÉTRICO do canvas (viewBox em mm). Abra no Inkscape, ajuste os nós do
     contorno sobre a foto, apague/oculte a camada da foto e exporte → contorno corrigido
-    na escala real. O frame da foto é (x_mm, −y_mm): px(0,0) no topo-esq, como em `rect`."""
+    na escala real. O frame da foto é (x_mm, −y_mm): px(0,0) no topo-esq, como em `rect`.
+    `flag_polylines_mm` (v0.12): trechos INCERTOS do contorno humilde, já no frame da
+    foto (mm, Y p/ baixo) — camada própria em laranja, o alvo natural da edição."""
     name = _svg_safe_name(name)
     h, w = rect.shape[:2]
     canvas_w, canvas_h = w * mmpp_x, h * mmpp_y
@@ -2637,6 +2887,15 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
         return (pt[0], -pt[1])
 
     d = _cubics_to_path_d(cubics, tx) if cubics else ""
+    flags_g = ""
+    if flag_polylines_mm:
+        paths = "".join(
+            f'    <path d="M {" L ".join(f"{f(x)},{f(y)}" for (x, y) in run)}"\n'
+            f'          style="fill:none;stroke:#ff8800;stroke-width:'
+            f'{f(SVG_HAIRLINE_MM * 2)};vector-effect:non-scaling-stroke"/>\n'
+            for run in flag_polylines_mm if len(run) >= 2)
+        flags_g = ('  <g inkscape:groupmode="layer" inkscape:label="incerto (revisar)">\n'
+                   + paths + '  </g>\n')
     svg = (
         '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
         '<!-- OVERLAY EDITÁVEL (foto retificada + contorno) — photo_to_outline.py.\n'
@@ -2655,6 +2914,7 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno"):
         f'          style="fill:{OUTLINE_COLOR};fill-opacity:{OUTLINE_FILL_OPACITY};'
         f'stroke:{OUTLINE_COLOR};stroke-width:{f(SVG_HAIRLINE_MM)};vector-effect:non-scaling-stroke"/>\n'
         '  </g>\n'
+        + flags_g +
         '</svg>\n'
     )
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -2669,9 +2929,9 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      mask_smooth_mm=MASK_SMOOTH_MM, mask_smooth_keep_bumps=False,
                      val_frac=SEG_VAL_FRAC, in2_path=None, fuse_grow_mm=FUSE_GROW_MM,
                      line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM, level="off",
-                     overlay_path=None, overlay_svg_path=None, debug_dir=None,
-                     return_silhouette=False, return_silhouettes=False,
-                     return_edit_data=False):
+                     humble="auto", overlay_path=None, overlay_svg_path=None,
+                     debug_dir=None, return_silhouette=False, return_silhouettes=False,
+                     return_edit_data=False, return_humble_report=False):
     """Pipeline completo → lista de pontos (x,y) em mm. Usado pelos testes E pelo CLI.
     `symmetry` ∈ {'none','vertical','horizontal','both'} impõe a simetria do objeto
     (espelha + média das metades) p/ limpar o contorno. `deshadow=True` liga a histerese
@@ -2686,7 +2946,11 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     `return_edit_data=True` devolve `(out, sil, sil_ref, rect, mmpp_x, mmpp_y)` — inclui a
     silhueta de REFERÊNCIA (como `return_silhouettes`) p/ o `--edit` medir o `contém` pelo mesmo
     gate honesto, mais a foto retificada e a escala p/ o editor manual de nós; tem precedência
-    sobre os dois anteriores."""
+    sobre os dois anteriores. `humble` ∈ {'auto','on','off'} (v0.12): contorno HUMILDE —
+    troca os vãos da borda SEM apoio visual por cordas entre trechos firmes (ver
+    humble_rewrite); 'auto' só ativa quando a fração firme fica abaixo de
+    HUMBLE_MIN_FIRM_FRAC; ignorado com `faithful` (contradição — avisa se 'on').
+    `return_humble_report=True` anexa o report do humilde (ou None) ao fim da tupla."""
     img = load_image(in_path)
     rect, mmpp_x, mmpp_y, _conf = rectify(img, dict_name=dict_name, debug_dir=debug_dir)
     flat = normalize_illumination(rect, debug_dir=debug_dir)
@@ -2733,8 +2997,36 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     if mask_smooth_mm and mask_smooth_mm > 0:
         mask = regularize_silhouette(mask, mask_smooth_mm, ppmm=1.0 / mmpp_x,
                                      debug_dir=debug_dir, preserve_convex=mask_smooth_keep_bumps)
+    humble_report = None
+    if humble and humble != "off":
+        if faithful:
+            # Fidelidade e humilde se contradizem (o humilde troca a borda por palpite
+            # honesto; o fiel promete a borda exata): fora de escopo do fallback.
+            if humble == "on":
+                warn("--humble on ignorado com --faithful (fidelidade e contorno "
+                     "humilde se contradizem)")
+        else:
+            mask_h, humble_report = humble_rewrite(
+                mask, cv2.cvtColor(flat, cv2.COLOR_BGR2GRAY), ppmm=1.0 / mmpp_x,
+                mode=humble)
+            if humble_report["active"]:
+                if humble_report["note"]:
+                    warn(f"contorno humilde: {humble_report['note']}")
+                else:
+                    print(f"AVISO: só {humble_report['firm_frac']:.0%} da borda tem "
+                          f"apoio visual — contorno humilde ativado (cordas entre "
+                          f"trechos firmes)", file=sys.stderr)
+                if mask_h is not mask:
+                    mask = mask_h
+                    # sil_ref passa a ser a silhueta PÓS-humilde: a pré é sabidamente
+                    # errada nos vãos incertos — medir contra ela puniria o conserto.
+                    # A honestidade migra p/ o relatório de flags (listado e pintado).
+                    raw_mask = mask
+            if debug_dir and humble_report["active"]:
+                cv2.imwrite(os.path.join(debug_dir, "02h_humble.png"), mask)
     if overlay_path:
-        write_overlay(rect, mask, overlay_path)
+        write_overlay(rect, mask, overlay_path,
+                      flag_runs=(humble_report or {}).get("flag_runs_px"))
     sil = extract_outline(mask, mmpp_x, mmpp_y, debug_dir=debug_dir)
     if overlay_svg_path:
         # Mesmos Béziers que o .svg emite (fonte única _fit_for_output, incl. symmetry).
@@ -2742,7 +3034,10 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                               faithful=faithful, min_dist_mm=min_dist_mm,
                               pocket_eps=pocket_eps, symmetry=symmetry,
                               line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
-        write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path)
+        flag_pl = [[(float(x) * mmpp_x, float(y) * mmpp_y) for (x, y) in run]
+                   for run in (humble_report or {}).get("flag_runs_px", [])]
+        write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path,
+                          flag_polylines_mm=flag_pl)
     out = process_for_print(sil, min_radius=min_radius, smooth_mm=smooth_mm, clearance=clearance)
     if return_edit_data or return_silhouettes:
         # Silhueta de REFERÊNCIA (pré --mask-smooth-mm) do gate honesto (v0.7): é contra ela
@@ -2750,10 +3045,16 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
         # regularização a referência É a própria `sil` (mesmo objeto, sem custo extra).
         sil_ref = sil if raw_mask is mask else extract_outline(raw_mask, mmpp_x, mmpp_y)
     if return_edit_data:
-        return out, sil, sil_ref, rect, mmpp_x, mmpp_y
-    if return_silhouettes:
-        return out, sil, sil_ref
-    return (out, sil) if return_silhouette else out
+        res = (out, sil, sil_ref, rect, mmpp_x, mmpp_y)
+    elif return_silhouettes:
+        res = (out, sil, sil_ref)
+    elif return_silhouette:
+        res = (out, sil)
+    else:
+        res = out
+    if return_humble_report:                        # anexa o report (ou None) ao fim
+        return (res if isinstance(res, tuple) else (res,)) + (humble_report,)
+    return res
 
 
 def boundary_roughness(pts, win_mm=2.0, step=0.2):
@@ -2807,6 +3108,7 @@ def _pipeline_kwargs(args, overlay_path, overlay_svg_path):
                 line_tol_mm=getattr(args, "line_tol", LINE_TOL_MM),
                 arc_tol_mm=getattr(args, "arc_tol", ARC_TOL_MM),
                 level=getattr(args, "level", "off"),
+                humble=getattr(args, "humble", "auto"),
                 overlay_path=overlay_path, overlay_svg_path=overlay_svg_path,
                 debug_dir=args.debug_dir)
 
@@ -2932,6 +3234,15 @@ def main(argv=None):
                          f"|desvio| ≤ {LEVEL_MAX_DEG}°. Roda ANTES de --symmetry (nivelar "
                          "primeiro faz a simetria encaixar). Peça ~quadrada/redonda sem reta "
                          "longa não é corrigida (envelope instável). PADRÃO off.")
+    ap.add_argument("--humble", dest="humble", default="auto",
+                    choices=["auto", "on", "off"],
+                    help="contorno HUMILDE (v0.12): quando a borda não tem apoio visual "
+                         "(sem contraste em quase todo o objeto — peça clara em papel "
+                         "branco), troca os vãos incertos por CORDAS retas entre os "
+                         "trechos firmes e FLAGRA o que sobrou (overlay em laranja, "
+                         f"aviso no stdout). 'auto' (PADRÃO) só ativa se a fração firme "
+                         f"da borda cair abaixo de {int(HUMBLE_MIN_FIRM_FRAC * 100)}%%; "
+                         "'on' força; 'off' nunca. Ignorado com --faithful/--tol-fit.")
     ap.add_argument("--symmetry", dest="symmetry", default="none",
                     choices=["none", "vertical", "horizontal", "both"],
                     help="impõe a simetria do objeto: espelha e faz a MÉDIA das duas metades "
@@ -2998,6 +3309,13 @@ def main(argv=None):
     ap.add_argument("--debug-dir", dest="debug_dir")
     args = ap.parse_args(argv)
 
+    if args.tol_fit and args.humble != "off":
+        # Fora de escopo do fallback (mesma contradição do --faithful, tratado dentro
+        # de generate_outline): avisa só quando o usuário FORÇOU o humilde.
+        if args.humble == "on":
+            warn("--humble on ignorado com --tol-fit (fidelidade e contorno humilde "
+                 "se contradizem)")
+        args.humble = "off"
     if args.in2_path and not os.path.exists(args.in2_path):
         print(f"imagem não encontrada: {args.in2_path}", file=sys.stderr)
         return 2
@@ -3021,8 +3339,9 @@ def main(argv=None):
     try:
         # `sil` (regularizada) gera o SVG; `sil_ref` (pré --mask-smooth-mm) é a referência
         # do `contém`/`encaixe` — o gate mede contra o que a SEGMENTAÇÃO viu (v0.6).
-        pts, sil, sil_ref = generate_outline(args.in_path, return_silhouettes=True,
-                                             **_pipeline_kwargs(args, overlay_path, overlay_svg_path))
+        pts, sil, sil_ref, hrep = generate_outline(
+            args.in_path, return_silhouettes=True, return_humble_report=True,
+            **_pipeline_kwargs(args, overlay_path, overlay_svg_path))
     except GridDetectionError as e:
         _print_grid_error(e)
         return 3
@@ -3072,10 +3391,17 @@ def main(argv=None):
     else:
         n = len(fit_closed_beziers(dedup_closing_point(pts), tol=args.fit_tol))
         metrics = f"{n} Béziers (por tolerância) | {obj}"
+    if hrep:                                        # v0.12: fração firme sempre visível;
+        metrics += f" | firme {hrep['firm_frac']:.0%}"   # flags só quando existem
+        if hrep["flags"]:
+            metrics += f" | flags {len(hrep['flags'])}"
     overlays = f"overlay {overlay_path}" + (f" | inkscape {overlay_svg_path}" if overlay_svg_path else "")
     print(f"OK  {args.in_path}  ->  {out_path}")
     print(f"    {overlays}")
     print(f"    {metrics}")
+    for (fx, fy), ext in (hrep["flags"] if hrep else []):
+        print(f"    AVISO: trecho incerto de ~{ext:.0f} mm perto de ({fx:.0f},{fy:.0f}) "
+              f"mm — revisar no --edit", file=sys.stderr)
     if undercontained:
         print(f"    AVISO: pocket não contém 100% (contém < {CONTAIN_COVERAGE:.2f}); "
               f"diminua --min-dist.", file=sys.stderr)

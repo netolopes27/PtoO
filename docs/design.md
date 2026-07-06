@@ -135,6 +135,28 @@ polui o contorno.
    (±`SYM_SEARCH_MM`) e faz a média pelo **campo de distância COM SINAL** (`_signed_distance`:
    >0 dentro, <0 fora; média morfológica, não AND/OR). `vertical`/`horizontal`/`both`. Padrão
    `none`.
+2e. **Contorno humilde (`--humble`, v0.12 — fallback p/ borda SEM apoio visual).** Roda depois
+   da simetria e da regularização (`--mask-smooth-mm`), antes de extrair o contorno.
+   `humble_rewrite(mask, gray, ppmm, mode, merge)`: classifica cada ponto do contorno externo
+   como **firme** (|Sobel| do cinza retificado, dilatado ±`HUMBLE_GRAD_WIN_MM` como janela de
+   tolerância, acima do limiar) ou **incerto**; limiar = **Otsu sobre os valores da própria
+   borda** com **teto** `HUMBLE_GRAD_CAP`×piso (senão o Otsu divide uma borda toda forte e chama
+   a metade menos contrastada de incerta; medido no thermpro — ver historico §v0.12) e piso
+   absoluto `HUMBLE_GRAD_FLOOR`/4×mediana global (papel/JPEG). Limpeza da classificação: fecha
+   buracos incertos < `HUMBLE_FIRM_CLOSE_MM`, derruba ilhas firmes < `HUMBLE_FIRM_ISLAND_MM`.
+   Depois, por vão incerto entre trechos firmes: **corda reta** se a lasca descartada é **lisa**
+   (< `HUMBLE_SLIVER_TEX_FRAC` de pixels com gradiente, ou < `HUMBLE_SLIVER_MIN_MM2`);
+   texturizada → **subdivide** ao meio (por arco) e recursa; vão < `HUMBLE_MIN_GAP_MM` ainda
+   texturizado → **mantém a borda original + FLAG** (stdout com posição/extensão; overlay pinta
+   em **laranja**; camada própria no `--inkscape`). Passada final de **merge (2b)** funde cordas
+   adjacentes cujo triângulo de emenda é liso (remove a "tenda" no ápice do halo). Cordas
+   densificadas a ~`HUMBLE_CHORD_STEP_MM`/ponto → o `--line-tol` (v0.10) as detecta e emite
+   **retas de verdade**. Gatilho: `auto` (default) computa a fração firme em toda execução
+   (métrica `firme NN%`) e só ativa abaixo de `HUMBLE_MIN_FIRM_FRAC`, com aviso; `on` força,
+   `off` nunca; ignorado com `--faithful`/`--tol-fit` (contradição; avisa se `on`). Quando
+   ativa, `sil_ref` (o alvo do `contém`) passa a ser a silhueta **pós-humilde** (racional em
+   §Decisões). Borda 0% firme = sem âncora p/ corda → mantém tudo + aviso de que o humilde
+   não se aplica.
 3. **Contorno externo (`extract_outline`).** `findContours(RETR_EXTERNAL)` → maior área; px→mm
    com escala **por eixo** (`mm_per_px_x`, `mm_per_px_y`); inverte Y. A bbox = **dimensão real
    medida**.
@@ -252,10 +274,15 @@ transformação + áreas dos lóbulos) e `_register_masks(m1, m2, ppmm, search_m
 (angle, center, dx, dy, score)` (registro rígido, testável com máscaras sintéticas);
 `snap90(deg)→deg` / `estimate_level_angle(mask, ppmm)→(desvio, centro, motivo)` /
 `level_rect_and_mask(rect, mask, ppmm)→(rect, mask, desvio|None)` (auto-nível, `--level`);
-`symmetrize_mask(mask, axis, ppmm)→mask`; `extract_outline(mask, mm_per_px_x, mm_per_px_y)→pts`;
+`symmetrize_mask(mask, axis, ppmm)→mask`; `humble_rewrite(mask, gray, ppmm, mode="auto",
+merge=True)→(mask2, report)` (contorno humilde v0.12, pura/testável com fixtures sintéticas;
+`report` = `{firm_frac, active, chords, flags [((cx,cy) mm, ext mm)], flag_runs_px, note}`);
+`extract_outline(mask, mm_per_px_x, mm_per_px_y)→pts`;
 `process_for_print(...)→pts`; `polygon_to_svg(pts, name, …)→str`; `write_overlay(rect, mask,
-path)` (PNG de conferência); `write_overlay_svg(rect, cubics, mm_per_px_x, mm_per_px_y, path)`
-(SVG editável: foto embutida + Béziers); `generate_outline(..., overlay_path, overlay_svg_path)`.
+path, flag_runs=None)` (PNG de conferência; `flag_runs` = trechos incertos em laranja);
+`write_overlay_svg(rect, cubics, mm_per_px_x, mm_per_px_y, path, flag_polylines_mm=None)`
+(SVG editável: foto embutida + Béziers + camada "incerto"); `generate_outline(...,
+overlay_path, overlay_svg_path, humble="auto", return_humble_report=False)`.
 Orquestrador `main(argv)`.
 
 ### CLI
@@ -264,7 +291,7 @@ python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
     [--in2 foto2.jpg] [--fuse-grow 0] \
     [--dict DICT_4X4_50] [--min-radius 1.5] [--smooth-mm 8] [--clearance 0] \
     [--shadow off|remove|texture] [--symmetry none|vertical|horizontal|both] [--level off|auto] \
-    [--inkscape] \
+    [--humble auto|on|off] [--inkscape] \
     [--simplify 2.0] [--min-dist 10] [--faithful] [--mask-smooth-mm 0] [--mask-smooth-keep-bumps] \
     [--tol-fit --fit-tol 0.2 --guide 0.5 --c-fit 0] [--polyline] [--edit] \
     [--name thermpro] [--debug-dir _debug]
@@ -275,7 +302,9 @@ Imprima `base.svg` em A4 a 100%, apoie a peça no centro branco, fotografe perto
 densidade no modo fiel. `--shadow remove` = histerese de borda por croma; `--shadow texture` =
 subtrator de sombra por textura (corpo cinza-neutro, v0.5, com refino watershed v0.8); `--in2` =
 fusão 2-fotos com luz oposta (v0.9; registro automático, sombras eliminadas, metal claro
-recuperado); `--symmetry` = espelho + média. **A cada
+recuperado); `--symmetry` = espelho + média; `--humble` = contorno humilde (v0.12: cordas entre
+trechos firmes quando a borda não tem apoio visual; `auto` só ativa em cena degradada, métricas
+ganham `firme NN%` e, se houver, `flags N` + avisos por trecho incerto). **A cada
 execução** sai, antes do `.svg`, o overlay PNG `_overlay_<nome>.png` (contorno em vermelho sobre
 a foto retificada); `--inkscape` gera também `_overlay_<nome>.svg` editável. `--edit` abre o
 **editor de nós** (GUI tkinter, `outline_editor.py`) entre a detecção e a saída: fundo renderizado
@@ -284,7 +313,8 @@ por **recorte do viewport** (custo independente do zoom); "Re-trace" traça a cu
 sem recalcular nem snap). Além das ops de nó, expõe (011) Symmetry/Mirror (`mirror_contour`),
 Ruler, Rotate (`rotate_nodes`) e Pan (`translate_nodes`) — mecânica no §Testes E, operação no
 [manual](manual.md) §`--edit`. `--debug-dir` grava intermediários. Marcadores insuficientes →
-aborta com mensagem clara. (Guia de flags completo: [README.md](../README.md) §4.)
+aborta com mensagem clara. (Referência operacional completa das flags: [manual.md](manual.md); resumo em inglês no
+[README.md](../README.md) §4.)
 
 ## Constantes (defaults, topo de `photo_to_outline.py`)
 
@@ -314,7 +344,13 @@ avisa) · `LINE_TOL_MM = 0.3` / `ARC_TOL_MM = 0.3` (primitivas v0.10; defaults d
 mínimos) · `ARC_R_MIN_MM = 0.8` / `ARC_R_MAX_MM = 60.0` (faixa de raio plausível; também veta
 reta que é arco disfarçado) · `PRIM_TRIM_MM = 0.8` (recuo das pontas de reta → filete G1) ·
 `FIT_TOL_MM = 0.2` · `BEZIER_GUIDE_MM = 0.5` · `CORNER_ANGLE_DEG = 40.0` ·
-`RASTER_PPM = 16.0` · `OUTLINE_COLOR = "#ff00ff"` / `OUTLINE_FILL_OPACITY = 0.25`.
+`RASTER_PPM = 16.0` · `OUTLINE_COLOR = "#ff00ff"` / `OUTLINE_FILL_OPACITY = 0.25` ·
+`HUMBLE_MIN_FIRM_FRAC = 0.5` (gatilho do `--humble auto`) / `HUMBLE_GRAD_WIN_MM = 0.5` (janela
+de firmeza) / `HUMBLE_SLIVER_TEX_FRAC = 0.03` / `HUMBLE_SLIVER_MIN_MM2 = 4.0` (guarda de lisura
+do descarte) / `HUMBLE_MIN_GAP_MM = 10.0` (piso da subdivisão → keep+flag) /
+`HUMBLE_FIRM_CLOSE_MM = 1.0` / `HUMBLE_FIRM_ISLAND_MM = 2.0` (limpeza da classificação) /
+`HUMBLE_CHORD_STEP_MM = 1.0` (densificação) / `HUMBLE_GRAD_FLOOR = 8.0` /
+`HUMBLE_GRAD_CAP = 3.0` (piso e teto do limiar de firmeza — contorno humilde, v0.12).
 
 ## Decisões
 
@@ -328,14 +364,22 @@ fiel, a **cavidade onde a peça encaixa** — prioridade dupla, **cabe** (pocket
 arredondar por cima. **Sem ganho na etapa 1** (`--clearance 0`): tamanho real, folga **a
 jusante**. No **modo fiel** (`--faithful`) a bbox é snapeada na dimensão medida. **Paralaxe
 pela altura** nenhuma base corrige — só mede e avisa. SVG = só contorno + preenchimento
-translúcido. Sem referência desenhada à mão. **Objetivo:** alimentar **gridfinity
+translúcido. Sem referência desenhada à mão. **Contorno humilde como fallback, não
+sempre-ativo (v0.12):** diante de borda sem contraste, a decisão de projeto foi **admitir a
+incerteza** em vez de perseguir a segmentação perfeita — o pacote "esperto" avaliado na v0.11
+(registro por ZNCC de gradiente, faint-metal adaptativo, watershed com guardas) foi
+**rejeitado** pelo usuário por complexidade/risco; no lugar, cordas entre trechos firmes +
+flags honestos, ativados **só** quando a cena degrada (fotos boas ficam byte-idênticas, por
+teste). Quando ativa, o `contém` mede contra a silhueta **pós-humilde**: a pré-humilde é
+sabidamente errada nos vãos incertos (medir contra ela puniria exatamente o conserto) — a
+honestidade vai p/ os flags, não p/ o gate. **Objetivo:** alimentar **gridfinity
 personalizável** a partir do contorno medido.
 
 ## Testes
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 190/190 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 200/200 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -387,6 +431,17 @@ personalizável** a partir do contorno medido.
   convexo** que o modo isotrópico arredonda, ainda preenchendo a reentrância côncava; **avisa**
   (v0.7) quando remove saliência convexa relevante (espigão 1×5 mm) e fica calado p/ serrilha
   sub-limiar ou quando o keep-bumps a preserva.
+- **B6. Contorno humilde (`TestHumbleRewrite`, v0.12):** fixtures sintéticas em memória
+  (retângulo + "foto" cinza com degrau desenhado; halos = meia-elipses SEM degrau; textura =
+  xadrez). Borda 100% firme → **no-op** (mesmo objeto de máscara, 0 cordas/flags, `auto` não
+  dispara); bojo liso → **corda** (desvio ≤ 1 mm da aresta verdadeira, sem cortar a peça);
+  3 halos → **gatilho `auto` dispara** sozinho (fração firme < 0.5); bojo com textura →
+  corda rejeitada, subdivisão confina, **nenhum ponto entra > 1.5 mm** na peça verdadeira;
+  vão pequeno texturizado → **keep + flag** (posição/extensão certas, máscara intacta);
+  **merge 2b** derruba a "tenda" (menos cordas E menos área falsa que `merge=False`); foto
+  sem degrau nenhum → 0% firme, original mantido + nota; kwargs com default em toda a cadeia;
+  **regressão thermpro**: `--humble auto` = saída idêntica a `off` (firme ~92%, dormente);
+  `--humble on` + `--faithful` → aviso e ignorado (`auto`+`faithful` ignora em silêncio).
 - **C. Ponta-a-ponta (`thermpro.jpg`, skip se ausente — `TestEndToEndThermpro`):** 32/32
   marcadores; escala plausível; no **modo fiel** a peça cabe (`coverage ≥ 0,99`), linha
   limpa, **bbox do SVG = dimensão medida**; no **default (POCKET, `min-dist` 10)** o pocket

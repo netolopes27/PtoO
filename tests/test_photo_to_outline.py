@@ -731,6 +731,210 @@ class TestRegularizeSilhouette(unittest.TestCase):
         self.assertEqual(err.getvalue(), "")
 
 
+# =============================================================================
+# B6. CONTORNO HUMILDE (v0.12) — cordas entre trechos firmes quando a borda
+# não tem apoio visual (humble_rewrite + gatilho --humble)
+# =============================================================================
+def _humble_canvas():
+    """Cena base do humilde: máscara retangular sólida (47.5×25 mm, ppmm=8) + 'foto'
+    cinza com DEGRAU real sob TODA a borda (fundo claro 230, corpo 90). As variações
+    (halo sem degrau, textura) são pintadas por cima pelos helpers abaixo."""
+    H, W = 400, 500
+    x0, y0, x1, y1 = 60, 80, 440, 280
+    mask = np.zeros((H, W), np.uint8)
+    mask[y0:y1, x0:x1] = 255
+    gray = np.full((H, W), 230, np.uint8)
+    gray[y0:y1, x0:x1] = 90
+    return mask, gray, (x0, y0, x1, y1)
+
+
+def _add_halo_bulge(mask, cx, hw, d, y):
+    """Meia-elipse p/ BAIXO a partir da aresta y: HALO readmitido pela segmentação —
+    entra na MÁSCARA, mas a 'foto' continua lisa ali (sem degrau sob a borda do bojo)."""
+    import cv2
+    cv2.ellipse(mask, (cx, y), (hw, d), 0, 0, 180, 255, -1)
+
+
+def _add_checkerboard(gray, x0, y0, x1, y1, sq=4):
+    """Xadrez 90/230 (textura de PEÇA real) na região dada da 'foto'."""
+    for yy in range(y0, y1, sq):
+        for xx in range(x0, x1, sq):
+            if ((xx - x0) // sq + (yy - y0) // sq) % 2 == 0:
+                gray[yy:min(yy + sq, y1), xx:min(xx + sq, x1)] = 90
+
+
+def _dev_mm(mask2, ref, ppmm=8.0):
+    """(desvio p/ FORA, desvio p/ DENTRO) em mm da máscara `mask2` vs a forma `ref`:
+    fora = quão longe mask2 estufa além de ref; dentro = quão fundo mask2 CORTA ref."""
+    import cv2
+    dt_out = cv2.distanceTransform(cv2.bitwise_not(ref), cv2.DIST_L2, 5)
+    dt_in = cv2.distanceTransform(ref, cv2.DIST_L2, 5)
+    extra = (mask2 > 0) & (ref == 0)
+    cut = (ref > 0) & (mask2 == 0)
+    out = float(dt_out[extra].max()) / ppmm if extra.any() else 0.0
+    inn = float(dt_in[cut].max()) / ppmm if cut.any() else 0.0
+    return out, inn
+
+
+class TestHumbleRewrite(unittest.TestCase):
+    """v0.12 — `humble_rewrite(mask, gray, ppmm)`: classifica a borda em firme/incerto
+    pelo gradiente da foto e troca os vãos incertos por CORDAS quando o descarte é liso
+    (halo/sombra), com subdivisão sob textura e FLAG p/ o que ficou sem resposta."""
+
+    PPMM = 8.0
+
+    def test_humble_noop_quando_firme(self):
+        # Borda 100% apoiada num degrau real → no-op: máscara IDÊNTICA (mesmo objeto),
+        # 0 cordas, 0 flags; e o gatilho `auto` não dispara (fração firme ~1).
+        mask, gray, _ = _humble_canvas()
+        m2, rep = P.humble_rewrite(mask, gray, self.PPMM, mode="auto")
+        self.assertIs(m2, mask)
+        self.assertFalse(rep["active"])
+        self.assertGreaterEqual(rep["firm_frac"], 0.9)
+        self.assertEqual(rep["chords"], [])
+        self.assertEqual(rep["flags"], [])
+        # Forçado (`on`) também é no-op: sem vão incerto não há o que reescrever.
+        m3, rep3 = P.humble_rewrite(mask, gray, self.PPMM, mode="on")
+        self.assertIs(m3, mask)
+        self.assertEqual(rep3["chords"], [])
+
+    def test_humble_corda_no_halo(self):
+        # Bojo LISO colado à aresta de baixo (halo sintético sem degrau sob a borda) →
+        # vira corda; o resultado fica a ≤ ~1 mm da aresta verdadeira (a janela de
+        # firmeza de 0.5 mm + o blur do Sobel ancoram a corda um fio abaixo do degrau —
+        # mesmo teto do protótipo do plano, halo residual ~+1 mm).
+        mask, gray, (x0, y0, x1, y1) = _humble_canvas()
+        ref = mask.copy()                          # a peça verdadeira é só o retângulo
+        _add_halo_bulge(mask, cx=250, hw=100, d=40, y=y1)
+        m2, rep = P.humble_rewrite(mask, gray, self.PPMM, mode="on")
+        self.assertTrue(rep["active"])
+        self.assertGreaterEqual(len(rep["chords"]), 1)
+        self.assertEqual(rep["flags"], [])
+        out, inn = _dev_mm(m2, ref, self.PPMM)
+        self.assertLessEqual(out, 1.0, f"corda deixou halo de {out:.2f} mm p/ fora")
+        self.assertLessEqual(inn, 0.3, f"corda cortou a peça em {inn:.2f} mm")
+
+    def test_humble_auto_dispara_quando_incerto(self):
+        # Fração firme < HUMBLE_MIN_FIRM_FRAC (3 halos grandes ⇒ maioria da borda sem
+        # apoio) → o gatilho `auto` ATIVA sozinho e as cordas removem os halos.
+        mask, gray, (x0, y0, x1, y1) = _humble_canvas()
+        ref = mask.copy()
+        _add_halo_bulge(mask, cx=250, hw=100, d=40, y=y1)                # baixo
+        # halos laterais: meia-elipses p/ fora das arestas esq./dir.
+        import cv2
+        cv2.ellipse(mask, (x0, 180), (48, 90), 0, 90, 270, 255, -1)      # esquerda
+        cv2.ellipse(mask, (x1, 180), (48, 90), 0, -90, 90, 255, -1)      # direita
+        m2, rep = P.humble_rewrite(mask, gray, self.PPMM, mode="auto")
+        self.assertTrue(rep["active"])
+        self.assertLess(rep["firm_frac"], P.HUMBLE_MIN_FIRM_FRAC)
+        self.assertGreaterEqual(len(rep["chords"]), 3)
+        out, inn = _dev_mm(m2, ref, self.PPMM)
+        self.assertLessEqual(out, 1.0)
+        self.assertLessEqual(inn, 0.3)
+
+    def test_humble_guarda_de_textura(self):
+        # Bojo com TEXTURA de peça real no miolo (a peça continua ali; só a borda foi
+        # lavada): a corda cheia é rejeitada, a subdivisão confina o problema e o resto
+        # vira corda — NENHUM ponto do resultado entra > 1.5 mm na peça verdadeira.
+        mask, gray, (x0, y0, x1, y1) = _humble_canvas()
+        _add_halo_bulge(mask, cx=250, hw=100, d=40, y=y1)
+        _add_checkerboard(gray, 200, y1 + 1, 300, y1 + 32)   # peça real dentro do bojo
+        true_piece = np.zeros_like(mask)
+        true_piece[y0:y1, x0:x1] = 255
+        true_piece[y1:y1 + 32, 200:300] = 255
+        m2, rep = P.humble_rewrite(mask, gray, self.PPMM, mode="on")
+        self.assertTrue(rep["active"])
+        self.assertGreaterEqual(len(rep["chords"]), 1)        # o lado liso virou corda
+        _, inn = _dev_mm(m2, true_piece, self.PPMM)
+        self.assertLessEqual(inn, 1.5,
+                             f"resultado entrou {inn:.2f} mm na peça verdadeira")
+
+    def test_humble_flag_reportado(self):
+        # Vão PEQUENO (< HUMBLE_MIN_GAP_MM) e ainda texturizado → regra 3: mantém a
+        # borda original e FLAGRA com posição/extensão corretas no relatório.
+        mask, gray, (x0, y0, x1, y1) = _humble_canvas()
+        _add_halo_bulge(mask, cx=250, hw=28, d=18, y=y1)      # arco ~9 mm < 10 mm
+        _add_checkerboard(gray, 238, y1 + 2, 262, y1 + 8)     # textura no miolo do bojo
+        m2, rep = P.humble_rewrite(mask, gray, self.PPMM, mode="on")
+        self.assertTrue(rep["active"])
+        self.assertIs(m2, mask)                               # nada reescrito = original
+        self.assertEqual(len(rep["flags"]), 1)
+        (fx, fy), ext = rep["flags"][0]
+        self.assertAlmostEqual(fx, 250 / self.PPMM, delta=2.5)   # centro ≈ meio do bojo
+        self.assertAlmostEqual(fy, (y1 + 18) / self.PPMM, delta=2.5)
+        self.assertTrue(4.0 <= ext <= 14.0, f"extensão {ext:.1f} mm fora do plausível")
+        self.assertEqual(len(rep["flag_runs_px"]), 1)         # p/ o overlay pintar
+
+    def test_humble_merge_tenda(self):
+        # Textura só perto de UMA ponta do bojo → a subdivisão deixa um vértice de
+        # emenda ("tenda") no ápice do halo; a passada 2b (merge) o derruba: menos
+        # cordas e MENOS área falsa p/ fora do que sem o merge.
+        mask, gray, (x0, y0, x1, y1) = _humble_canvas()
+        ref = mask.copy()
+        _add_halo_bulge(mask, cx=250, hw=100, d=40, y=y1)
+        _add_checkerboard(gray, 165, y1 + 1, 205, y1 + 17)    # textura na ponta esquerda
+        m_no, rep_no = P.humble_rewrite(mask, gray, self.PPMM, mode="on", merge=False)
+        m_yes, rep_yes = P.humble_rewrite(mask, gray, self.PPMM, mode="on", merge=True)
+        self.assertLess(len(rep_yes["chords"]), len(rep_no["chords"]))
+        extra_no = int(np.count_nonzero((m_no > 0) & (ref == 0)))
+        extra_yes = int(np.count_nonzero((m_yes > 0) & (ref == 0)))
+        self.assertLess(extra_yes, extra_no)                  # a tenda caiu
+
+    def test_humble_sem_apoio_mantem_original(self):
+        # Foto sem NENHUM degrau (borda 0% firme): sem âncora p/ corda — mantém o
+        # contorno original e reporta que o humilde não se aplica (§9 do plano).
+        mask, _, _ = _humble_canvas()
+        gray = np.full(mask.shape, 230, np.uint8)             # foto uniforme, sem degrau
+        m2, rep = P.humble_rewrite(mask, gray, self.PPMM, mode="auto")
+        self.assertIs(m2, mask)
+        self.assertTrue(rep["active"])                        # firme 0% < gatilho
+        self.assertEqual(rep["chords"], [])
+        self.assertTrue(rep["note"])                          # aviso: não se aplica
+
+    def test_humble_kwargs_com_default(self):
+        # Parâmetros novos nascem com default em toda a cadeia (os testes antigos
+        # chamam sem os args novos) — mesmo espírito do teste das primitivas v0.10.
+        import inspect
+        sig = inspect.signature(P.generate_outline)
+        self.assertEqual(sig.parameters["humble"].default, "auto")
+        self.assertEqual(sig.parameters["return_humble_report"].default, False)
+        sig2 = inspect.signature(P.humble_rewrite)
+        self.assertEqual(sig2.parameters["mode"].default, "auto")
+        self.assertEqual(sig2.parameters["merge"].default, True)
+        for c in ("HUMBLE_MIN_FIRM_FRAC", "HUMBLE_GRAD_WIN_MM", "HUMBLE_SLIVER_TEX_FRAC",
+                  "HUMBLE_SLIVER_MIN_MM2", "HUMBLE_MIN_GAP_MM"):
+            self.assertTrue(hasattr(P, c), f"constante {c} ausente")
+
+    @unittest.skipUnless(os.path.exists(THERMPRO_JPG), "thermpro.jpg ausente")
+    def test_humble_regressao_thermpro_dormente(self):
+        # Foto BOA (borda majoritariamente firme): `--humble auto` fica DORMENTE e a
+        # saída é IDÊNTICA à de `--humble off` — regressão garantida do §3 do plano.
+        r_auto = P.generate_outline(THERMPRO_JPG, humble="auto", return_silhouette=True,
+                                    return_humble_report=True)
+        r_off = P.generate_outline(THERMPRO_JPG, humble="off", return_silhouette=True)
+        (out_a, sil_a, rep), (out_o, sil_o) = r_auto, r_off
+        self.assertFalse(rep["active"])
+        self.assertGreaterEqual(rep["firm_frac"], P.HUMBLE_MIN_FIRM_FRAC)
+        self.assertEqual(sil_a, sil_o)                        # byte-idêntico a jusante
+        self.assertEqual(out_a, out_o)
+
+    @unittest.skipUnless(os.path.exists(THERMPRO_JPG), "thermpro.jpg ausente")
+    def test_humble_on_com_faithful_avisa_e_ignora(self):
+        # `--humble on` + `--faithful` se contradizem: AVISA e ignora o humilde
+        # (report None = nem classificou); com `auto` + faithful, ignora em silêncio.
+        from unittest import mock
+        with mock.patch.object(P, "warn") as w:
+            out, rep = P.generate_outline(THERMPRO_JPG, humble="on", faithful=True,
+                                          return_humble_report=True)
+        self.assertIsNone(rep)
+        self.assertTrue(any("humble" in str(c.args[0]) for c in w.call_args_list))
+        with mock.patch.object(P, "warn") as w2:
+            _, rep2 = P.generate_outline(THERMPRO_JPG, humble="auto", faithful=True,
+                                         return_humble_report=True)
+        self.assertIsNone(rep2)
+        self.assertFalse(any("humble" in str(c.args[0]) for c in w2.call_args_list))
+
+
 class TestScaleAndHomography(unittest.TestCase):
     def test_px_per_mm(self):
         self.assertAlmostEqual(P.px_per_mm(45.0, 10.0), 4.5, places=6)

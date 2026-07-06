@@ -1,15 +1,19 @@
 # AGENTS.md
 
-Guia para agentes ZCode neste repositório (paralelo ao [CLAUDE.md](CLAUDE.md) e
-[GEMINI.md](GEMINI.md)). Ambos já existem e apontam para os mesmos **docs autoritativos** — não
-duplique comportamento entre os guias; ao mexer no comportamento, consulte e atualize os docs,
-não estes guias.
+**Guia ÚNICO para agentes de código** (Claude Code, Gemini CLI, ZCode, …) neste repositório.
+[CLAUDE.md](CLAUDE.md) e [GEMINI.md](GEMINI.md) são stubs que importam este arquivo e guardam
+apenas o que é específico de cada ferramenta — **conteúdo de comportamento entra AQUI** (ou nos
+docs autoritativos abaixo), nunca duplicado nos stubs.
 
 ## Docs autoritativos (leia antes de tocar em áreas sensíveis)
 
-- [README.md](README.md) — uso dos CLIs (em **inglês**, voltado a repo público).
-- [docs/design.md](docs/design.md) — arquitetura, API, pipeline, **constantes-chave**, decisões, testes.
-- [docs/manual.md](docs/manual.md) — referência operacional de **cada flag** (o que faz, default, quando mexer).
+Cada assunto tem um dono; não duplique conteúdo entre eles:
+
+- [README.md](README.md) — guia de uso dos CLIs (em **inglês**, voltado a repo público).
+- [docs/design.md](docs/design.md) — arquitetura, API, pipeline, **constantes-chave**, decisões,
+  testes (contagem canônica).
+- [docs/manual.md](docs/manual.md) — referência operacional de **cada flag** (o que faz, default,
+  quando mexer, interações).
 - [docs/historico.md](docs/historico.md) — evolução e roadmap.
 
 ## O que é
@@ -55,9 +59,6 @@ python -m venv .venv
     --shadow remove --min-dist 0.6 --smooth-mm 2 --inkscape --symmetry vertical
 ```
 
-> `requirements.txt` menciona caminhos `tools/` de uma estrutura antiga — **ignore**; hoje os
-> arquivos ficam na **raiz**.
-
 ## Arquitetura e limites de camada
 
 Quatro módulos na raiz (detalhe em [docs/design.md](docs/design.md)):
@@ -66,23 +67,25 @@ Quatro módulos na raiz (detalhe em [docs/design.md](docs/design.md)):
   `homography_correspondences()` é o **contrato consumido** por `photo_to_outline.py`. Mudar o
   layout aqui muda tanto o que se imprime quanto o que o detector assume — mantenha-os casados.
 - **`make_calibration_target.py`** — CLI que renderiza o layout num `base.svg` impressível.
-- **`photo_to_outline.py`** — a tool (~1450 linhas): todo o pipeline de visão **e** o CLI.
-  Constantes-chave no topo do arquivo.
+- **`photo_to_outline.py`** — a tool: todo o pipeline de visão **e** o CLI. Constantes-chave no
+  topo do arquivo (documentadas em [docs/design.md](docs/design.md) §Constantes).
 - **`outline_editor.py`** — editor de nós opcional (`--edit`), em **duas camadas**: **núcleo puro**
   (geometria, testável) + **view tkinter** (glue fino, **não** unit-testada — a view não é
   instanciada no runner headless). WYSIWYG: Finalize grava exatamente a curva exibida.
 
 **Pipeline (foto → SVG):** retificar por homografia ArUco (sai a dimensão real) → normalizar luz
-+ segmentar → extrair contorno → suavizar p/ impressão → ajustar Béziers + emitir SVG. **Modo
++ segmentar → *(opcionais: `--in2` fusão 2-fotos; `--level auto`; `--symmetry`; `--humble`)* →
+extrair contorno → suavizar p/ impressão → ajustar Béziers + emitir SVG. **Modo
 padrão = POCKET de encaixe** (cavidade que **contém** a peça, ≥ objeto, não busca fidelidade):
 a justeza é a alavanca **`--min-dist`** (menor = mais âncoras = mais justo, **sem teto de nós**);
-**`--faithful`** = modo fiel (bbox = objeto). Todos os nós são suaves (G1).
+**`--faithful`** = modo fiel (bbox = objeto). Todos os nós são suaves (G1). Estágios completos em
+[docs/design.md](docs/design.md) §Pipeline.
 
 ## Testes
 
-Suíte `unittest` em `tests/`, descoberta por `run_image_tests.py` (precisa do venv). Níveis: **A**
-unidade pura (geometria, homografia, Bézier), **B** sintético ArUco + histerese de borda, **C**
-ponta-a-ponta direto de `thermpro.jpg`, **E** núcleo puro do editor (`test_outline_editor.py`).
+Suíte `unittest` em `tests/`, descoberta por `tests/run_image_tests.py` (precisa do venv).
+Níveis (A–F), contagem canônica e o detalhe de cada classe: [docs/design.md](docs/design.md)
+§Testes — não replique a contagem em outro doc (os guias só dizem "verde").
 
 ## Saídas e git
 
@@ -98,5 +101,7 @@ rascunhos ignorados pelo git (`.gitignore`: `_overlay_*`, `_debug/`, `.venv/`, `
   acentos). Preserve isso se tocar I/O.
 - Limite físico que **nenhuma** base corrige: a altura do objeto gera paralaxe (o topo flutua
   sobre o papel). Só se mitiga fotografando perto do nadir; o tool **mede e avisa** a inclinação.
-- **Skill `/ptoo`** (`.claude/skills/ptoo/`, `SKILL.md` + `memory.md`): calibrador iterativo que
-  dirige a CLI rumo a um pocket justo. **Não altera a CLI** — o `--debug` só *propõe* mudanças.
+- **Calibrador `/ptoo`** (`.claude/skills/ptoo/`, `SKILL.md` + `memory.md`): workflow iterativo
+  que dirige a CLI rumo a um pocket justo, inspecionando o contorno com zoom. **Não altera a
+  CLI** — o `--debug` só *propõe* mudanças (planos em `docs/melhorias/`). A memória
+  (`memory.md`) é compartilhada entre as integrações Claude e Gemini.

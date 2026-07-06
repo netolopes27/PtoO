@@ -1,7 +1,7 @@
 # ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
 # Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta p/ objeto NOVO (derivado do cache, n=4; recalcular a cada update)
+## start = melhor aposta p/ objeto NOVO (derivado do cache, n=5; recalcular a cada update)
 SEMPRE:      --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
              assimétrica; com sombra vazando, a simetria UNE o vazamento p/ os dois lados (piora)
@@ -17,6 +17,7 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
 - ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 | contém=1.0000 clearance=+0.01/-0.04 | trena azul; assimétrica (aba lateral) → SEM symmetry
 - ~90.00x58.75 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --in2 <foto2> | contém=0.9999 clearance=+0.07/-0.05 | Raspberry Pi 2, 2 FOTOS luz oposta; retilínea → md10 DEFAULT já cola (48 nós, v0.10); A/B legado: --line-tol 0 (md7.5, 46 nós, folga +0.83)
 - ~65.12x65.50 mm | --shadow texture --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps | contém=1.0000 clearance=-0.21/-0.24 | trena CINZA-neutra, sombra projetada, luz difusa; SEM symmetry; sem keep-bumps o gancho some (contém 0.9968 + aviso)
+- ~73.62x97.50 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --in2 <MESMA foto> | contém=1.0000 clearance=+0.14/+0.18 | tester TC1 creme≈papel; humilde AUTO ativou (firme 9%) e removeu o halo que antes exigia --edit (curva à mão dava 72.55x93.72); 14 Béziers
 
 ## heurísticas (fatos medidos ALÉM do manual §6; não duplicar manual nem SKILL)
 - A rampa min-dist fecha onde a FORMA manda: contorno orgânico/cantos arredondados fecha baixo
@@ -38,5 +39,18 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
   CONFERIR NO ZOOM se conectores/metal ficaram DENTRO do contorno: baía na máscara NÃO derruba o
   contém (ele mede contra a própria máscara — só o zoom pega). --fuse-grow só p/ resíduo perto da
   bissetriz das sombras.
-- Vermelho vaza p/ o fundo ou peça clara some no branco (foto única) → limite de segmentação, sem
-  flag que resolva → anotar p/ o --debug.
+- Vermelho vaza p/ o fundo (foto única) → limite de segmentação, sem flag que resolva → anotar
+  p/ o --debug. Peça clara que some no branco: ver o truque --in2 mesma foto + humilde (abaixo).
+- REGISTRO 2-fotos pode travar na família 90° (score ~0.24) se a peça girou ~180° EM RELAÇÃO À BASE
+  entre as fotos (protocolo violado: girar base+peça JUNTAS). Sintomas: obj W×H TRANSPOSTO, lóbulos
+  gigantes no 02g_fuse_split, fundo do overlay girado vs contorno. Sem flag; refotografar. (TC1)
+- Truque p/ peça CLARA (creme≈papel) sem fusão utilizável: --in2 com a MESMA foto → registro
+  identidade + faint-metal ON (única via que segmenta o corpo claro). O halo de sombra que o
+  faint readmite é removido pelo humilde (v0.12, abaixo) — não precisa mais do --edit p/ isso.
+  Prefira a foto de luz MAIS direcional (menos penumbra = mais borda firme p/ ancorar cordas).
+- v0.12 CONTORNO HUMILDE: CLI avisou "só NN% da borda tem apoio visual" → o humilde JÁ ativou
+  (cordas entre trechos firmes; métrica `firme NN%`). Conferir os trechos LARANJA (flags) no
+  overlay ANTES de mexer em rampas — o défice ali não é densidade, é borda incerta; acabamento
+  pontual no --edit. Halo localizado com borda boa no resto → --humble on. NÃO combine com
+  --faithful/--tol-fit (ignorado). Peça LISA de borda curva sem contraste: risco da corda
+  raspar bojo real (guarda de textura não vê) → conferir no zoom.

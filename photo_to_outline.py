@@ -248,6 +248,18 @@ PRIM_TRIM_MM = 0.8          # recuo (mm) das pontas de cada reta detectada: gara
                             # curvo entre primitivas → a junção reta↔canto vira filete G1
                             # (mantém o invariante "todo nó suave") e tira a ponta da reta
                             # de dentro da curvatura do canto.
+CORNER_RADIUS_MM = 0.0      # prior de RAIO de canto (flag --corner-radius, v0.13): > 0 = raio
+                            # MEDIDO pelo usuário (via --describe da skill /ptoo). Arco
+                            # detectado com raio na janela ±max(1 mm, 20%) é REFIT com raio
+                            # FIXO (só o centro) — o canto sai com o raio declarado, não o
+                            # estatístico. 0 = desligado. Ver _arc_check/_detect_arc_runs.
+SHAPE_INFL_MAX_MM = 2.0     # teto (mm) da INFLAÇÃO por eixo p/ conter a peça no --shape:
+                            # modelo que precisa crescer mais que isto não descreve a peça
+                            # (descrição suspeita) → aviso e fallback p/ o caminho genérico.
+SHAPE_GAP_MM = 5.0          # teto (mm) do VÃO modelo→peça no --shape: ponto do modelo mais
+                            # longe que isto de qualquer ponto da silhueta = a peça não é o
+                            # shape declarado (ex.: círculo "descrito" como retângulo) →
+                            # aviso e fallback. Ver _fit_shape_rect.
 RASTER_PPM = 16.0           # px/mm das operações raster (filete/IoU)
 PEN_SAMPLE_MM = 0.25        # passo (mm) ao amostrar a cúbica p/ medir penetração no piso
 OUTLINE_COLOR = "#ff00ff"      # cor BEM DESTACADA (magenta) do vetor de saída e do overlay
@@ -2243,11 +2255,31 @@ def _circle_fit(seg):
     return cx, cy, r, float(res.max())
 
 
-def _arc_check(seg, tol_mm):
+def _refit_center_fixed_r(seg, r, cx, cy, iters=3):
+    """Reajusta SÓ o centro do círculo com raio FIXO `r` (prior do usuário): ponto
+    fixo de Gauss–Newton — o centro vira a média de `p - r·û(p−c)`. Devolve
+    `(cx, cy, resíduo_máx)`."""
+    s = np.asarray(seg, np.float64)
+    for _ in range(iters):
+        dx, dy = s[:, 0] - cx, s[:, 1] - cy
+        d = np.hypot(dx, dy)
+        d[d < 1e-9] = 1e-9
+        cx = float(np.mean(s[:, 0] - r * dx / d))
+        cy = float(np.mean(s[:, 1] - r * dy / d))
+    res = np.abs(np.hypot(s[:, 0] - cx, s[:, 1] - cy) - r)
+    return cx, cy, float(res.max())
+
+
+def _arc_check(seg, tol_mm, r_prior_mm=0.0):
     """`seg` é um ARCO de verdade? Exige: resíduo radial < tol, raio plausível
     (`ARC_R_MIN_MM..ARC_R_MAX_MM`) e varredura angular MONÓTONA de 10°–350° (não é
     serpentina que por acaso tangencia o círculo). Devolve `(cx, cy, r, sigma)` com
-    `sigma` = sentido (+1 anti-horário em torno do centro), ou None."""
+    `sigma` = sentido (+1 anti-horário em torno do centro), ou None.
+
+    `r_prior_mm` > 0 (v0.13, flag --corner-radius): raio MEDIDO pelo usuário. Arco
+    aceito cujo raio livre cai na janela ±max(1 mm, 20%) do prior é REFIT com o raio
+    FIXO (só o centro) e aceito com tolerância frouxa (2×) — a medida do usuário vence
+    o viés da segmentação. Fora da janela, o arco não é o canto descrito: fica livre."""
     if len(seg) < 5:
         return None
     fit = _circle_fit(seg)
@@ -2274,7 +2306,12 @@ def _arc_check(seg, tol_mm):
     step_local = float(np.median(np.hypot(d[:, 0], d[:, 1])))
     if float(turn.max()) > max(3.0 * step_local / r, 0.12):
         return None
-    return cx, cy, r, (1.0 if sweep > 0 else -1.0)
+    sg = 1.0 if sweep > 0 else -1.0
+    if r_prior_mm and abs(r - r_prior_mm) <= max(1.0, 0.2 * r_prior_mm):
+        cx2, cy2, res2 = _refit_center_fixed_r(seg, r_prior_mm, cx, cy)
+        if res2 < 2.0 * tol_mm:
+            return cx2, cy2, r_prior_mm, sg
+    return cx, cy, r, sg
 
 
 def _detect_line_runs(rp, step, tol_mm=LINE_TOL_MM, min_len_mm=LINE_MIN_MM):
@@ -2353,11 +2390,12 @@ def _detect_line_runs(rp, step, tol_mm=LINE_TOL_MM, min_len_mm=LINE_MIN_MM):
     return sorted(((i0 + ofs) % n, (i0 + ofs) % n + (i1 - i0)) for (i0, i1) in trimmed)
 
 
-def _detect_arc_runs(rp, step, line_runs, tol_mm=ARC_TOL_MM):
+def _detect_arc_runs(rp, step, line_runs, tol_mm=ARC_TOL_MM, r_prior_mm=CORNER_RADIUS_MM):
     """ARCOS nos vãos entre retas consecutivas (contorno inteiro se não há retas):
     tenta o vão INTEIRO como um arco (`_arc_check`); senão cresce sub-arcos gulosos.
     Fronteiras coladas (≤ 3 pontos) são SOLDADAS às vizinhas — sem nós gêmeos.
-    Devolve [(i0, i1, cx, cy, r, sigma)] no mesmo referencial de `line_runs`."""
+    Devolve [(i0, i1, cx, cy, r, sigma)] no mesmo referencial de `line_runs`.
+    `r_prior_mm` > 0 = prior de raio do usuário (--corner-radius; ver _arc_check)."""
     n = len(rp)
     min_pts = max(4, int(round(ARC_MIN_MM / step)))
     weld = 3
@@ -2373,7 +2411,7 @@ def _detect_arc_runs(rp, step, line_runs, tol_mm=ARC_TOL_MM):
                 gaps.append((g0, g1))
     arcs = []
     for (g0, g1) in gaps:
-        whole = _arc_check(_seg_pts(rp, g0, g1), tol_mm)
+        whole = _arc_check(_seg_pts(rp, g0, g1), tol_mm, r_prior_mm=r_prior_mm)
         if whole is not None:
             arcs.append((g0, g1) + whole)
             continue
@@ -2382,7 +2420,7 @@ def _detect_arc_runs(rp, step, line_runs, tol_mm=ARC_TOL_MM):
         while i <= g1 - min_pts:
             j, best = i + min_pts, None
             while j <= g1:
-                got = _arc_check(_seg_pts(rp, i, j), tol_mm)
+                got = _arc_check(_seg_pts(rp, i, j), tol_mm, r_prior_mm=r_prior_mm)
                 if got is not None:
                     best = (j,) + got
                     j += 1
@@ -2462,13 +2500,17 @@ def _open_corner_gaps(rp, lines, arcs, step):
     return lines2, arcs2
 
 
-def _fit_primitives(rp, field, eps, lines, arcs, min_dist_mm, step):
+def _fit_primitives(rp, field, eps, lines, arcs, min_dist_mm, step,
+                    r_prior_mm=CORNER_RADIUS_MM):
     """Emissão do pocket COM primitivas: âncoras = pontas de reta/arco (+ divisões de
     arco > 90°) + âncoras de quadrante/saliência dos trechos LIVRES. Tangente nas
     pontas = direção da primitiva (reta: corda; arco: tangente do círculo) → junção
     G1. Pontas de RETA são DESLOCADAS p/ fora pelo desvio residual máximo (a corda
     vira reta-suporte externa: contenção garantida — estufar uma cúbica colinear não
-    a move de lado). Cada trecho vira UMA `_one_cubic_contained`, como sempre."""
+    a move de lado). Cada trecho vira UMA `_one_cubic_contained`, como sempre.
+    Arco COLADO no prior (--corner-radius; raio == `r_prior_mm`): as pontas são
+    PROJETADAS radialmente no círculo declarado — só quando o movimento é p/ FORA
+    (p/ dentro penetraria a peça) e sem sobrepor o deslocamento de ponta de reta."""
     n = len(rp)
     lines, arcs = _open_corner_gaps(rp, lines, arcs, step)
     covered = [False] * n
@@ -2495,10 +2537,17 @@ def _fit_primitives(rp, field, eps, lines, arcs, min_dist_mm, step):
             pos_over[k] = (p[0] + nh[0] * d_out, p[1] + nh[1] * d_out)
     for arc in arcs:
         i0, i1, cx, cy, _r, sg = arc
+        snapped = bool(r_prior_mm) and _r == r_prior_mm
         for k in [i0, i1] + _arc_split_indices(arc, step):
             km = k % n
             bounds.add(km)
             want.setdefault(km, []).append(_arc_tangent(rp, km, cx, cy, sg))
+            if snapped and km not in pos_over:
+                p = rp[km]
+                d = math.hypot(p[0] - cx, p[1] - cy)
+                if 1e-9 < d < _r:                # projeta SÓ p/ fora (contenção)
+                    pos_over[km] = (cx + (p[0] - cx) * _r / d,
+                                    cy + (p[1] - cy) * _r / d)
     # Tangente por nó: a da primitiva quando há CONSENSO (junção tangente: reta↔arco
     # do filete, arcos encadeados — após `_open_corner_gaps`, a regra geral). Se ainda
     # houver DISCÓRDIA (> ~25°) num nó, fica a tangente de MARCHA do legado — o
@@ -2548,7 +2597,8 @@ def _poly_step(rp):
 
 
 def _fit_anchored(rp, field, eps, min_dist_mm=ANCHOR_MIN_DIST_MM,
-                  line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
+                  line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
+                  corner_radius_mm=CORNER_RADIUS_MM):
     """Âncoras BALANCEADAS POR QUADRANTE (ver `_quadrant_anchors`): as extremidades de cada
     setor angular, espaçadas a ≥ `min_dist_mm`, mais as âncoras de SALIÊNCIA local
     (`_protrusion_anchors`); entre âncoras consecutivas UMA cúbica suave CONTIDA
@@ -2562,10 +2612,12 @@ def _fit_anchored(rp, field, eps, min_dist_mm=ANCHOR_MIN_DIST_MM,
     if line_tol_mm and line_tol_mm > 0:
         step = _poly_step(rp)
         lines = _detect_line_runs(rp, step, tol_mm=line_tol_mm)
-        arcs = (_detect_arc_runs(rp, step, lines, tol_mm=arc_tol_mm)
+        arcs = (_detect_arc_runs(rp, step, lines, tol_mm=arc_tol_mm,
+                                 r_prior_mm=corner_radius_mm)
                 if arc_tol_mm and arc_tol_mm > 0 else [])
         if lines or arcs:
-            return _fit_primitives(rp, field, eps, lines, arcs, min_dist_mm, step)
+            return _fit_primitives(rp, field, eps, lines, arcs, min_dist_mm, step,
+                                   r_prior_mm=corner_radius_mm)
     prot = _protrusion_anchors(rp, PROTRUSION_DEV_MM, span_mm=min_dist_mm)
     radial = _quadrant_anchors(rp, min_dist_mm=min_dist_mm)
     anchors = sorted(set(radial) | set(prot))        # densidade ditada só por min_dist
@@ -2574,6 +2626,87 @@ def _fit_anchored(rp, field, eps, min_dist_mm=ANCHOR_MIN_DIST_MM,
     tang = _anchor_tangents(rp, anchors)
     return [_one_cubic_contained(s, field, eps)
             for s in _anchor_segments(rp, anchors, tang)]
+
+
+_BEZIER_ARC_K = 0.5522847498307936   # kappa: handle da cúbica que aproxima um arco de 90°
+
+_SHAPE_LAST = None                   # relato do último _fit_shape_rect que RODOU (r, inflação);
+                                     # None = não rodou ou caiu no fallback. O main anexa às métricas.
+
+
+def _fit_shape_rect(sil, r_mm, pocket_eps=0.0):
+    """Modelo paramétrico do `--shape rect` (v0.13): a peça foi DECLARADA um retângulo
+    de cantos arredondados (campo --describe da skill /ptoo) → o pocket é CONSTRUÍDO
+    exato em vez de ajustado estatisticamente. Pose (centro, W×H, θ) pelo
+    `cv2.minAreaRect` da silhueta; contorno = 4 retas + 4 arcos de 90° de raio `r_mm`
+    (piso MIN_RADIUS_MM — canto vivo declarado vira filete imprimível), tangentes em
+    todo nó (G1), emitidos como cúbicas (kappa). W/H inflam UNIFORMEMENTE o mínimo p/
+    conter a silhueta com penetração ≤ `pocket_eps` (SDF analítico do retângulo
+    arredondado). Devolve as 8 cúbicas em CCW — ou None (com WARNING → o chamador cai
+    no caminho genérico) quando a descrição não bate com a peça: inflação >
+    SHAPE_INFL_MAX_MM ou vão modelo→peça > SHAPE_GAP_MM."""
+    global _SHAPE_LAST
+    _SHAPE_LAST = None
+    pts = np.asarray([(float(x), float(y)) for (x, y) in _xy(sil)], np.float64)
+    if len(pts) < 8:
+        return None
+    (rcx, rcy), (w, h), ang = cv2.minAreaRect(pts.astype(np.float32).reshape(-1, 1, 2))
+    th = math.radians(ang)
+    c, s = math.cos(th), math.sin(th)
+    X = (pts[:, 0] - rcx) * c + (pts[:, 1] - rcy) * s
+    Y = -(pts[:, 0] - rcx) * s + (pts[:, 1] - rcy) * c
+    r = min(max(float(r_mm), MIN_RADIUS_MM), w / 2.0, h / 2.0)
+    aX, aY = np.abs(X), np.abs(Y)
+
+    def max_sdf(hw, hh):                         # SDF do retângulo arredondado (mm; >0 = fora)
+        qx, qy = aX - (hw - r), aY - (hh - r)
+        outer = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+        inner = np.minimum(np.maximum(qx, qy), 0.0)
+        return float(np.max(outer + inner - r))
+
+    hw, hh = w / 2.0, h / 2.0
+    d = max(0.0, max_sdf(hw, hh) - pocket_eps)   # inflar ambos os semieixos por d reduz
+    if d > SHAPE_INFL_MAX_MM:                    # TODO sdf positivo em ≥ d → 1 passo basta
+        warn(f"--shape rect: precisaria inflar {d:.1f} mm p/ conter a peça (teto "
+             f"{SHAPE_INFL_MAX_MM}) — a descrição não bate; usando o caminho genérico")
+        return None
+    hw, hh = hw + d, hh + d
+
+    k = _BEZIER_ARC_K * r
+    ex, ey = hw - r, hh - r                      # centros dos cantos: (±ex, ±ey)
+
+    def line(p0, p3):                            # reta = cúbica degenerada (handles a 1/3)
+        v = ((p3[0] - p0[0]) / 3.0, (p3[1] - p0[1]) / 3.0)
+        return (p0, (p0[0] + v[0], p0[1] + v[1]), (p3[0] - v[0], p3[1] - v[1]), p3)
+
+    def arc(ctr, a0_deg):                        # arco de 90° CCW a partir de a0
+        a0, a1 = math.radians(a0_deg), math.radians(a0_deg + 90.0)
+        p0 = (ctr[0] + r * math.cos(a0), ctr[1] + r * math.sin(a0))
+        p3 = (ctr[0] + r * math.cos(a1), ctr[1] + r * math.sin(a1))
+        return (p0, (p0[0] - k * math.sin(a0), p0[1] + k * math.cos(a0)),
+                (p3[0] + k * math.sin(a1), p3[1] - k * math.cos(a1)), p3)
+
+    segs = [line((-ex, -hh), (ex, -hh)), arc((ex, -ey), -90.0),   # base → canto BR
+            line((hw, -ey), (hw, ey)), arc((ex, ey), 0.0),        # direita → TR
+            line((ex, hh), (-ex, hh)), arc((-ex, ey), 90.0),      # topo → TL
+            line((-hw, ey), (-hw, -ey)), arc((-ex, -ey), 180.0)]  # esquerda → BL
+
+    def to_world(p):
+        return (rcx + p[0] * c - p[1] * s, rcy + p[0] * s + p[1] * c)
+
+    cubs = [tuple(to_world(q) for q in b) for b in segs]
+    # Vão modelo→peça: ponto do modelo longe de QUALQUER ponto da silhueta = a peça
+    # não é o shape declarado (círculo "descrito" como retângulo sobra nos cantos).
+    flat = np.asarray(flatten_beziers(cubs, seg=16), np.float64)
+    dif = flat[:, None, :] - pts[None, :, :]
+    gap = float(np.max(np.min(np.hypot(dif[..., 0], dif[..., 1]), axis=1)))
+    if gap > SHAPE_GAP_MM:
+        warn(f"--shape rect: vão de {gap:.1f} mm entre o modelo e a peça (teto "
+             f"{SHAPE_GAP_MM}) — a peça não parece o retângulo descrito; usando o "
+             f"caminho genérico")
+        return None
+    _SHAPE_LAST = {"shape": "rect", "r": r, "infl": d}
+    return cubs
 
 
 def _self_intersecting_indices(cubics, window=8, nsamp=20):
@@ -2633,9 +2766,15 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
                                 step=0.4, ppm=12.0, faithful=False,
                                 min_dist_mm=ANCHOR_MIN_DIST_MM,
                                 pocket_eps=POCKET_EPS_MM, symmetry='none',
-                                line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
+                                line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
+                                shape="off", corner_radius_mm=CORNER_RADIUS_MM):
     """Ajuste com TODOS os nós SUAVES (G1), contendo a peça. Devolve lista de
     (p0,c1,c2,p3) no referencial da silhueta; o snap de bbox (depois) fixa a dimensão real.
+
+    v0.13 (priors do --describe): `corner_radius_mm` > 0 cola os arcos detectados no
+    raio MEDIDO pelo usuário (ver _arc_check); `shape='rect'` constrói o pocket como
+    retângulo arredondado EXATO (ver _fit_shape_rect) — só no modo pocket (ignorado
+    com `faithful`); se o modelo não bate com a peça, cai no caminho genérico.
 
     Dois regimes:
     • POCKET de encaixe (default, `faithful=False`): âncoras por QUADRANTE (ver
@@ -2654,12 +2793,19 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
     n = len(rp)
     if n < 4:
         return []
-    field = _floor_field(clean, 0.0, ppm)        # piso de contenção = peça denoisada
-    if not faithful:                             # POCKET de encaixe (âncoras por quadrante)
+    modeled = None
+    if shape == "rect" and not faithful:         # forma DECLARADA: modelo exato (v0.13)
+        modeled = _fit_shape_rect(clean, corner_radius_mm, pocket_eps)
+    if modeled is not None:
+        cubics = modeled
+    elif not faithful:                           # POCKET de encaixe (âncoras por quadrante)
+        field = _floor_field(clean, 0.0, ppm)    # piso de contenção = peça denoisada
         cubics = _fit_anchored(rp, field, pocket_eps, min_dist_mm=min_dist_mm,
-                               line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
+                               line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm,
+                               corner_radius_mm=corner_radius_mm)
     else:
         # FIEL/ilimitado: âncoras do fecho convexo + subdivisão por contenção (legado).
+        field = _floor_field(clean, 0.0, ppm)
         anchors = hull_anchor_indices(rp, simplify_mm=simplify_mm)
         if len(anchors) < 2:
             anchors = [0, n // 2]
@@ -2667,8 +2813,10 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
         cubics = []
         for seg, t1, t2 in _anchor_segments(rp, anchors, tang):
             _fit_segment_contained(seg, t1, t2, field, eps, cubics)
-            
-    if symmetry and symmetry != 'none':
+
+    # Modelo paramétrico já é exato e simétrico na PRÓPRIA pose; espelhar em torno do
+    # eixo da bbox (que ignora a rotação da peça) o entortaria — simetria só no genérico.
+    if symmetry and symmetry != 'none' and modeled is None:
         min_x, min_y, max_x, max_y = bbox(silhouette)
         if symmetry == 'both':
             cubics = symmetrize_beziers(cubics, 'vertical', 0.5 * (min_x + max_x))
@@ -2717,17 +2865,20 @@ _ANCHORED_CACHE = {}
 
 def fit_anchored_cached(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
                         faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
-                        symmetry='none', line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
+                        symmetry='none', line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
+                        shape="off", corner_radius_mm=CORNER_RADIUS_MM):
     """Wrapper memoizado de `fit_closed_beziers_anchored` (mesma assinatura/retorno)."""
     key = (tuple(map(tuple, sil)), round(smooth_mm, 6), round(simplify_mm, 6),
            bool(faithful), round(min_dist_mm, 6), round(pocket_eps, 6), symmetry,
-           round(line_tol_mm, 6), round(arc_tol_mm, 6))
+           round(line_tol_mm, 6), round(arc_tol_mm, 6),
+           shape, round(corner_radius_mm, 6))
     cached = _ANCHORED_CACHE.get(key)
     if cached is None:
         cached = fit_closed_beziers_anchored(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
                                              faithful=faithful, min_dist_mm=min_dist_mm,
                                              pocket_eps=pocket_eps, symmetry=symmetry,
-                                             line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
+                                             line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm,
+                                             shape=shape, corner_radius_mm=corner_radius_mm)
         _ANCHORED_CACHE.clear()
         _ANCHORED_CACHE[key] = cached
     return cached
@@ -2736,7 +2887,8 @@ def fit_anchored_cached(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM
 def _fit_for_output(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
                     faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM,
                     pocket_eps=POCKET_EPS_MM, symmetry="none",
-                    line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
+                    line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
+                    shape="off", corner_radius_mm=CORNER_RADIUS_MM):
     """Cúbicas PRONTAS p/ emissão — fonte ÚNICA dos três consumidores (.svg final, overlay
     Inkscape e métricas do CLI), garantindo que todos usem os MESMOS parâmetros (inclusive
     `symmetry`) e a mesma chave do cache: ajuste ancorado memoizado + snap de bbox no modo
@@ -2744,7 +2896,8 @@ def _fit_for_output(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
     cub = fit_anchored_cached(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
                               faithful=faithful, min_dist_mm=min_dist_mm,
                               pocket_eps=pocket_eps, symmetry=symmetry,
-                              line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
+                              line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm,
+                              shape=shape, corner_radius_mm=corner_radius_mm)
     if cub and faithful:
         cub = _scale_cubics_to_bbox(cub, *size(sil))
     return cub
@@ -2754,7 +2907,8 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                    silhouette=None, c_fit=0.3, anchored=True,
                    smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
                    min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM, symmetry='none',
-                   line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM):
+                   line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
+                   shape="off", corner_radius_mm=CORNER_RADIUS_MM):
     """Estágio 5: SVG em mm — contorno + PREENCHIMENTO translúcido (`OUTLINE_COLOR` a
     `OUTLINE_FILL_OPACITY`, cor destacada quase transparente p/ sobrepor o objeto e
     conferir cobertura), feito SÓ de curvas de Bézier cúbicas (`C`). Com `silhouette`:
@@ -2778,7 +2932,8 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                                      simplify_mm=simplify_mm, faithful=faithful,
                                      min_dist_mm=min_dist_mm, pocket_eps=pocket_eps,
                                      symmetry=symmetry, line_tol_mm=line_tol_mm,
-                                     arc_tol_mm=arc_tol_mm)
+                                     arc_tol_mm=arc_tol_mm, shape=shape,
+                                     corner_radius_mm=corner_radius_mm)
         else:
             cubics = fit_closed_beziers_contained(p, silhouette, c_fit=c_fit)
             if cubics:                            # snap p/ a dimensão real medida pela grade
@@ -2928,7 +3083,8 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM,
                      mask_smooth_mm=MASK_SMOOTH_MM, mask_smooth_keep_bumps=False,
                      val_frac=SEG_VAL_FRAC, in2_path=None, fuse_grow_mm=FUSE_GROW_MM,
-                     line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM, level="off",
+                     line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
+                     shape="off", corner_radius_mm=CORNER_RADIUS_MM, level="off",
                      humble="auto", overlay_path=None, overlay_svg_path=None,
                      debug_dir=None, return_silhouette=False, return_silhouettes=False,
                      return_edit_data=False, return_humble_report=False):
@@ -3033,7 +3189,8 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
         cub = _fit_for_output(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
                               faithful=faithful, min_dist_mm=min_dist_mm,
                               pocket_eps=pocket_eps, symmetry=symmetry,
-                              line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm)
+                              line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm,
+                              shape=shape, corner_radius_mm=corner_radius_mm)
         flag_pl = [[(float(x) * mmpp_x, float(y) * mmpp_y) for (x, y) in run]
                    for run in (humble_report or {}).get("flag_runs_px", [])]
         write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path,
@@ -3107,6 +3264,8 @@ def _pipeline_kwargs(args, overlay_path, overlay_svg_path):
                 fuse_grow_mm=getattr(args, "fuse_grow", FUSE_GROW_MM),
                 line_tol_mm=getattr(args, "line_tol", LINE_TOL_MM),
                 arc_tol_mm=getattr(args, "arc_tol", ARC_TOL_MM),
+                shape=getattr(args, "shape", "off"),
+                corner_radius_mm=getattr(args, "corner_radius", CORNER_RADIUS_MM),
                 level=getattr(args, "level", "off"),
                 humble=getattr(args, "humble", "auto"),
                 overlay_path=overlay_path, overlay_svg_path=overlay_svg_path,
@@ -3141,7 +3300,9 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
                            faithful=args.faithful, min_dist_mm=args.min_dist,
                            pocket_eps=args.pocket_eps, symmetry=args.symmetry,
                            line_tol_mm=getattr(args, "line_tol", LINE_TOL_MM),
-                           arc_tol_mm=getattr(args, "arc_tol", ARC_TOL_MM))
+                           arc_tol_mm=getattr(args, "arc_tol", ARC_TOL_MM),
+                           shape=getattr(args, "shape", "off"),
+                           corner_radius_mm=getattr(args, "corner_radius", CORNER_RADIUS_MM))
     if not cub0:
         # Editor sem nós é beco sem saída (nem inserir dá: precisa de ≥ 2 nós) e o
         # Finalize crasharia em bbox de lista vazia — aborta com diagnóstico.
@@ -3286,6 +3447,20 @@ def main(argv=None):
                     help="detecção de ARCOS (mm, v0.10): nos vãos entre retas, círculo com resíduo "
                          "radial < isto vira arco tangente (canto = filete limpo, 1 cúbica por "
                          f"90°). 0 = desliga só os arcos. PADRÃO {ARC_TOL_MM}.")
+    ap.add_argument("--corner-radius", dest="corner_radius", type=float,
+                    default=CORNER_RADIUS_MM,
+                    help="prior de RAIO de canto (mm, v0.13): o raio MEDIDO pelo usuário nos "
+                         "filetes da peça (via --describe da skill /ptoo). Arco detectado com "
+                         "raio a ±max(1 mm, 20%%) disto é REFIT com o raio FIXO — o canto sai "
+                         "com o raio declarado, não o estatístico da segmentação. Com --shape "
+                         "rect é o raio dos 4 cantos do modelo. 0 = desligado (PADRÃO).")
+    ap.add_argument("--shape", dest="shape", default="off", choices=["off", "rect"],
+                    help="forma DECLARADA da peça (v0.13): 'rect' = retângulo de cantos "
+                         "arredondados — o pocket é CONSTRUÍDO exato (4 retas + 4 arcos de raio "
+                         "--corner-radius tangentes, pose por minAreaRect, 8 Béziers), inflado o "
+                         "mínimo p/ conter a peça. Se a silhueta não bate com a forma declarada "
+                         "(vão/inflação acima do teto), avisa e cai no caminho genérico. Só no "
+                         "modo POCKET (ignorado com --faithful/--tol-fit). PADRÃO off.")
     ap.add_argument("--min-dist", dest="min_dist", type=float, default=ANCHOR_MIN_DIST_MM,
                     help="distância MÍNIMA (mm) entre âncoras do MESMO QUADRANTE no pocket de "
                          "encaixe: ao adensar (8, 12…), o 2º/3º ponto de um quadrante só entra "
@@ -3309,6 +3484,11 @@ def main(argv=None):
     ap.add_argument("--debug-dir", dest="debug_dir")
     args = ap.parse_args(argv)
 
+    if args.shape != "off" and (args.faithful or args.tol_fit or args.polyline):
+        # Modelo declarado é coisa do POCKET (constrói a cavidade, não reproduz a peça).
+        warn(f"--shape {args.shape} ignorado fora do modo pocket "
+             f"(--faithful/--tol-fit/--polyline)")
+        args.shape = "off"
     if args.tol_fit and args.humble != "off":
         # Fora de escopo do fallback (mesma contradição do --faithful, tratado dentro
         # de generate_outline): avisa só quando o usuário FORÇOU o humilde.
@@ -3359,7 +3539,8 @@ def main(argv=None):
                          smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
                          faithful=args.faithful, min_dist_mm=args.min_dist,
                          pocket_eps=args.pocket_eps, symmetry=args.symmetry,
-                         line_tol_mm=args.line_tol, arc_tol_mm=args.arc_tol)
+                         line_tol_mm=args.line_tol, arc_tol_mm=args.arc_tol,
+                         shape=args.shape, corner_radius_mm=args.corner_radius)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(svg)
     # Saída COMPACTA e parseável (a skill /ptoo lê isto a cada passo): uma linha de status,
@@ -3374,13 +3555,19 @@ def main(argv=None):
         cub = _fit_for_output(sil, smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
                               faithful=args.faithful, min_dist_mm=args.min_dist,
                               pocket_eps=args.pocket_eps, symmetry=args.symmetry,
-                              line_tol_mm=args.line_tol,
-                              arc_tol_mm=args.arc_tol)    # mesma geometria do SVG emitido
+                              line_tol_mm=args.line_tol, arc_tol_mm=args.arc_tol,
+                              shape=args.shape,           # mesma geometria do SVG emitido
+                              corner_radius_mm=args.corner_radius)
         cov = coverage(flatten_beziers(cub), sil_ref, tol_mm=CONTAIN_TOL_MM)
         if pocket:
             pw, ph = size(flatten_beziers(cub))     # pocket = ≥ objeto (contém a peça)
             metrics = (f"POCKET {len(cub)} Béziers | {obj} | pocket {pw:.2f}x{ph:.2f} "
                        f"(folga {pw - ow:+.2f}/{ph - oh:+.2f}) | contém {cov:.4f}")
+            if args.shape != "off":                 # relato do modelo declarado (v0.13):
+                metrics += (                        # a skill valida r/inflação por aqui
+                    f" | shape {_SHAPE_LAST['shape']} r={_SHAPE_LAST['r']:.2f} "
+                    f"infl +{_SHAPE_LAST['infl']:.2f}" if _SHAPE_LAST
+                    else " | shape FALLBACK")
             undercontained = cov < CONTAIN_COVERAGE
         else:
             metrics = f"FIEL {len(cub)} Béziers | {obj} | encaixe {cov:.4f}"

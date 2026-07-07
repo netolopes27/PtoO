@@ -10,5 +10,5 @@ do Claude Code.
 ## Específico do Claude Code
 
 - **Skill `/ptoo`** (`.claude/skills/ptoo/`, doc própria no `SKILL.md`): calibrador iterativo
-  invocado com `/ptoo <foto.jpg> --pass N [--debug]`. Procedimento, memória e gotchas no
+  invocado com `/ptoo <foto.jpg> --pass N [--debug] [--describe "texto"]`. Procedimento, memória e gotchas no
   [AGENTS.md](AGENTS.md) §Gotchas e no próprio `SKILL.md`.

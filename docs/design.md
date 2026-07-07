@@ -201,6 +201,19 @@ polui o contorno.
    aresta reta é reta de verdade (não arqueia p/ dentro — no Pi a folga caiu de +0.83 p/ +0.07 em
    min-dist 10), canto é filete tangente, e `--min-dist` passa a reger só os trechos livres.
    `--line-tol 0` desliga tudo (caminho legado intacto).
+   **Priors de geometria (v0.13, `--corner-radius`/`--shape`, vindos do `--describe` da skill
+   /ptoo):** conhecimento DECLARADO pelo usuário vira restrição. `--corner-radius R` — arco
+   detectado com raio a ±max(1 mm, 20%) do prior é refit com **raio fixo**
+   (`_refit_center_fixed_r`, ponto fixo de Gauss–Newton só no centro; pontas projetadas no
+   círculo declarado, só p/ fora): o canto sai com o raio medido, não o estatístico.
+   `--shape rect` — pocket **construído** (`_fit_shape_rect`), não ajustado: pose por
+   `minAreaRect` da silhueta denoisada, 4 retas + 4 arcos de 90° (raio R, piso `MIN_RADIUS_MM`)
+   como 8 cúbicas (kappa), W/H inflados uniformemente o mínimo p/ conter (SDF analítico;
+   1 passo basta — inflar os semieixos por d reduz todo SDF ≥ d). Salvaguardas → WARNING +
+   fallback genérico: inflação > `SHAPE_INFL_MAX_MM` ou vão modelo→peça > `SHAPE_GAP_MM`
+   (peça não é a forma declarada). Com o modelo, `--symmetry` é pulado (o modelo já é simétrico
+   na própria pose; espelhar na bbox entortaria a rotação) e as métricas ganham
+   `shape rect r=… infl +…` (ou `shape FALLBACK`).
    **Espigões finos (v0.7, `_preserve_spikes`):** o low-pass do `--smooth-mm` recuaria a ponta de
    uma protuberância fina real (gancho da trena) antes da seleção de âncoras; os trechos crus
    proeminentes (recuo ≥ `SPIKE_MIN_RECEDE_MM` e boca ≤ `SPIKE_MAX_WIDTH_MM` — pico de serrilha e
@@ -240,7 +253,9 @@ polui o contorno.
   `_fit_one_cubic` (mínimos quadrados, tangentes fixas), `_fit_cubic_recursive` (split no maior
   erro).
 - **Pocket ancorado (modo padrão):** `fit_closed_beziers_anchored(silhouette, smooth_mm,
-  simplify_mm, eps, faithful=False, min_dist_mm)`; helpers `_quadrant_anchors`,
+  simplify_mm, eps, faithful=False, min_dist_mm, pocket_eps, symmetry, line_tol_mm, arc_tol_mm,
+  shape="off", corner_radius_mm=0)` (priors v0.13: `_fit_shape_rect` constrói o modelo rect;
+  `_refit_center_fixed_r` refit de arco com raio fixo); helpers `_quadrant_anchors`,
   `_protrusion_anchors`, `_fit_anchored`, `_one_cubic_contained` (estufa p/ conter, com
   **guarda de simplicidade**: handle ≤ `ANCHOR_HANDLE_CAP`·corda via `_cap_handles` e rejeição
   de candidatos que se auto-cruzam por `_cubic_is_simple`), `_anchor_tangents`
@@ -290,9 +305,11 @@ Orquestrador `main(argv)`.
 python photo_to_outline.py --in thermpro.jpg --out thermpro.svg \
     [--in2 foto2.jpg] [--fuse-grow 0] \
     [--dict DICT_4X4_50] [--min-radius 1.5] [--smooth-mm 8] [--clearance 0] \
-    [--shadow off|remove|texture] [--symmetry none|vertical|horizontal|both] [--level off|auto] \
+    [--shadow off|remove|texture] [--val-frac 0.30] \
+    [--symmetry none|vertical|horizontal|both] [--level off|auto] \
     [--humble auto|on|off] [--inkscape] \
     [--simplify 2.0] [--min-dist 10] [--faithful] [--mask-smooth-mm 0] [--mask-smooth-keep-bumps] \
+    [--line-tol 0.3] [--arc-tol 0.3] [--corner-radius 0] [--shape off|rect] [--pocket-eps 0.5] \
     [--tol-fit --fit-tol 0.2 --guide 0.5 --c-fit 0] [--polyline] [--edit] \
     [--name thermpro] [--debug-dir _debug]
 ```
@@ -302,7 +319,8 @@ Imprima `base.svg` em A4 a 100%, apoie a peça no centro branco, fotografe perto
 densidade no modo fiel. `--shadow remove` = histerese de borda por croma; `--shadow texture` =
 subtrator de sombra por textura (corpo cinza-neutro, v0.5, com refino watershed v0.8); `--in2` =
 fusão 2-fotos com luz oposta (v0.9; registro automático, sombras eliminadas, metal claro
-recuperado); `--symmetry` = espelho + média; `--humble` = contorno humilde (v0.12: cordas entre
+recuperado); `--corner-radius`/`--shape` = priors de geometria declarada (v0.13, ver §Pipeline
+5); `--symmetry` = espelho + média; `--humble` = contorno humilde (v0.12: cordas entre
 trechos firmes quando a borda não tem apoio visual; `auto` só ativa em cena degradada, métricas
 ganham `firme NN%` e, se houver, `flags N` + avisos por trecho incerto). **A cada
 execução** sai, antes do `.svg`, o overlay PNG `_overlay_<nome>.png` (contorno em vermelho sobre
@@ -344,6 +362,9 @@ avisa) · `LINE_TOL_MM = 0.3` / `ARC_TOL_MM = 0.3` (primitivas v0.10; defaults d
 `--line-tol`/`--arc-tol`, 0 desliga) · `LINE_MIN_MM = 5.0` / `ARC_MIN_MM = 2.5` (comprimentos
 mínimos) · `ARC_R_MIN_MM = 0.8` / `ARC_R_MAX_MM = 60.0` (faixa de raio plausível; também veta
 reta que é arco disfarçado) · `PRIM_TRIM_MM = 0.8` (recuo das pontas de reta → filete G1) ·
+`CORNER_RADIUS_MM = 0.0` (prior de raio `--corner-radius`, v0.13; 0 desliga) ·
+`SHAPE_INFL_MAX_MM = 2.0` / `SHAPE_GAP_MM = 5.0` (salvaguardas do `--shape`: inflação e vão
+máximos antes do fallback) ·
 `FIT_TOL_MM = 0.2` · `BEZIER_GUIDE_MM = 0.5` · `CORNER_ANGLE_DEG = 40.0` ·
 `RASTER_PPM = 16.0` · `OUTLINE_COLOR = "#ff00ff"` / `OUTLINE_FILL_OPACITY = 0.25` ·
 `HUMBLE_MIN_FIRM_FRAC = 0.5` (gatilho do `--humble auto`) / `HUMBLE_GRAD_WIN_MM = 0.5` (janela
@@ -380,7 +401,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 206/206 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 216/216 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -399,6 +420,12 @@ personalizável** a partir do contorno medido.
   (spread < 0.08 mm) e **nunca corta a peça** (reta-suporte externa); menos nós que o legado;
   todo nó G1; `line_tol_mm=0` reproduz o legado; kwargs com default em toda a cadeia
   (`generate_outline`, `polygon_to_svg`, `fit_closed_beziers_anchored`, `fit_anchored_cached`).
+  `TestGeometryPriors` (v0.13): prior `--corner-radius` cola os arcos no raio declarado
+  (cantos 4.6 + prior 5 → raio exatamente 5; fora da janela NÃO cola; fit completo emite canto
+  r≈5 contendo a peça); `--shape rect` → exatamente 8 cúbicas com tamanho colado e raio exato,
+  recupera rotação 3° + ruído (área ≈ ideal), canto vivo declarado vira `MIN_RADIUS_MM`,
+  círculo "descrito" como retângulo → WARNING + fallback genérico (ainda contém), `--faithful`
+  ignora o shape; priors com default em toda a cadeia.
   `TestAutoLevel` (011/F3): tabela do `snap90`; o estimador recupera os ângulos injetados
   (retângulos girados — a tabela do experimento virou caso de teste); disco é recusado
   (envelope instável), quadrado com arestas passa; correção fecha o laço com **resíduo < 0.3°**

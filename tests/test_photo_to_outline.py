@@ -11,6 +11,8 @@
 # Rodar: .venv/Scripts/python tests/run_image_tests.py
 # =============================================================================
 
+import contextlib
+import io
 import math
 import os
 import sys
@@ -530,6 +532,156 @@ class TestPrimitiveFit(unittest.TestCase):
             self.assertIn("arc_tol_mm", sig.parameters, fn.__name__)
             self.assertEqual(sig.parameters["line_tol_mm"].default, P.LINE_TOL_MM)
             self.assertEqual(sig.parameters["arc_tol_mm"].default, P.ARC_TOL_MM)
+
+
+class TestGeometryPriors(unittest.TestCase):
+    """v0.13 (campo --describe da skill /ptoo): priors de GEOMETRIA declarados pelo
+    usuário viram restrição. `--corner-radius R`: arco detectado com raio perto de R é
+    REFIT com raio FIXO (o canto sai com o raio MEDIDO pelo usuário, não o estatístico).
+    `--shape rect`: modelo paramétrico — retângulo verdadeiro (4 retas + 4 arcos de
+    raio R tangentes, pose por minAreaRect), inflado o mínimo p/ conter a peça; se a
+    silhueta não parece um retângulo (vão/inflação acima do teto), avisa e cai no
+    caminho genérico."""
+
+    W, H = 80.0, 50.0
+
+    def _rp(self, pts, step=0.4):
+        return P.resample_uniform(pts, step, closed=True)
+
+    @staticmethod
+    def _rot(pts, deg):
+        c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+        return [(x * c - y * s, x * s + y * c) for (x, y) in pts]
+
+    @staticmethod
+    def _noisy(pts, amp=0.12, seed=7):
+        rng = np.random.default_rng(seed)
+        out = []
+        for (x, y) in pts:
+            d = math.hypot(x, y)
+            f = 1.0 + rng.uniform(-amp, amp) / max(d, 1e-9)
+            out.append((x * f, y * f))
+        return out
+
+    def _corner_pts(self, flat, keep_mm=4.4):
+        # Só os pontos do ARCO do canto superior-direito (exclui as retas vizinhas).
+        return [p for p in flat
+                if p[0] > self.W / 2 - keep_mm and p[1] > self.H / 2 - keep_mm]
+
+    def test_default_constants(self):
+        # Priors nascem DESLIGADOS (CLI: --corner-radius / --shape) — suíte legada intacta.
+        self.assertEqual(P.CORNER_RADIUS_MM, 0.0)
+        self.assertGreater(P.SHAPE_GAP_MM, 0.0)
+        self.assertGreater(P.SHAPE_INFL_MAX_MM, 0.0)
+
+    def test_corner_radius_snaps_detected_arcs(self):
+        # Cantos segmentados com r=4.6 (a máscara come ~0.4), usuário MEDIU 5.0 → os
+        # 4 arcos saem com raio EXATAMENTE 5.0 (refit de centro com raio fixo).
+        rp = self._rp(rounded_rect(self.W, self.H, 4.6, n=40))
+        lines = P._detect_line_runs(rp, 0.4, tol_mm=0.3, min_len_mm=5.0)
+        arcs = P._detect_arc_runs(rp, 0.4, lines, tol_mm=0.3, r_prior_mm=5.0)
+        self.assertEqual(len(arcs), 4)
+        for a in arcs:
+            self.assertEqual(a[4], 5.0)
+
+    def test_corner_radius_outside_window_not_snapped(self):
+        # Raio real 8 vs prior 5: fora da janela (max(1 mm, 20%)) → NÃO cola — o prior
+        # não deforma cantos que claramente não são o descrito.
+        rp = self._rp(rounded_rect(self.W, self.H, 8.0, n=40))
+        lines = P._detect_line_runs(rp, 0.4, tol_mm=0.3, min_len_mm=5.0)
+        arcs = P._detect_arc_runs(rp, 0.4, lines, tol_mm=0.3, r_prior_mm=5.0)
+        self.assertEqual(len(arcs), 4)
+        for a in arcs:
+            self.assertGreater(a[4], 6.5)
+
+    def test_corner_radius_full_fit_radius_and_containment(self):
+        # Fit completo com o prior: o canto emitido tem raio ≈ 5 (não os 4.6 da
+        # silhueta) e o pocket segue contendo a peça.
+        piece = rounded_rect(self.W, self.H, 4.6, n=40)
+        cub = P.fit_closed_beziers_anchored(piece, smooth_mm=1.0, min_dist_mm=6.0,
+                                            corner_radius_mm=5.0)
+        flat = P.flatten_beziers(cub, seg=40)
+        corner = self._corner_pts(flat)
+        self.assertGreater(len(corner), 5)
+        fitc = P._circle_fit(corner)
+        self.assertIsNotNone(fitc)
+        self.assertAlmostEqual(fitc[2], 5.0, delta=0.35)
+        self.assertGreaterEqual(P.coverage(flat, piece, tol_mm=P.CONTAIN_TOL_MM), 0.995)
+
+    def test_shape_rect_exact_construction(self):
+        # Forma totalmente descrita: 8 cúbicas exatas (4 retas + 4 arcos de 90°),
+        # tamanho colado no objeto (sem inflação) e raio de canto EXATO.
+        piece = rounded_rect(self.W, self.H, 5.0, n=60)
+        cub = P.fit_closed_beziers_anchored(piece, smooth_mm=1.0, shape="rect",
+                                            corner_radius_mm=5.0)
+        self.assertEqual(len(cub), 8)
+        flat = P.flatten_beziers(cub, seg=40)
+        pw, ph = P.size(flat)
+        self.assertAlmostEqual(pw, self.W, delta=0.4)
+        self.assertAlmostEqual(ph, self.H, delta=0.4)
+        self.assertGreaterEqual(P.coverage(flat, piece, tol_mm=P.CONTAIN_TOL_MM), 0.999)
+        fitc = P._circle_fit(self._corner_pts(flat))
+        self.assertIsNotNone(fitc)
+        self.assertAlmostEqual(fitc[2], 5.0, delta=0.15)
+
+    def test_shape_rect_recovers_rotation_and_noise(self):
+        # Peça torta (3°) e borda ruidosa: o minAreaRect recupera a pose e o modelo
+        # continua exato — 8 cúbicas, contém a peça, área ≈ retângulo arredondado ideal.
+        piece = self._rot(self._noisy(rounded_rect(self.W, self.H, 5.0, n=60)), 3.0)
+        cub = P.fit_closed_beziers_anchored(piece, smooth_mm=1.0, shape="rect",
+                                            corner_radius_mm=5.0)
+        self.assertEqual(len(cub), 8)
+        flat = P.flatten_beziers(cub, seg=40)
+        self.assertGreaterEqual(P.coverage(flat, piece, tol_mm=P.CONTAIN_TOL_MM), 0.995)
+        ideal = self.W * self.H - (4.0 - math.pi) * 5.0 ** 2
+        self.assertAlmostEqual(P.polygon_area(flat), ideal, delta=0.03 * ideal)
+
+    def test_shape_rect_sharp_corners_get_min_radius(self):
+        # `--corner-radius 0` (canto vivo declarado): o modelo usa MIN_RADIUS_MM —
+        # imprimível (sem cantos de 90°), inflando o mínimo p/ conter o canto vivo.
+        piece = self._rp(rectangle(self.W, self.H), step=0.4)
+        cub = P.fit_closed_beziers_anchored(piece, smooth_mm=1.0, shape="rect",
+                                            corner_radius_mm=0.0)
+        self.assertEqual(len(cub), 8)
+        flat = P.flatten_beziers(cub, seg=40)
+        fitc = P._circle_fit(self._corner_pts(flat, keep_mm=P.MIN_RADIUS_MM - 0.2))
+        self.assertIsNotNone(fitc)
+        self.assertAlmostEqual(fitc[2], P.MIN_RADIUS_MM, delta=0.3)
+        self.assertGreaterEqual(P.coverage(flat, piece, tol_mm=P.CONTAIN_TOL_MM), 0.995)
+
+    def test_shape_rect_falls_back_when_piece_is_not_rect(self):
+        # Círculo ⌀50 "descrito" como retângulo: o vão modelo→peça estoura o teto →
+        # AVISO no stderr e caminho genérico (que segue contendo a peça).
+        piece = regular_polygon(240, 25.0)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            cub = P.fit_closed_beziers_anchored(piece, smooth_mm=1.0, shape="rect",
+                                                corner_radius_mm=5.0)
+        self.assertIn("shape", err.getvalue())
+        self.assertNotEqual(len(cub), 8)
+        flat = P.flatten_beziers(cub, seg=40)
+        self.assertGreaterEqual(P.coverage(flat, piece, tol_mm=P.CONTAIN_TOL_MM), 0.99)
+
+    def test_shape_ignored_with_faithful(self):
+        # Modelo é coisa do POCKET: no modo fiel o shape é ignorado (mesmas cúbicas).
+        piece = rounded_rect(self.W, self.H, 5.0, n=40)
+        a = P.fit_closed_beziers_anchored(piece, smooth_mm=1.0, faithful=True)
+        b = P.fit_closed_beziers_anchored(piece, smooth_mm=1.0, faithful=True,
+                                          shape="rect", corner_radius_mm=5.0)
+        self.assertEqual(a, b)
+
+    def test_plumbing_kwargs_defaults(self):
+        # Plumbing: os priors chegam com default a todas as camadas (testes legados
+        # chamam sem os args novos — TDD do repo).
+        import inspect
+        for fn in (P.generate_outline, P.polygon_to_svg, P.fit_closed_beziers_anchored,
+                   P.fit_anchored_cached):
+            sig = inspect.signature(fn)
+            self.assertIn("shape", sig.parameters, fn.__name__)
+            self.assertIn("corner_radius_mm", sig.parameters, fn.__name__)
+            self.assertEqual(sig.parameters["shape"].default, "off", fn.__name__)
+            self.assertEqual(sig.parameters["corner_radius_mm"].default,
+                             P.CORNER_RADIUS_MM, fn.__name__)
 
 
 class TestCoverageTolerance(unittest.TestCase):

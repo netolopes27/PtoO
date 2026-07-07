@@ -2,10 +2,11 @@
 name: ptoo
 description: >-
   Calibra iterativamente a CLI photo_to_outline.py deste repo a partir de uma foto, mirando um
-  POCKET de encaixe justo. Use quando o usuário rodar /ptoo <foto.jpg> --pass N [--debug], pedir
-  para "gerar/calibrar o contorno/SVG/pocket a partir de uma foto", ou ajustar os parâmetros do
-  photo-to-outline. Roda a CLI, inspeciona o contorno com zoom sobre a foto, recalibra os
-  parâmetros em até N tentativas e mantém uma memória pequena.
+  POCKET de encaixe justo. Use quando o usuário rodar /ptoo <foto.jpg> --pass N [--debug]
+  [--describe "texto"], pedir para "gerar/calibrar o contorno/SVG/pocket a partir de uma foto",
+  ou ajustar os parâmetros do photo-to-outline. Roda a CLI, inspeciona o contorno com zoom sobre
+  a foto, recalibra os parâmetros em até N tentativas e mantém uma memória pequena; --describe
+  converte o que o usuário SABE da peça (forma, raio de canto, medidas) em priors de geometria.
 ---
 
 # Skill /ptoo — calibrador iterativo do photo_to_outline
@@ -47,13 +48,40 @@ que faltou. NÃO existe `--max-nodes`: a quantidade de nós emerge do espaçamen
 
 ## Invocação
 
-`/ptoo <foto.jpg> --pass N [--debug]`
+`/ptoo <foto.jpg> --pass N [--debug] [--describe "texto"]`
 
 - `<foto>`: 1º argumento. Se for nome simples, resolva na raiz do repo (`<repo>/<foto>`).
 - `--pass N`: máximo de tentativas de calibração (default 3 se omitido).
 - `--debug`: ativa o modo crítico (ver seção própria) **além** de calibrar.
+- `--describe "texto"`: descrição em **linguagem natural** do que o usuário SABE da peça
+  (forma, medidas de paquímetro, material) — ver §Análise da descrição.
 
 **Sempre** use o Python do venv: `.venv/Scripts/python`. Trabalhe a partir da raiz do repo.
+
+## Análise da descrição (`--describe`) — ANTES do laço
+
+O texto do usuário é conhecimento MEDIDO — vale mais que a estatística da segmentação. Analise-o
+**antes do 1º passe** e converta em priors estruturados (v0.13 da CLI); diga ao usuário o que
+entendeu e quais flags vai usar ("entendi X → vou usar Y"):
+
+| Informação descrita | Ação |
+|---|---|
+| classe da forma ("é um retângulo…") | `--shape rect`; trate como `shape=retilinea` (start min-dist 10 e coluna do runs.tsv) |
+| raio de canto medido ("cantos de 5 mm") | `--corner-radius 5` — a medida do usuário VENCE o raio estatístico |
+| dimensões W×H medidas | NÃO viram flag; valide a cada passe: `obj` do stdout vs descrito (desvio > ±0.5 mm → alertar paralaxe/segmentação) |
+| simetria declarada / eixo de espelho | `--symmetry vertical\|horizontal` desde o 1º passe |
+| features ("gancho", "aba lateral", assimetria) | `--mask-smooth-keep-bumps`; feature assimétrica VETA `--symmetry` |
+| material/cor ("cinza-neutro", "metal claro", "creme") | atalhos da memory: `--shadow texture`, ↑`--val-frac`, truque `--in2` |
+
+Com `--shape` ativo, o contorno é **construído** (8 Béziers exatos), não detectado: as rampas de
+`--min-dist` **não regem** o resultado — calibre só a **segmentação** (`--shadow`, `--val-frac`,
+`--mask-smooth-mm`…) e pule a 1ª rampa. Valide a cada passe a chave `shape … r=… infl +…` das
+métricas: `infl` > 0 com raio declarado = raio real menor (desça `--corner-radius` até infl≈0);
+`shape FALLBACK` = o modelo não bateu (a CLI avisou por quê) → reporte e siga o caminho genérico
+normal. Gate **inalterado**; no ranking, uma **exceção**: o modelo cruza o gate por construção e
+tem poucos nós — antes de declará-lo vencedor, compare a **folga** com o melhor passe genérico
+(peça com saliência real fora da forma declarada fecha bem mais justa no genérico; ver
+memory.md v0.13).
 
 ## Antes do laço
 
@@ -144,8 +172,9 @@ stdout/overlay p/ diagnóstico).
    rampas. Colunas = cabeçalho do próprio arquivo; desconhecido = `-`; `pass` = nº do passe
    (1-based; `0` é reservado a sementes legado); `gate=1` se AQUELE passe cruzou o gate;
    `winner=1` só na linha do melhor passe; `shape` ∈ `retilinea|organica|mista`; `cond` = tags
-   curtas separadas por `;` (croma, cinza-neutro, sombra-projetada, 2fotos, clara-papel, …);
-   flags fora das colunas vão em `extra_flags`.
+   curtas separadas por `;` (croma, cinza-neutro, sombra-projetada, 2fotos, clara-papel,
+   `describe` quando o usuário descreveu a peça, …); flags fora das colunas vão em `extra_flags`
+   (inclui `--shape`/`--corner-radius`); a essência da descrição vai na `note`.
 3. **Atualize a [memory.md](memory.md)** (mantenha-a < 100 linhas) — regras de atualização
    (fonte única, a memory só as referencia):
    - **Cache:** acrescente/substitua 1 linha no `## cache último-bom`: `- ~WxH mm | <params> |

@@ -1,4 +1,4 @@
-description = "Calibrador iterativo do photo_to_outline.py: de uma foto rumo a um POCKET de encaixe justo (contém >= 0.9999). Uso: /ptoo <foto.jpg> --pass N [--debug]"
+description = "Calibrador iterativo do photo_to_outline.py: de uma foto rumo a um POCKET de encaixe justo (contém >= 0.9999). Uso: /ptoo <foto.jpg> --pass N [--debug] [--describe \"texto\"]"
 
 prompt = '''
 Você vai executar a skill **/ptoo** deste repositório no Gemini CLI: o calibrador iterativo da
@@ -8,10 +8,13 @@ POCKET de encaixe justo. Critério de aceite (gate RÍGIDO): `contém a peça` >
 ## Argumentos desta invocação
 {{args}}
 
-Formato esperado: `<foto.jpg> --pass N [--debug]`.
-- `<foto>`: 1º argumento; se for nome simples, resolva na raiz do repo (`C:\PtoO\<foto>`).
+Formato esperado: `<foto.jpg> --pass N [--debug] [--describe "texto"]`.
+- `<foto>`: 1º argumento; se for nome simples, resolva na raiz do repo (`<repo>/<foto>`).
 - `--pass N`: teto rígido de tentativas de calibração (default 3 se omitido).
 - `--debug`: ativa o modo crítico (descrito no SKILL.md) ALÉM de calibrar.
+- `--describe "texto"`: descrição em linguagem natural do que o usuário SABE da peça (forma,
+  medidas, material) — analise-a ANTES do laço e converta em priors, como manda o SKILL.md
+  (§Análise da descrição).
 
 ## Instruções autoritativas (siga à risca)
 O procedimento completo do laço (rodar → inspecionar o overlay com zoom → ajustar UM/DOIS flags →
@@ -34,7 +37,7 @@ arquivos). Se por algum motivo o conteúdo não aparecer injetado, ABRA estes ar
 ## Adaptações para o Gemini CLI (onde o SKILL.md pressupõe o ambiente do Claude)
 - **NÃO existe a "Skill tool" do Claude aqui.** Apenas siga o procedimento do SKILL.md diretamente.
 - **Read/Edit/Write:** use as ferramentas equivalentes do Gemini CLI; rode comandos via shell.
-- **Python:** SEMPRE o do venv — `.venv/Scripts/python` (Windows). Trabalhe a partir de `C:\PtoO`.
+- **Python:** SEMPRE o do venv — `.venv/Scripts/python` (Windows). Trabalhe a partir da raiz do repo.
 - **Tiles de zoom:** o SKILL.md manda gravar num "scratchpad" próprio do Claude. Aqui grave em
   `_debug/ptoo_tiles/<name>/` (ignorado pelo git) e gere os zooms com
   `.venv/Scripts/python .claude/skills/ptoo/scripts/zoom.py --overlay-svg _overlay_<name>.svg`

@@ -1,8 +1,8 @@
 # ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
 # Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=5
-## vencedores — todos legado; recalcular a cada update)
+## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=10
+## vencedores; recalcular a cada update)
 SEMPRE:      --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
              assimétrica; com sombra vazando, a simetria UNE o vazamento p/ os dois lados (piora)
@@ -15,9 +15,9 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
 ## cache último-bom (≤5 linhas; 1 linha por objeto; evicta a mais antiga; histórico COMPLETO
 ## por-passe fica no runs.tsv — nada morre na evicção)
 <!-- formato: - ~WxH mm | <params> | contém=… clearance=… | nota curta -->
-- ~67.62x70.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --symmetry vertical --mask-smooth-mm 2 | contém=0.9999 clearance=-0.06/+0.01 | thermpro (cromático, simétrico)
+- ~67.62x70.88 mm | --shadow remove --min-dist 3 --smooth-mm 2.5 --pocket-eps 0 --symmetry vertical --mask-smooth-mm 2 | contém=0.9999 clearance=+0.05/+0.07 | thermpro (cromático, simétrico); md insensível 1.5–3 (curva idêntica, 24 nós)
 - ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 | contém=1.0000 clearance=+0.01/-0.04 | trena azul; assimétrica (aba lateral) → SEM symmetry
-- ~90.00x58.75 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --in2 <foto2> | contém=0.9999 clearance=+0.07/-0.05 | Raspberry Pi 2, 2 FOTOS luz oposta; retilínea → md10 DEFAULT já cola (48 nós, v0.10); A/B legado: --line-tol 0 (md7.5, 46 nós, folga +0.83)
+- ~90.00x58.75 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --shape rect --corner-radius 3 --in2 <foto2> | contém=1.0000 clearance=+0.07/+0.03 | pi_up retilínea DECLARADA (v0.13): modelo rect r=3 (infl 0 = r real), 8 Béziers; pós-edit o usuário aperta p/ 88.38x59.14 (contém 0.9949 — a máscara superestima W pela paralaxe dos conectores)
 - ~65.12x65.50 mm | --shadow texture --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps | contém=1.0000 clearance=-0.21/-0.24 | trena CINZA-neutra, sombra projetada, luz difusa; SEM symmetry; sem keep-bumps o gancho some (contém 0.9968 + aviso)
 - ~73.62x97.50 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --in2 <MESMA foto> | contém=1.0000 clearance=+0.14/+0.18 | tester TC1 creme≈papel; humilde AUTO ativou (firme 9%) e removeu o halo que antes exigia --edit (curva à mão dava 72.55x93.72); 14 Béziers
 
@@ -28,6 +28,8 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
 - v0.10 primitivas (--line-tol/--arc-tol 0.3, LIGADO por default): aresta reta vira RETA exata e
   canto vira ARCO → min-dist rege só trechos LIVRES. Facetou curva gentil ou perdeu aresta →
   --line-tol ↓0.2 (conservador) / ↑0.5 (agressivo). --line-tol 0 = legado puro (A/B barato).
+  A rampa min-dist tem PLATÔS (thermpro: 1.5 e 3 → paths idênticos): passo pequeno pode não
+  mudar NADA — dobre o valor no passo ↑ e cheque nós/paths antes de gastar outro passe.
 - v0.7: contém é medido contra a silhueta PRÉ-mask-smooth com tolerância 0.3 mm de profundidade —
   contém de sessões < v0.7 NÃO é comparável. AVISO "removeu uma saliência convexa" → ligar
   --mask-smooth-keep-bumps e NÃO mexer nas rampas (o défice não é densidade). Espigões finos
@@ -50,6 +52,14 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
   identidade + faint-metal ON (única via que segmenta o corpo claro). O halo de sombra que o
   faint readmite é removido pelo humilde (v0.12, abaixo) — não precisa mais do --edit p/ isso.
   Prefira a foto de luz MAIS direcional (menos penumbra = mais borda firme p/ ancorar cordas).
+- v0.13 --shape rect (peça DECLARADA retângulo via --describe): `infl` > 0 com o raio declarado
+  = raio real MENOR → desça --corner-radius até infl≈0 (Pi: r=5→infl .42, r=3→infl 0; o raio
+  real "se mede" pela inflação). O modelo cruza o gate POR CONSTRUÇÃO mas pode sair FOLGADO:
+  saliência real fora do retângulo (soquete do TC1) entorta o minAreaRect (~2°) → folga
+  +2.8/+2.1 vs +0.14 do genérico — SEMPRE compare a folga com o melhor passe genérico antes de
+  declarar o modelo vencedor (exceção explícita à regra "menos nós vence"). O modelo NÃO conserta
+  segmentação ruim: Pi em foto ÚNICA (sombra dura sem --in2) deforma a máscara → vão 9.6 →
+  FALLBACK correto; a máscara precisa da MESMA qualidade do genérico.
 - v0.12 CONTORNO HUMILDE: CLI avisou "só NN% da borda tem apoio visual" → o humilde JÁ ativou
   (cordas entre trechos firmes; métrica `firme NN%`). Conferir os trechos LARANJA (flags) no
   overlay ANTES de mexer em rampas — o défice ali não é densidade, é borda incerta; acabamento

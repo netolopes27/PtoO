@@ -402,6 +402,22 @@ própria na base da janela e a **régua de bordas (F2) removida** — ficou só 
 (toggle renomeado `Ruler` → `Size`); a cota + o Measure cobrem o caso "bater com o paquímetro".
 Suíte: 200 → **206** (`TestMeasureTool`, nível E).
 
+## v0.13 — priors de geometria (`--describe` da skill → `--corner-radius`/`--shape`)
+
+A skill `/ptoo` ganhou o campo **`--describe "texto"`**: o usuário declara em linguagem natural o
+que **sabe** da peça ("é um retângulo com cantos arredondados de raio 5 mm") e o agente analisa a
+descrição **no início** do laço, convertendo-a em priors estruturados p/ a CLI — a divisão de
+inteligência é deliberada: NL no agente, flags determinísticos (testáveis) na CLI. Dois flags
+novos: **`--corner-radius R`** — arco detectado com raio a ±max(1 mm, 20%) do prior é refit com
+**raio fixo** (só o centro; pontas projetadas no círculo, só p/ fora): o canto sai com o raio
+**medido pelo usuário**, não o estatístico da segmentação; **`--shape rect`** — o pocket é
+**construído exato** (a receita "4 círculos nos cantos ligados por retas tangentes"): pose por
+`minAreaRect`, 4 retas + 4 arcos de 90° em **8 Béziers**, W/H inflados o mínimo p/ conter (SDF
+analítico), com salvaguardas de descrição errada (inflação > 2 mm ou vão modelo→peça > 5 mm →
+WARNING + fallback genérico + `shape FALLBACK` nas métricas). Com o modelo, as rampas deixam de
+reger o contorno — a calibração vira só segmentação. Suíte: 206 → **216** (`TestGeometryPriors`,
+nível A).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2

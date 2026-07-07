@@ -192,6 +192,8 @@ their effect on containment — is [docs/manual.md](docs/manual.md) (pt-BR). Qui
 | `--mask-smooth-keep-bumps` | off | bias regularization to keep convex bumps (side tabs) |
 | `--min-dist` | `10` | **pocket tightness lever**: smaller = more anchors = tighter (§4.1) |
 | `--line-tol` / `--arc-tol` | `0.3` | exact straight lines / tangent arcs; `--line-tol 0` disables both |
+| `--corner-radius` | `0` | declared corner radius (caliper-measured): detected corner arcs snap to it |
+| `--shape` | `off` | `rect` = part declared a rounded rectangle: pocket **built** exactly (4 lines + 4 arcs, 8 Béziers); falls back with a warning if the silhouette disagrees |
 | `--smooth-mm` | `8.0` | low-pass window; fine containment lever (lower toward `2`) |
 | `--pocket-eps` | `0.5` | tolerated penetration in pocket mode (fine-tuning only) |
 | `--min-radius` | `1.5` | minimum corner radius (no 90° corners / spikes) |
@@ -239,13 +241,16 @@ CLI — it only calibrates the flags (and, with `--debug`, *proposes* code impro
 applying them).
 
 ```
-/ptoo <photo.jpg> --pass N [--debug]
+/ptoo <photo.jpg> --pass N [--debug] [--describe "text"]
 ```
 
 - `<photo.jpg>` — the input photo (a bare name resolves at the repo root).
 - `--pass N` — hard cap on calibration attempts (default 3).
 - `--debug` — after converging, also emit a CLI-improvement package (diagnosis + proposed
   diff + a next-version plan under `docs/melhorias/`); does **not** touch the CLI.
+- `--describe "text"` — natural-language description of what you **know** about the part
+  ("a rectangle with 3 mm rounded corners"); the skill turns it into geometry priors for the
+  CLI (`--shape rect`, `--corner-radius`) before the loop starts.
 
 It calibrates toward *contains the part* ≥ **0.9999** with the fewest nodes, keeps a small
 memory of good parameters per part, and finishes with one optional `--edit` pass. Full behavior
@@ -269,6 +274,7 @@ memory of good parameters per part, and finishes with one optional `--edit` pass
 | Shadow **inflated one side** of a symmetric part | `--edit` → Symmetry on → drag the axis → **Mirror** with the good side |
 | **Jagged** outline | raise `--smooth-mm` (e.g. `12`) |
 | Pocket **too loose** | lower `--min-dist`: `2`, `1`, `0.5`… |
+| You **measured** the part (it *is* a rounded rectangle, radius R) | `--shape rect --corner-radius R` — the pocket is built exactly (8 Béziers) |
 | Want the **faithful outline** (bbox = object) | `--faithful` |
 | WARNING "pocket does not contain the part" | lower `--min-dist` |
 | **Diagnose** the segmentation | `--debug-dir debug/` and look at the PNGs |

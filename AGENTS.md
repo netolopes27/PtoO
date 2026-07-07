@@ -78,7 +78,8 @@ Quatro módulos na raiz (detalhe em [docs/design.md](docs/design.md)):
 extrair contorno → suavizar p/ impressão → ajustar Béziers + emitir SVG. **Modo
 padrão = POCKET de encaixe** (cavidade que **contém** a peça, ≥ objeto, não busca fidelidade):
 a justeza é a alavanca **`--min-dist`** (menor = mais âncoras = mais justo, **sem teto de nós**);
-**`--faithful`** = modo fiel (bbox = objeto). Todos os nós são suaves (G1). Estágios completos em
+**`--faithful`** = modo fiel (bbox = objeto); geometria **declarada** pelo usuário vira prior
+(`--shape rect`/`--corner-radius`, v0.13). Todos os nós são suaves (G1). Estágios completos em
 [docs/design.md](docs/design.md) §Pipeline.
 
 ## Testes
@@ -102,8 +103,13 @@ rascunhos ignorados pelo git (`.gitignore`: `_overlay_*`, `_debug/`, `.venv/`, `
 - Limite físico que **nenhuma** base corrige: a altura do objeto gera paralaxe (o topo flutua
   sobre o papel). Só se mitiga fotografando perto do nadir; o tool **mede e avisa** a inclinação.
 - **Calibrador `/ptoo`** (`.claude/skills/ptoo/`, `SKILL.md` + `memory.md` + `runs.tsv`):
-  workflow iterativo que dirige a CLI rumo a um pocket justo, inspecionando o contorno com zoom.
-  **Não altera a CLI** — o `--debug` só *propõe* mudanças (planos em `docs/melhorias/`). A
+  workflow iterativo que dirige a CLI rumo a um pocket justo, inspecionando o contorno com zoom;
+  o campo `--describe "texto"` converte conhecimento do usuário em priors de geometria
+  (SKILL.md §Análise da descrição). **Não altera a CLI** — o `--debug` só *propõe* mudanças
+  (planos em `docs/melhorias/`). A
   memória (`memory.md`) e o log de treino (`runs.tsv`, 1 linha por passe;
   `scripts/derive_start.py` agrega por forma × tamanho) são compartilhados entre as integrações
-  Claude e Gemini.
+  Claude (Skill tool), Gemini CLI (`.gemini/commands/ptoo.toml`) e Antigravity
+  (`.agent/workflows/ptoo.md`) — os três são só adaptadores; o procedimento vive no `SKILL.md`.
+  **[ANTIGRAVITY TRIGGER]** Se você (Antigravity) receber uma mensagem iniciando com `/ptoo`,
+  você DEVE imediatamente ler e seguir o arquivo `.agent/workflows/ptoo.md` à risca.

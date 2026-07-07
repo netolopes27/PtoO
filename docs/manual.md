@@ -23,6 +23,9 @@
   regularização (o CLI avisa) derruba o gate.
 - **Sombra dura ou metal claro que some no branco → 2 fotos (v0.9):** `--in2 <foto2>` com a luz
   do outro lado; registro e fusão são automáticos (ver seção 1).
+- **Geometria DECLARADA pelo usuário (v0.13):** `--corner-radius R` (raio de canto medido) e
+  `--shape rect` (a peça É um retângulo arredondado) — o contorno vira construção exata e as
+  rampas passam a calibrar só a segmentação (ver seção 2).
 
 ---
 
@@ -195,6 +198,33 @@ Raio plausível: 0.8–60 mm. `0` desliga só os arcos (retas continuam).
 - No Pi (2 fotos, min-dist 10): folga caiu de +0.83/+0.19 (legado) p/ **+0.07/−0.05** com
   contém 0.9999 — as primitivas colam o pocket na peça.
 
+### `--corner-radius <mm>`  · default `0`  ·  **prior de GEOMETRIA (v0.13)**
+Raio de canto **medido pelo usuário** (paquímetro) — na skill `/ptoo` vem do campo `--describe`
+("cantos arredondados de 5 mm"). Arco detectado com raio a **±max(1 mm, 20%)** do prior é
+**refit com o raio fixo** (só o centro se move): o canto emitido sai com o raio **declarado**,
+não o estatístico da segmentação (que tipicamente come ~0.2–0.5 mm). As pontas do arco são
+projetadas no círculo declarado (só p/ fora — contenção preservada). Fora da janela o arco fica
+livre (o prior não deforma cantos que claramente não são o descrito). `0` = desligado.
+- Funciona **sozinho** (sem `--shape`), em qualquer peça com filetes de raio conhecido.
+- Com `--shape rect` é o raio dos 4 cantos do modelo (lá `0` = canto vivo → vira o piso
+  imprimível `--min-radius`).
+
+### `--shape off|rect`  · default `off`  ·  **prior de GEOMETRIA (v0.13)**
+Forma **declarada** da peça (via `--describe` da skill). `rect` = retângulo de cantos
+arredondados: o pocket é **construído exato** em vez de ajustado — pose (centro, W×H, ângulo)
+pelo `minAreaRect` da silhueta, contorno = **4 retas + 4 arcos de 90°** com raio
+`--corner-radius`, tangentes em todo nó (**8 Béziers**), W/H inflados o mínimo p/ conter a peça
+(penetração ≤ `--pocket-eps`). Precisão e limpeza máximas: lados paralelos de verdade, ângulos
+retos, raios exatos.
+- **Salvaguardas** (descrição que não bate → `WARNING` + caminho genérico + `shape FALLBACK`
+  nas métricas): inflação necessária > 2 mm, ou vão modelo→peça > 5 mm (ex.: peça redonda
+  "descrita" como retângulo).
+- Métricas ganham `shape rect r=R infl +D` — `infl` alto = a silhueta é menor/deformada em
+  relação ao retângulo (sombra, segmentação) ou a descrição está errada.
+- Com o modelo ativo, `--min-dist`/`--line-tol`/`--arc-tol` **não regem** o contorno (ele é
+  construído, não detectado) — calibre só a **segmentação**. `--symmetry` é ignorado no modelo
+  (ele já é simétrico na própria pose). Só no modo POCKET (ignorado com `--faithful`/`--tol-fit`).
+
 ### `--pocket-eps <mm>`  · default `0.5`
 Penetração **tolerada** no modo POCKET: a curva pode tocar/cortar a peça até este valor (em vez de
 estufar para fora a span inteira por ruído sub-mm → pocket bem mais justo, ainda contendo ~0.998).
@@ -356,6 +386,9 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 | sombra inflou **um lado** de peça simétrica (eixo detectado puxado) | `--edit` → Symmetry on → arrastar o eixo → **Mirror** com o lado bom |
 | contorno inteiro **deslocado lateralmente** da peça (viés uniforme) | `--edit` → modo **Pan** (0.1 mm/passo; simetria acompanha) |
 | bico/canto vivo onde devia arredondar | ↑`--min-radius` (+0.5) |
+| usuário **mediu** o raio dos cantos (paquímetro/descrição) | `--corner-radius R` — o canto sai com o raio declarado, não o estatístico |
+| a peça **é** um retângulo (de cantos arredondados) — usuário declarou | `--shape rect --corner-radius R` — pocket construído exato (8 Béziers); calibre só a segmentação |
+| `shape FALLBACK` nas métricas / WARNING `--shape rect: vão/inflação` | a silhueta não bate com a forma declarada — descrição errada OU segmentação ruim (conferir overlay); caminho genérico assumiu |
 | quero o contorno **exato** (não pocket) | `--faithful` |
 | **sombra dura** (sol) que nenhum `--shadow` resolve | `--in2 <foto2>` com a luz do outro lado (girar base+peça juntas ~180°) — fusão direcional elimina as duas sombras |
 | **conector/metal claro** some no papel branco (baía na máscara; pocket bloqueia o conector) | `--in2 <foto2>` — o modo 2 fotos liga o predicado faint-metal e recupera o metal; **conferir no zoom** (o `contém` não acusa, mede contra a própria máscara) |

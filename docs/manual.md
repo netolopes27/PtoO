@@ -307,9 +307,20 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
     sombra inflou de um lado e **constrói o pareamento a partir de qualquer contorno** — é o
     caminho p/ ligar a simetria num contorno que veio sem `--symmetry` ou religá-la após edições
     livres. Recusa (com aviso) contorno que cruza o eixo mais de 2× (mesma limitação do CLI).
-  - **Ruler** (F2, ligada por default) — régua em **mm** nas bordas superior/esquerda (ticks
-    adaptativos ao zoom) + **cota W×H** do objeto fora da bbox; o W×H também fica no status bar
-    (útil p/ ajustar o eixo até a largura bater com o paquímetro).
+  - **Size** (ligada por default) — **cota W×H verde** do objeto fora da bbox; o W×H também
+    fica no status bar (útil p/ ajustar o eixo até a largura bater com o paquímetro). A régua
+    de bordas da F2 original foi **removida** no redesign da toolbar — a cota + o **Measure**
+    cobrem o caso de uso.
+  - **Measure** — modo de **medição ponto-a-ponto em mm**: 1º clique marca o ponto A, o
+    preview segue o cursor **travado no eixo dominante** do gesto (mais horizontal → trava em
+    X; mais vertical → trava em Y) e o 2º clique fecha a medição; **Ctrl no 2º clique = ângulo
+    livre** (reta em qualquer direção). Cada medição fica **persistente em destaque** (laranja:
+    linha estilo cota com ticks nas pontas, **marca central** em losango e rótulo `NN.NN mm`
+    com fundo escuro) até ser excluída com o **botão-direito** sobre ela (dentro do modo; fora
+    dele o botão-direito também exclui, se não acertar uma alça de nó). Botão-direito com
+    medição em andamento **cancela** o ponto A. Medições são **anotações**: não entram no
+    Undo/Reset nem no Finalize (nada vai p/ o SVG). Exclusivo com Rotate/Pan; a rodinha segue
+    dando zoom (dentro do modo o Ctrl+arrasto de pan cede a vez ao ângulo livre).
   - **Rotate** (F4) — modo explícito de **giro fino**: linha-guia horizontal no cursor,
     clique-direito = +0.1°, clique-esquerdo = −0.1°, roda = girar (0.05° com Shift); gira
     **foto + nós juntos** (o SVG e o overlay saem girados — WYSIWYG). Girar desliga a simetria

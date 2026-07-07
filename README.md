@@ -216,9 +216,10 @@ the **rectified photo** as background and the curve's **nodes as draggable handl
   **Undo** / **Reset** as usual.
 - Toolbar (one-liners; full operation in [docs/manual.md](docs/manual.md) §`--edit`, pt-BR):
   **Line** (Shift+click 2 nodes → exact straight segment) · **Symmetry** (edits mirrored across a
-  draggable axis) · **Mirror ◀/▶** (rebuild one side as the mirror of the other) · **Ruler**
-  (mm ruler + live W×H dimension) · **Rotate** (fine rotation of photo+nodes, 0.1° steps) ·
-  **Pan** (fine sideways nudge of the outline, 0.1 mm steps).
+  draggable axis) · **Mirror ◀/▶** (rebuild one side as the mirror of the other) · **Size**
+  (live green W×H dimension) · **Rotate** (fine rotation of photo+nodes, 0.1° steps) ·
+  **Pan** (fine sideways nudge of the outline, 0.1 mm steps) · **Measure** (point-to-point mm
+  measurements, axis-locked — Ctrl = free angle; they persist highlighted until right-clicked).
 - **Finalize** is **WYSIWYG**: it closes the window and writes the same outputs from **exactly the
   curve on screen** — nothing is recomputed (closing the window without Finalize writes nothing).
 

@@ -504,6 +504,46 @@ class TestRotateNodes(unittest.TestCase):
         self.assertEqual(E.rotate_nodes(nodes, 0.0, (0.0, 0.0)), nodes)
 
 
+class TestMeasureTool(unittest.TestCase):
+    """Ferramenta Measure: núcleo puro do snap ao eixo dominante, medida/centro e
+    hit-test p/ excluir com o botão direito. A view (modo Measure) é glue fino."""
+
+    def test_snap_horizontal_dominant(self):
+        # |dx| > |dy|: trava no eixo X (y do 2º ponto = y do 1º)
+        self.assertEqual(E.measure_snap((0.0, 0.0), (10.0, 3.0)), (10.0, 0.0))
+        self.assertEqual(E.measure_snap((5.0, -2.0), (-7.0, -1.0)), (-7.0, -2.0))
+
+    def test_snap_vertical_dominant(self):
+        # |dy| > |dx|: trava no eixo Y (x do 2º ponto = x do 1º)
+        self.assertEqual(E.measure_snap((0.0, 0.0), (3.0, -10.0)), (0.0, -10.0))
+        self.assertEqual(E.measure_snap((2.0, 1.0), (1.0, 9.0)), (2.0, 9.0))
+
+    def test_snap_tie_prefers_horizontal(self):
+        # empate |dx| == |dy|: horizontal (critério fixo, documentado)
+        self.assertEqual(E.measure_snap((1.0, 1.0), (4.0, 4.0)), (4.0, 1.0))
+
+    def test_snap_free_keeps_point(self):
+        # Ctrl (free=True): ângulo livre — o 2º ponto sai intacto
+        self.assertEqual(E.measure_snap((0.0, 0.0), (3.0, 7.0), free=True), (3.0, 7.0))
+
+    def test_length_and_midpoint(self):
+        m = ((0.0, 0.0), (10.0, 0.0))
+        self.assertAlmostEqual(E.measure_length(m), 10.0, places=12)
+        self.assertEqual(E.measure_midpoint(m), (5.0, 0.0))
+        d = ((1.0, 1.0), (4.0, 5.0))                       # 3-4-5
+        self.assertAlmostEqual(E.measure_length(d), 5.0, places=12)
+        self.assertEqual(E.measure_midpoint(d), (2.5, 3.0))
+
+    def test_nearest_measure(self):
+        ms = [((0.0, 0.0), (10.0, 0.0)), ((0.0, 5.0), (10.0, 5.0))]
+        self.assertEqual(E.nearest_measure(ms, (5.0, 4.5)), 1)
+        self.assertEqual(E.nearest_measure(ms, (5.0, 0.4)), 0)
+        # distância medida ao SEGMENTO (não à reta infinita): além da ponta conta
+        self.assertIsNone(E.nearest_measure(ms, (30.0, 0.0), max_dist=1.0))
+        self.assertIsNone(E.nearest_measure(ms, (5.0, 50.0), max_dist=1.0))
+        self.assertIsNone(E.nearest_measure([], (0.0, 0.0)))
+
+
 class TestTransforms(unittest.TestCase):
     def test_roundtrip(self):
         mmpp_x, mmpp_y = 0.125, 0.130

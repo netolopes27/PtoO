@@ -486,6 +486,49 @@ def px_to_mm(pt, mmpp_x, mmpp_y):
     return (pt[0] * mmpp_x, -pt[1] * mmpp_y)
 
 
+# --- ferramenta Measure (medição em mm; view = modo "Measure") ----------------
+# Uma medição é o par ((x0,y0),(x1,y1)) em mm. O 2º ponto TRAVA no eixo dominante
+# do gesto (Ctrl = ângulo livre); a view desenha linha + marca central + rótulo e
+# a medição PERSISTE até o botão-direito excluí-la (anotação: fora do Undo/Reset
+# e do Finalize).
+def measure_snap(p0, p1, free=False):
+    """2º ponto EFETIVO da medição: trava o segmento no eixo dominante — |dx| ≥ |dy|
+    → horizontal (empate inclusive), senão vertical. `free=True` (Ctrl no clique)
+    mantém o ângulo livre (o ponto sai intacto)."""
+    if free:
+        return (float(p1[0]), float(p1[1]))
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    if abs(dx) >= abs(dy):
+        return (float(p1[0]), float(p0[1]))
+    return (float(p0[0]), float(p1[1]))
+
+
+def measure_length(m):
+    """Comprimento (mm) da medição `m = (p0, p1)`."""
+    (x0, y0), (x1, y1) = m
+    return math.hypot(x1 - x0, y1 - y0)
+
+
+def measure_midpoint(m):
+    """Ponto central da medição (onde a view põe a marca e o rótulo)."""
+    (x0, y0), (x1, y1) = m
+    return (0.5 * (x0 + x1), 0.5 * (y0 + y1))
+
+
+def nearest_measure(measures, xy, max_dist=None):
+    """Índice da medição cujo SEGMENTO passa mais perto de `xy` (mesmo referencial) —
+    hit-test do excluir com botão-direito. `None` se a lista for vazia ou se a mais
+    próxima estiver além de `max_dist`."""
+    best_i, best_d = None, float("inf")
+    for i, (a, b) in enumerate(measures):
+        d = P._dist_point_seg(xy, a, b)
+        if d < best_d:
+            best_i, best_d = i, d
+    if max_dist is not None and best_d > max_dist:
+        return None
+    return best_i
+
+
 # =============================================================================
 # VIEW tkinter (glue fino) — importa tkinter SÓ aqui dentro p/ o núcleo puro
 # continuar importável num runner headless (testes) sem display.
@@ -495,6 +538,7 @@ HIT_TOL = 10          # tolerância de clique (px de tela) p/ pegar uma alça
 ZOOM_STEP = 1.25      # fator de zoom por passo da rodinha
 ZOOM_MIN = 0.05
 ZOOM_MAX = 40.0
+MEASURE_COLOR = "#ff9000"   # medições (Measure): laranja destaca da curva/nós/cota
 
 
 class EditorApp:
@@ -514,11 +558,18 @@ class EditorApp:
     Plano 011: **Symmetry** (F1) espelha cada edição no par por índice ((N−i)%N) em
     torno do eixo pontilhado — que é ARRASTÁVEL (F1b) e os botões **Mirror ◀/▶**
     reconstroem um lado como espelho do outro (constrói o pareamento p/ qualquer
-    contorno). **Ruler** (F2) liga régua mm + cota W×H. **Rotate** (F4) entra no modo
-    de giro fino (linha-guia no cursor; cliques/rodinha giram foto+nós juntos em
-    passos de 0.1°/0.05°). **Pan** (gêmeo do Rotate) desloca o CONTORNO (nós + eixo
-    de simetria juntos, foto parada) p/ esquerda/direita em passos de 0.1/0.05 mm —
-    corrige viés lateral da detecção sem desligar a simetria.
+    contorno). **Size** liga a cota W×H verde do objeto (a régua de bordas do plano
+    011 foi REMOVIDA no redesign — a cota + o Measure cobrem o caso de uso). **Rotate**
+    (F4) entra no modo de giro fino (linha-guia no cursor; cliques/rodinha giram
+    foto+nós juntos em passos de 0.1°/0.05°). **Pan** (gêmeo do Rotate) desloca o
+    CONTORNO (nós + eixo de simetria juntos, foto parada) p/ esquerda/direita em
+    passos de 0.1/0.05 mm — corrige viés lateral da detecção sem desligar a simetria.
+    **Measure**: modo de medição — 1º clique marca o ponto A, o preview segue o
+    cursor TRAVADO no eixo dominante (Ctrl = ângulo livre, measure_snap) e o 2º
+    clique fecha; a medição PERSISTE em destaque (linha + marca central + rótulo mm)
+    até o botão-direito excluí-la. Medições são ANOTAÇÕES: fora do Undo/Reset e do
+    Finalize. A toolbar usa ttk (visual nativo) com grupos separados e o status vive
+    numa barra própria na BASE da janela.
 
     Modelo de coordenadas: mm (nós) → pixel-da-foto (mm_to_px) → pixel-de-TELA por uma
     transformada afim própria `tela = px·zoom + off` (não usa scrollregion do Canvas). O fundo
@@ -569,45 +620,66 @@ class EditorApp:
         self._pan_mode = False
         self._guide_x = None                # linha-guia vertical (x de tela) no modo Pan
         self._last_op = None                # coalesce do histórico ('rot'/'pan'/None)
+        # --- medições (modo "Measure"): anotações persistentes em mm --------------
+        self.measures = []                  # [((x0,y0),(x1,y1))] — fora do Undo/Reset
+        self._meas_mode = False
+        self._meas_start = None             # ponto A (mm) da medição em andamento
+        self._meas_preview = None           # ponto B efetivo do preview (segue o cursor)
 
         root.title("PtoO — node editor (Re-trace / Finalize)")
-        bar = tk.Frame(root)
+        # toolbar ttk (visual nativo) em GRUPOS separados: edição | simetria | vista
+        from tkinter import ttk
+        bar = ttk.Frame(root, padding=(4, 2))
         bar.pack(side=tk.TOP, fill=tk.X)
-        tk.Button(bar, text="Re-trace", command=self.retrace).pack(side=tk.LEFT)
-        tk.Button(bar, text="Undo", command=self.undo).pack(side=tk.LEFT)
-        tk.Button(bar, text="Reset", command=self.reset).pack(side=tk.LEFT)
-        tk.Button(bar, text="Line", command=self.make_line).pack(side=tk.LEFT)
+
+        def sep():
+            ttk.Separator(bar, orient="vertical").pack(side=tk.LEFT, fill=tk.Y,
+                                                       padx=6, pady=2)
+
+        ttk.Button(bar, text="Re-trace", command=self.retrace).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Undo", command=self.undo).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(bar, text="Reset", command=self.reset).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(bar, text="Line", command=self.make_line).pack(side=tk.LEFT, padx=(2, 0))
+        sep()
         # simetria: toggle sempre habilitado (o Mirror CONSTRÓI o pareamento quando o
         # CLI não trouxe --symmetry); orientação V/H travada quando o CLI a definiu.
         self.sym_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(bar, text="Symmetry", variable=self.sym_var,
-                       command=self.on_sym_toggle).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(bar, text="Symmetry", variable=self.sym_var,
+                        command=self.on_sym_toggle).pack(side=tk.LEFT)
         self.axis_var = tk.StringVar(value="V" if self.sym_axis == "vertical" else "H")
-        st = tk.NORMAL if not self.axis_locked else tk.DISABLED
+        st = "normal" if not self.axis_locked else "disabled"
         for lbl in ("V", "H"):
-            tk.Radiobutton(bar, text=lbl, value=lbl, variable=self.axis_var,
-                           command=self.on_axis_change, state=st).pack(side=tk.LEFT)
+            ttk.Radiobutton(bar, text=lbl, value=lbl, variable=self.axis_var,
+                            command=self.on_axis_change, state=st).pack(side=tk.LEFT)
         lo_lbl, hi_lbl = mirror_button_labels(self.sym_axis)   # seta certa já no eixo do CLI
-        self.mirror_lo = tk.Button(bar, text=lo_lbl, command=lambda: self.do_mirror("low"))
-        self.mirror_hi = tk.Button(bar, text=hi_lbl, command=lambda: self.do_mirror("high"))
-        self.mirror_lo.pack(side=tk.LEFT)
-        self.mirror_hi.pack(side=tk.LEFT)
-        # F2: régua mm + cota W×H (toggle p/ peças que ocupam o quadro inteiro)
-        self.ruler_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(bar, text="Ruler", variable=self.ruler_var,
-                       command=lambda: self.redraw()).pack(side=tk.LEFT, padx=(8, 0))
+        self.mirror_lo = ttk.Button(bar, text=lo_lbl, command=lambda: self.do_mirror("low"))
+        self.mirror_hi = ttk.Button(bar, text=hi_lbl, command=lambda: self.do_mirror("high"))
+        self.mirror_lo.pack(side=tk.LEFT, padx=(4, 0))
+        self.mirror_hi.pack(side=tk.LEFT, padx=(2, 0))
+        sep()
+        # cota W×H verde do objeto (a régua de bordas saiu no redesign — Size + Measure
+        # cobrem o caso de uso "bater a medida com o paquímetro")
+        self.size_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Size", variable=self.size_var,
+                        command=lambda: self.redraw()).pack(side=tk.LEFT)
         # F4: modo "Rotate" explícito (decisão b do plano 011 — sem conflito de binding)
         self.rot_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(bar, text="Rotate", variable=self.rot_var,
-                       command=self.on_rot_toggle).pack(side=tk.LEFT)
+        ttk.Checkbutton(bar, text="Rotate", variable=self.rot_var,
+                        command=self.on_rot_toggle).pack(side=tk.LEFT, padx=(4, 0))
         # Pan: mesmo funcionamento do Rotate (modo explícito, cliques/rodinha em
         # passos finos), mas DESLOCANDO o contorno (e a simetria junto) esq./dir.
         self.pan_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(bar, text="Pan", variable=self.pan_var,
-                       command=self.on_pan_toggle).pack(side=tk.LEFT)
-        tk.Button(bar, text="Finalize", command=self.finish).pack(side=tk.RIGHT)
-        self.status = tk.Label(bar, text="", anchor="w")
-        self.status.pack(side=tk.LEFT, padx=8)
+        ttk.Checkbutton(bar, text="Pan", variable=self.pan_var,
+                        command=self.on_pan_toggle).pack(side=tk.LEFT, padx=(4, 0))
+        # Measure: medição ponto-a-ponto em mm (persistente até o botão-direito)
+        self.meas_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Measure", variable=self.meas_var,
+                        command=self.on_meas_toggle).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(bar, text="Finalize", command=self.finish).pack(side=tk.RIGHT)
+        # status bar própria na BASE da janela (antes espremida na toolbar)
+        self.status = tk.Label(root, text="", anchor="w", relief=tk.SUNKEN,
+                               bd=1, padx=6)
+        self.status.pack(side=tk.BOTTOM, fill=tk.X)
 
         # Estado inicial da simetria: ON se o CLI pediu E o pareamento por índice se
         # verifica (symmetrize_beziers pode ter DESISTIDO — contorno cruzando o eixo
@@ -741,8 +813,18 @@ class EditorApp:
             fill = "#ff4040" if i in self.sel else "#ffe000"
             c.create_oval(sx - HANDLE_R, sy - HANDLE_R, sx + HANDLE_R, sy + HANDLE_R,
                           fill=fill, outline="#000000", tags=f"node{i}")
-        if self.ruler_var.get():                 # F2: régua mm + cota do objeto
-            self._draw_ruler()
+        if self.size_var.get():                  # cota W×H verde do objeto
+            self._draw_size()
+        # medições persistentes (Measure) por cima de tudo — são o DESTAQUE pedido
+        for m in self.measures:
+            self._draw_measure(m)
+        if self._meas_start is not None:         # medição em andamento
+            if self._meas_preview is not None:
+                self._draw_measure((self._meas_start, self._meas_preview), preview=True)
+            else:                                # só o ponto A marcado: cruz de espera
+                sx, sy = self._mm_to_screen(self._meas_start)
+                c.create_line(sx - 5, sy, sx + 5, sy, fill=MEASURE_COLOR)
+                c.create_line(sx, sy - 5, sx, sy + 5, fill=MEASURE_COLOR)
         if self._rot_mode and self._guide_y is not None:   # F4: linha-guia de nível
             c.create_line(0, self._guide_y, c.winfo_width(), self._guide_y,
                           dash=(8, 4), fill="#40c8ff", width=1)
@@ -759,6 +841,8 @@ class EditorApp:
                   ("·paired" if self._sym_active() else "·unpaired")
         parts = [f"{len(self.nodes)} nodes · {len(self.lines)} lines · "
                  f"obj {w:.1f}×{h:.1f} mm · sym {sym}"]
+        if self.measures:
+            parts.append(f"{len(self.measures)} meas")
         if self.rot_deg:
             parts.append(f"rot {self.rot_deg:+.2f}°")
         if self.pan_mm:
@@ -770,6 +854,10 @@ class EditorApp:
         elif self._pan_mode:
             parts.append("PAN: right-click=+0.1mm → · left-click=−0.1mm ← · wheel=pan "
                          "(Shift=0.05mm) · outline+axis move, photo stays · toggle Pan to exit")
+        elif self._meas_mode:
+            parts.append("MEASURE: click 2 points (locks to X/Y) · Ctrl on 2nd click="
+                         "free angle · right-click=delete measure / cancel · wheel=zoom "
+                         "· toggle Measure to exit")
         else:
             parts.append("drag=move · click curve=insert · right-click=delete · "
                          "shift+click=select (2) then Line · wheel=zoom · Ctrl+drag=pan")
@@ -881,6 +969,9 @@ class EditorApp:
         self.retrace()
 
     def on_press(self, e):
+        if self._meas_mode:                      # Measure: 1º clique = A; 2º fecha
+            self._meas_click(e, free=False)
+            return
         if self._rot_mode:                       # F4: clique-esquerdo = girar −passo
             self._rot_step(-0.1)
             return
@@ -947,8 +1038,18 @@ class EditorApp:
             self._pan_step(+0.1)
             return
         mm = self._screen_to_mm(e.x, e.y)
+        if self._meas_mode:                      # Measure: direito NUNCA exclui nó
+            if self._meas_start is not None:     # medição em andamento: cancela
+                self._meas_start = None
+                self._meas_preview = None
+                self.redraw()
+            elif self._delete_measure_at(mm):
+                pass                             # _delete_measure_at já redesenhou
+            return
         i = nearest_node(self.nodes, mm, max_dist=self._hit_tol_mm())
         if i is None or len(self.nodes) <= 3:    # delete guarda o mínimo de 3
+            if i is None:                        # fora de alça: tenta excluir medição
+                self._delete_measure_at(mm)
             return
         self._push_history()
         if self._sym_active():
@@ -996,6 +1097,9 @@ class EditorApp:
         self.retrace()
 
     def on_pan_start(self, e):
+        if self._meas_mode:                      # Ctrl+clique no Measure = ângulo LIVRE
+            self._meas_click(e, free=True)       # (o pan da vista cede a vez no modo)
+            return
         self._pan = (e.x, e.y, self.off_x, self.off_y)
 
     def on_pan_move(self, e):
@@ -1034,6 +1138,9 @@ class EditorApp:
             self.pan_var.set(False)
             self._pan_mode = False
             self._guide_x = None
+        if self._rot_mode and self._meas_mode:
+            self.meas_var.set(False)
+            self._exit_measure()
         if self._rot_mode and self.sym_var.get():
             # girar quebra o eixo v/h (v1): desliga a simetria com aviso — p/ peça
             # torta COM simetria prefira `--level` no CLI (nivela ANTES da simetria)
@@ -1049,9 +1156,56 @@ class EditorApp:
             self.rot_var.set(False)
             self._rot_mode = False
             self._guide_y = None
+        if self._pan_mode and self._meas_mode:
+            self.meas_var.set(False)
+            self._exit_measure()
         # ao contrário do Rotate, o Pan NÃO desliga a simetria: o eixo desloca JUNTO
         # com os nós e o pareamento sobrevive por construção (translate_nodes).
         self.redraw()
+
+    # --- modo Measure: medição ponto-a-ponto em mm ------------------------------
+    def on_meas_toggle(self):
+        self._meas_mode = self.meas_var.get()
+        self._meas_start = None                  # sair/entrar descarta medição pendente
+        self._meas_preview = None
+        if self._meas_mode and self._rot_mode:   # exclusivo com Rotate/Pan
+            self.rot_var.set(False)
+            self._rot_mode = False
+            self._guide_y = None
+        if self._meas_mode and self._pan_mode:
+            self.pan_var.set(False)
+            self._pan_mode = False
+            self._guide_x = None
+        self.redraw()                            # as medições já feitas PERMANECEM
+
+    def _exit_measure(self):
+        self._meas_mode = False
+        self._meas_start = None
+        self._meas_preview = None
+
+    def _meas_click(self, e, free):
+        """Um clique do modo Measure: o 1º marca o ponto A; o 2º fecha a medição com o
+        ponto B TRAVADO no eixo dominante (`free`/Ctrl = ângulo livre, measure_snap)."""
+        mm = self._screen_to_mm(e.x, e.y)
+        if self._meas_start is None:
+            self._meas_start = mm
+            self._meas_preview = None
+        else:
+            p1 = measure_snap(self._meas_start, mm, free=free)
+            if measure_length((self._meas_start, p1)) > 1e-6:   # clique duplo no lugar: ignora
+                self.measures.append((self._meas_start, p1))
+            self._meas_start = None
+            self._meas_preview = None
+        self.redraw()
+
+    def _delete_measure_at(self, mm):
+        """Exclui a medição sob o cursor (botão-direito). True se excluiu."""
+        k = nearest_measure(self.measures, mm, max_dist=self._hit_tol_mm())
+        if k is None:
+            return False
+        del self.measures[k]
+        self.redraw()
+        return True
 
     def on_motion(self, e):
         if self._rot_mode:                       # linha-guia horizontal segue o cursor
@@ -1060,6 +1214,11 @@ class EditorApp:
         elif self._pan_mode:                     # linha-guia vertical (deslocamento é em x)
             self._guide_x = e.x
             self.redraw()
+        elif self._meas_mode and self._meas_start is not None:
+            free = bool(getattr(e, "state", 0) & 0x0004)   # Ctrl segurado = livre
+            self._meas_preview = measure_snap(self._meas_start,
+                                              self._screen_to_mm(e.x, e.y), free=free)
+            self.redraw()                        # preview ao vivo (linha + mm)
 
     def _coalesce_history(self, op):
         """Histórico coalescido dos modos de passo fino (Rotate/Pan): um bloco de
@@ -1121,41 +1280,10 @@ class EditorApp:
         return cv2.warpAffine(self.rect, self._bg_affine(1.0, 0.0, 0.0), (w, h),
                               flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
-    # --- régua mm + cota do objeto (F2, só view) -------------------------------
-    def _draw_ruler(self):
+    # --- cota W×H do objeto (toggle Size; a régua de bordas saiu no redesign) ---
+    def _draw_size(self):
+        """Cota W×H VERDE fora da bbox do objeto (setas ↔ abaixo e à direita)."""
         c = self.canvas
-        cw, ch = c.winfo_width(), c.winfo_height()
-        if cw < 2 or ch < 2:
-            return
-        band = 18                                # faixa (px de tela) nas bordas sup./esq.
-        px_per_mm = self.zoom / self.mmpp_x      # escala de tela (giro preserva escala)
-        # espaçamento ADAPTATIVO: menor tick com ≥ ~8 px; rótulo no múltiplo "redondo"
-        minor = next((s for s in (1, 5, 10, 20, 50) if s * px_per_mm >= 8.0), 100)
-        label = next((s for s in (10, 20, 50, 100) if s >= minor and s * px_per_mm >= 40.0), 200)
-        c.create_rectangle(0, 0, cw, band, fill="#202020", stipple="gray50", outline="")
-        c.create_rectangle(0, band, band, ch, fill="#202020", stipple="gray50", outline="")
-        # mm visíveis: as réguas medem o referencial mm da foto retificada
-        x0mm = self._screen_to_mm(0, 0)[0]
-        x1mm = self._screen_to_mm(cw, 0)[0]
-        y1mm = self._screen_to_mm(0, 0)[1]       # topo da tela = y mm MAIOR (Y p/ cima)
-        y0mm = self._screen_to_mm(0, ch)[1]
-        for v in range(int(math.floor(x0mm / minor)) * minor,
-                       int(math.ceil(x1mm)) + minor, minor):
-            sx = self._mm_to_screen((float(v), 0.0))[0]
-            major = v % label == 0
-            c.create_line(sx, band, sx, band - (10 if major else 5), fill="#e0e0e0")
-            if major:
-                c.create_text(sx + 2, 2, text=str(v), anchor="nw",
-                              fill="#e0e0e0", font=("TkDefaultFont", 7))
-        for v in range(int(math.floor(y0mm / minor)) * minor,
-                       int(math.ceil(y1mm)) + minor, minor):
-            sy = self._mm_to_screen((0.0, float(v)))[1]
-            major = v % label == 0
-            c.create_line(band, sy, band - (10 if major else 5), sy, fill="#e0e0e0")
-            if major:
-                c.create_text(2, sy + 2, text=str(-v), anchor="nw",   # mm positivos p/ baixo
-                              fill="#e0e0e0", font=("TkDefaultFont", 7))
-        # cota W×H fora da bbox do objeto (setas ↔ abaixo e à direita)
         if not self.cubics:
             return
         flat = P.flatten_beziers(self.cubics)
@@ -1170,6 +1298,33 @@ class EditorApp:
         c.create_line(x1 + gap, y0, x1 + gap, y1, arrow="both", fill="#40ff80")
         c.create_text(x1 + gap + 4, 0.5 * (y0 + y1), text=f"{h:.1f} mm", anchor="w",
                       fill="#40ff80", font=("TkDefaultFont", 8))
+
+    # --- desenho de UMA medição (Measure, só view) ------------------------------
+    def _draw_measure(self, m, preview=False):
+        """Linha de medição estilo cota: segmento + ticks perpendiculares nas pontas,
+        MARCA CENTRAL (losango) e rótulo `L mm` com fundo escuro (legível sobre a
+        foto). `preview=True` = medição em andamento (linha tracejada)."""
+        c = self.canvas
+        x0, y0 = self._mm_to_screen(m[0])
+        x1, y1 = self._mm_to_screen(m[1])
+        kw = {"dash": (5, 3)} if preview else {}
+        c.create_line(x0, y0, x1, y1, fill=MEASURE_COLOR, width=2, **kw)
+        L = math.hypot(x1 - x0, y1 - y0)
+        if L > 1e-9:                             # ticks ⟂ nas pontas
+            nx, ny = -(y1 - y0) / L, (x1 - x0) / L
+            for px, py in ((x0, y0), (x1, y1)):
+                c.create_line(px - nx * 5, py - ny * 5, px + nx * 5, py + ny * 5,
+                              fill=MEASURE_COLOR, width=2)
+        mx, my = self._mm_to_screen(measure_midpoint(m))
+        r = 4                                    # marca central: o "pega" da medição
+        c.create_polygon(mx, my - r, mx + r, my, mx, my + r, mx - r, my,
+                         fill=MEASURE_COLOR, outline="#000000")
+        tid = c.create_text(mx, my - 8, text=f"{measure_length(m):.2f} mm", anchor="s",
+                            fill=MEASURE_COLOR, font=("TkDefaultFont", 9, "bold"))
+        bb = c.bbox(tid)
+        rid = c.create_rectangle(bb[0] - 2, bb[1] - 1, bb[2] + 2, bb[3] + 1,
+                                 fill="#202020", outline="")
+        c.tag_raise(tid, rid)                    # texto acima do próprio fundo
 
     # --- botões --------------------------------------------------------------
     def retrace(self):                           # traça a curva G1 pelos nós (retas incl.)

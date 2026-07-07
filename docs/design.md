@@ -311,8 +311,9 @@ a foto retificada); `--inkscape` gera também `_overlay_<nome>.svg` editável. `
 por **recorte do viewport** (custo independente do zoom); "Re-trace" traça a curva G1 pelos nós
 (`cubics_through_nodes`); **WYSIWYG** — "Finalize" grava **EXATAMENTE a curva na tela** (literal,
 sem recalcular nem snap). Além das ops de nó, expõe (011) Symmetry/Mirror (`mirror_contour`),
-Ruler, Rotate (`rotate_nodes`) e Pan (`translate_nodes`) — mecânica no §Testes E, operação no
-[manual](manual.md) §`--edit`. `--debug-dir` grava intermediários. Marcadores insuficientes →
+cota W×H (Size), Rotate (`rotate_nodes`), Pan (`translate_nodes`) e Measure (`measure_snap`/
+`nearest_measure` — medição em mm com trava de eixo, persistente até excluir) — mecânica no
+§Testes E, operação no [manual](manual.md) §`--edit`. `--debug-dir` grava intermediários. Marcadores insuficientes →
 aborta com mensagem clara. (Referência operacional completa das flags: [manual.md](manual.md); resumo em inglês no
 [README.md](../README.md) §4.)
 
@@ -379,7 +380,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 200/200 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 206/206 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -476,6 +477,9 @@ personalizável** a partir do contorno medido.
   **Rotação (F4, `rotate_nodes`):** preserva distâncias/área, centro fixo, ida-e-volta.
   **Pan (`translate_nodes`):** translação pura preserva a forma e o pareamento sobrevive com o
   eixo deslocado do MESMO dx (é o que permite o modo Pan não desligar a simetria).
+  **Measure (`TestMeasureTool`):** `measure_snap` trava o 2º ponto no eixo dominante (|dx|≥|dy|
+  → horizontal, empate incluso; `free=True`/Ctrl mantém livre); `measure_length`/
+  `measure_midpoint`; `nearest_measure` mede a distância ao SEGMENTO (hit-test do excluir).
   A view tkinter é glue fino e **não** é instanciada (runner
   headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG) e a foto com o giro
   acumulado do modo Rotate, sem recalcular.

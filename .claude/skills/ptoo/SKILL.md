@@ -127,8 +127,10 @@ Finalize (cancelar não grava). Controles (barra, rótulos em inglês; detalhe n
   zoom no cursor · Ctrl+arrasto = pan de vista · shift+clique (2 nós) + **Line** = reta entre eles.
 - **Symmetry** (se `--symmetry`) — espelha cada edição no par; eixo pontilhado arrastável,
   **Mirror ◀/▶** reconstrói um lado como espelho do outro (conserta lado inflado por sombra).
-- **Ruler** — régua mm + cota W×H (bate a largura com o paquímetro).
+- **Size** — cota W×H verde do objeto (bate a largura com o paquímetro).
 - **Rotate** / **Pan** — giro (0.1°) e deslocamento lateral (0.1 mm) finos de foto+contorno.
+- **Measure** — medição ponto-a-ponto em mm (trava no eixo; Ctrl = ângulo livre); persiste
+  em destaque até excluir com botão-direito.
 
 **Só no ÚLTIMO passe**: nunca use `--edit` nos passes de calibração (eles precisam do
 stdout/overlay p/ diagnóstico).

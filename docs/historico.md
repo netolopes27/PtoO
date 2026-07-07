@@ -388,6 +388,20 @@ mão; no protótipo da sessão, p95 +1.67 mm vs a curva editada, sem cortar a pe
 Fotos boas não mudam nada (thermpro 92% firme, **byte-idêntico** por teste; trena 62%, Pi 94%).
 Suíte: 190 → **200** (`TestHumbleRewrite`, nível B6).
 
+## Ferramenta Measure + redesign da toolbar do editor
+
+A pedido do usuário, o editor (`--edit`) ganhou **medição ponto-a-ponto em mm**: modo
+**Measure** (toggle, exclusivo com Rotate/Pan) — 1º clique marca o ponto A, o preview segue o
+cursor **travado no eixo dominante** do gesto (`measure_snap`: |dx|≥|dy| → horizontal, senão
+vertical) e o 2º clique fecha; **Ctrl no 2º clique = ângulo livre**. A medição persiste **em
+destaque** (laranja, estilo cota: ticks nas pontas, marca central em losango e rótulo `NN.NN mm`
+com fundo escuro) até o **botão-direito** excluí-la (`nearest_measure`, distância ao segmento).
+Medições são anotações — fora do Undo/Reset/Finalize. No mesmo passe, **redesign da toolbar**:
+widgets `ttk` (visual nativo) em grupos com separadores (edição | simetria | vista), status bar
+própria na base da janela e a **régua de bordas (F2) removida** — ficou só a **cota W×H verde**
+(toggle renomeado `Ruler` → `Size`); a cota + o Measure cobrem o caso "bater com o paquímetro".
+Suíte: 200 → **206** (`TestMeasureTool`, nível E).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2

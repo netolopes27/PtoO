@@ -37,6 +37,12 @@ trabalho de um exportador externo.
 - **Caminhos fixos:** `photo_to_outline.py`, `calibration_target.py`,
   `make_calibration_target.py`, `outline_editor.py` e `thermpro.jpg` ficam na **raiz**; os testes
   em `tests/`. Não mova — os testes resolvem paths relativos.
+- **Imagens dos itens → `images/`:** as **fotos de entrada** dos itens mapeados e suas **saídas**
+  (o `<name>.svg` entregue e os rascunhos `_overlay_*`) vivem em **`images/`**, mantendo a raiz
+  limpa conforme o mapa cresce. A CLI deriva `<out>.svg` **ao lado da entrada**, então
+  `--in images/foo.jpg` grava `images/foo.svg` e `images/_overlay_foo.*` sem `--out` explícito.
+  **Exceções que ficam na raiz:** o alvo de calibração `base.svg` (infra impressa, não é um item)
+  e a foto-amostra `thermpro.jpg` (fixture dos testes, caminho fixo).
 
 ## Comandos
 
@@ -91,8 +97,13 @@ Níveis (A–F), contagem canônica e o detalhe de cada classe: [docs/design.md]
 ## Saídas e git
 
 Cada execução emite o entregável `<out>.svg` **e** um overlay `_overlay_<out>.png` (contorno em
-vermelho sobre a foto retificada) — **olhe o PNG antes de aceitar o SVG**. O prefixo `_` marca
-rascunhos ignorados pelo git (`.gitignore`: `_overlay_*`, `_debug/`, `.venv/`, `__pycache__/`).
+vermelho sobre a foto retificada) — **olhe o PNG antes de aceitar o SVG**. Ambos saem **ao lado da
+entrada**, isto é, em `images/` para itens mapeados (foto em `images/`). O prefixo `_` marca
+rascunhos ignorados pelo git (`.gitignore`: `_overlay_*`, `_debug/`, `.venv/`, `__pycache__/`) —
+o padrão `_overlay_*` casa por basename em qualquer nível, então `images/_overlay_*` também é
+ignorado; o entregável `images/<name>.svg` é versionado normalmente. Os overlays em `images/`, ainda
+que gitignored, são **preservados no disco** como registro visual do item — não os apague (só
+`_debug/` e os tiles de zoom são transitórios).
 
 ## Gotchas
 

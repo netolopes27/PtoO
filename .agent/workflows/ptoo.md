@@ -11,7 +11,9 @@ POCKET de encaixe justo. Critério de aceite (gate RÍGIDO): `contém a peça` >
 Extraia os argumentos do texto que o usuário digitou depois de `/ptoo`. Formato esperado:
 `<foto.jpg> --pass N [--debug] [--describe "texto"]`.
 
-- `<foto>`: 1º argumento; se for nome simples, resolva na raiz do repositório.
+- `<foto>`: 1º argumento; se for nome simples, resolva em `images/` (`<repo>/images/<foto>`), onde
+  moram as fotos dos itens — só a amostra `thermpro.jpg` fica na raiz. As saídas (`.svg` + overlays)
+  também vão para `images/` (a CLI grava ao lado da entrada; use `--out images/<name>.svg`).
 - `--pass N`: teto rígido de tentativas de calibração (default 3 se omitido).
 - `--debug`: ativa o modo crítico (descrito no SKILL.md) ALÉM de calibrar.
 - `--describe "texto"`: descrição em linguagem natural do que o usuário SABE da peça (forma,
@@ -42,8 +44,8 @@ Se o usuário não passou nenhuma foto, pergunte qual foto usar antes de começa
   repositório.
 - **Tiles de zoom:** o SKILL.md manda gravar num "scratchpad" próprio do Claude. Aqui grave em
   `_debug/ptoo_tiles/<name>/` (ignorado pelo git) e gere os zooms com
-  `.venv/Scripts/python .claude/skills/ptoo/scripts/zoom.py --overlay-svg _overlay_<name>.svg
-  --seg-overlay _overlay_<name>.png --out-dir _debug/ptoo_tiles/<name>`. Abra e OLHE os PNGs
+  `.venv/Scripts/python .claude/skills/ptoo/scripts/zoom.py --overlay-svg images/_overlay_<name>.svg
+  --seg-overlay images/_overlay_<name>.png --out-dir _debug/ptoo_tiles/<name>`. Abra e OLHE os PNGs
   (overview + zooms) a cada passe — a inspeção visual é obrigatória, não opcional.
 - **Registrar o treino:** ao final do laço, faça o append no `.claude/skills/ptoo/runs.tsv`
   (1 linha por PASSE, colunas = cabeçalho do arquivo) exatamente como manda o SKILL.md.

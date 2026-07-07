@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- GERADO por photo_to_outline.py — contorno de case_usb (mm), 8 nós -->
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1"
+     width="123.099mm" height="78.517mm" viewBox="0 0 123.099 78.517">
+  <path d="M 6.9615,77.9198 C 43.2109,78.1188 79.4603,78.3179 115.7097,78.517 C 119.5756,78.5382 122.7268,75.4214 122.748,71.5555 C 122.865,50.2488 122.982,28.9422 123.099,7.6355 C 123.1202,3.7696 120.0035,0.6184 116.1376,0.5972 C 79.8882,0.3981 43.6388,0.1991 7.3893,0 C 3.5234,-0.0212 0.3722,3.0955 0.351,6.9615 C 0.234,28.2681 0.117,49.5748 0,70.8814 C -0.0212,74.7474 3.0955,77.8985 6.9615,77.9198 Z"
+        style="fill:#ff00ff;fill-opacity:0.25;stroke:#ff00ff;stroke-width:0.2646;vector-effect:non-scaling-stroke"/>
+</svg>

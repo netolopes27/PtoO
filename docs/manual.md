@@ -311,8 +311,11 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 
 ## 5. Saída e inspeção (não mudam a geometria)
 
-- **`--in` / `-i` `<foto>`** — entrada (obrigatório).
-- **`--out` / `-o` `<arquivo.svg>`** — saída; default `<in sem extensão>.svg`.
+- **`--in` / `-i` `<foto>`** — entrada (obrigatório). Convenção do repo: fotos de itens mapeados
+  ficam em **`images/`** (`--in images/foo.jpg`); só a amostra `thermpro.jpg` e a `base.svg` ficam
+  na raiz. Ver [AGENTS.md](../AGENTS.md) §Convenções.
+- **`--out` / `-o` `<arquivo.svg>`** — saída; default `<in sem extensão>.svg` (**ao lado da
+  entrada** — com a foto em `images/`, o SVG e os `_overlay_*` saem em `images/` sem `--out`).
 - **`--inkscape`** (default off) — gera também o overlay **SVG editável** `_overlay_<nome>.svg`
   (foto retificada embutida + Béziers em camadas, no referencial mm) para ajuste fino no Inkscape.
   O overlay **PNG** de conferência (contorno sobre a foto) sai **sempre**.

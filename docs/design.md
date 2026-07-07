@@ -22,6 +22,9 @@ sai **direto do JPG** (escala pelos marcadores) — sem referência desenhada à
 **Testes:** `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (runner `tests/run_image_tests.py`). **E/S:** `thermpro.jpg` →
 `thermpro.svg`.
+**Imagens dos itens:** as fotos de entrada e as saídas (`<name>.svg` + `_overlay_*`) dos itens
+mapeados ficam em `images/` (a CLI grava o SVG ao lado da entrada); só `base.svg` e a amostra
+`thermpro.jpg` ficam na raiz. Convenção em [AGENTS.md](../AGENTS.md) §Convenções.
 
 ## Base de calibração — "moldura ArUco + centro branco"
 

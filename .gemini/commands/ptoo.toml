@@ -9,7 +9,9 @@ POCKET de encaixe justo. Critério de aceite (gate RÍGIDO): `contém a peça` >
 {{args}}
 
 Formato esperado: `<foto.jpg> --pass N [--debug] [--describe "texto"]`.
-- `<foto>`: 1º argumento; se for nome simples, resolva na raiz do repo (`<repo>/<foto>`).
+- `<foto>`: 1º argumento; se for nome simples, resolva em `images/` (`<repo>/images/<foto>`), onde
+  moram as fotos dos itens — só a amostra `thermpro.jpg` fica na raiz. Saídas (`.svg` + overlays)
+  também em `images/` (a CLI grava ao lado da entrada; use `--out images/<name>.svg`).
 - `--pass N`: teto rígido de tentativas de calibração (default 3 se omitido).
 - `--debug`: ativa o modo crítico (descrito no SKILL.md) ALÉM de calibrar.
 - `--describe "texto"`: descrição em linguagem natural do que o usuário SABE da peça (forma,
@@ -40,8 +42,8 @@ arquivos). Se por algum motivo o conteúdo não aparecer injetado, ABRA estes ar
 - **Python:** SEMPRE o do venv — `.venv/Scripts/python` (Windows). Trabalhe a partir da raiz do repo.
 - **Tiles de zoom:** o SKILL.md manda gravar num "scratchpad" próprio do Claude. Aqui grave em
   `_debug/ptoo_tiles/<name>/` (ignorado pelo git) e gere os zooms com
-  `.venv/Scripts/python .claude/skills/ptoo/scripts/zoom.py --overlay-svg _overlay_<name>.svg`
-  `--seg-overlay _overlay_<name>.png --out-dir _debug/ptoo_tiles/<name>`.
+  `.venv/Scripts/python .claude/skills/ptoo/scripts/zoom.py --overlay-svg images/_overlay_<name>.svg`
+  `--seg-overlay images/_overlay_<name>.png --out-dir _debug/ptoo_tiles/<name>`.
 - **Atualizar a memória:** ao final do laço, edite `.claude/skills/ptoo/memory.md` exatamente como
   o SKILL.md descreve (acrescente/substitua a linha do objeto no cache e RECOMPUTE o `start`),
   mantendo o arquivo < 100 linhas. É a MESMA memória usada pela versão Claude da skill.

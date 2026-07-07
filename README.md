@@ -98,6 +98,11 @@ white center **233×146 mm**.
 
 Minimal: `photo_to_outline.py --in thermpro.jpg` (SVG takes the photo's name).
 
+> **Where files live.** Keep the photos of your own mapped items in the **`images/`** folder so the
+> repo root stays clean as the map grows. The tool writes the `.svg` (and the `_overlay_*` drafts)
+> **next to the input photo**, so `--in images/foo.jpg` produces `images/foo.svg` with no explicit
+> `--out`. The bundled sample `thermpro.jpg` and the printable `base.svg` stay in the root.
+
 ### Recommended command ⭐
 
 ```bash

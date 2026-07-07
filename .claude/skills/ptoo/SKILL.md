@@ -60,6 +60,9 @@ que faltou. NÃO existe `--max-nodes`: a quantidade de nós emerge do espaçamen
 1. Leia o [manual](../../../docs/manual.md) e a [memory.md](memory.md). Params iniciais: pegue da
    linha do `## cache último-bom` de dimensão parecida, senão do `## start`. O cache diz onde a
    rampa provavelmente vai fechar — use-o p/ **encurtar** a busca, não p/ pular direto ao fundo.
+   Sem linha parecida no cache, rode
+   `.venv/Scripts/python .claude/skills/ptoo/scripts/derive_start.py`: ele agrega **todo** o
+   histórico ([runs.tsv](runs.tsv)) por forma × tamanho e mostra onde objetos parecidos fecharam.
 2. Defina `name` = nome da foto sem extensão; `out` = `<name>.svg`.
 3. **Avalie simetria** já no 1º passe (depois do 1º overview): eixo de espelho claro →
    `--symmetry vertical|horizontal` desde o início (limpa ruído, sobe contém). **Nunca** em peça
@@ -134,14 +137,23 @@ stdout/overlay p/ diagnóstico).
 
 1. Apresente ao usuário: caminho do `<name>.svg`, métricas do melhor passe (objeto, pocket,
    clearance, contém, nº de Béziers), 1–2 tiles mais ilustrativos e os params vencedores.
-2. **Atualize a [memory.md](memory.md)** (mantenha-a < 100 linhas) — regras de atualização
+2. **Registre no log [runs.tsv](runs.tsv)** (append-only, **sem teto** — é o banco de treino da
+   skill): **uma linha por PASSE do laço**, não só o vencedor — a trajetória é o que ensina as
+   rampas. Colunas = cabeçalho do próprio arquivo; desconhecido = `-`; `pass` = nº do passe
+   (1-based; `0` é reservado a sementes legado); `gate=1` se AQUELE passe cruzou o gate;
+   `winner=1` só na linha do melhor passe; `shape` ∈ `retilinea|organica|mista`; `cond` = tags
+   curtas separadas por `;` (croma, cinza-neutro, sombra-projetada, 2fotos, clara-papel, …);
+   flags fora das colunas vão em `extra_flags`.
+3. **Atualize a [memory.md](memory.md)** (mantenha-a < 100 linhas) — regras de atualização
    (fonte única, a memory só as referencia):
    - **Cache:** acrescente/substitua 1 linha no `## cache último-bom`: `- ~WxH mm | <params> |
      contém=… clearance=… | nota curta`. Máx. 5 linhas (evicta a mais antiga); objeto igual
-     substitui a própria linha (não duplica).
-   - **Start (recomputar a cada update):** numéricos (`min-dist`, `smooth-mm`, `pocket-eps`) =
-     **mediana** das linhas do cache; categóricos (`shadow`) = o que venceu na **maioria** →
-     `SEMPRE`; `symmetry` é por-peça → sempre `CONDICIONAL` (nunca no `SEMPRE`). Atualize o `n=`.
+     substitui a própria linha (não duplica). O histórico completo vive no runs.tsv — o cache é
+     só o atalho de partida.
+   - **Start (recomputar a cada update):** rode
+     `.venv/Scripts/python .claude/skills/ptoo/scripts/derive_start.py` e transcreva a sugestão
+     (medianas dos vencedores do runs.tsv, `min-dist` **por forma**, `shadow` por maioria).
+     `symmetry` é por-peça → sempre `CONDICIONAL` (nunca no `SEMPRE`). Atualize o `n=`.
    - Só toque nas heurísticas se aprendeu algo claramente novo (sem duplicar o manual §6).
 
 ## Modo `--debug` (crítico) — só quando o usuário passar `--debug`

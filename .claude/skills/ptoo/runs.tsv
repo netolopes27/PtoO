@@ -1,0 +1,6 @@
+date	object	photo	pass	obj_w_mm	obj_h_mm	shape	cond	min_dist	smooth_mm	pocket_eps	mask_smooth_mm	shadow	symmetry	keep_bumps	extra_flags	contain	clear_x	clear_y	nodes	gate	winner	note
+-	thermpro	thermpro.jpg	0	67.62	70.88	organica	croma;simetrica	1.5	2.5	0	2	remove	vertical	0	-	0.9999	-0.06	0.01	-	1	1	semente legado do cache
+-	trena-azul	-	0	59.62	60.75	organica	croma;assimetrica	1	2.5	0	2	remove	none	0	-	1.0000	0.01	-0.04	-	1	1	semente legado; aba lateral, sem symmetry
+-	raspberry-pi-2	-	0	90.00	58.75	retilinea	2fotos;luz-oposta	10	2.5	0	2	remove	none	1	--in2 <foto2>	0.9999	0.07	-0.05	48	1	1	semente legado; md10 default cola (v0.10)
+-	trena-cinza	-	0	65.12	65.50	organica	cinza-neutro;sombra-projetada;luz-difusa	1.5	2.5	0	2	texture	none	1	-	1.0000	-0.21	-0.24	-	1	1	semente legado; sem keep-bumps o gancho some
+-	tester-tc1	-	0	73.62	97.50	retilinea	clara-papel;humble-auto;2fotos-mesma	10	2.5	0	2	remove	none	1	--in2 <mesma foto>	1.0000	0.14	0.18	14	1	1	semente legado; humilde removeu o halo (v0.12)

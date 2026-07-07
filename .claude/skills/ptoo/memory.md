@@ -1,7 +1,8 @@
 # ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
 # Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta p/ objeto NOVO (derivado do cache, n=5; recalcular a cada update)
+## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=5
+## vencedores — todos legado; recalcular a cada update)
 SEMPRE:      --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
              assimétrica; com sombra vazando, a simetria UNE o vazamento p/ os dois lados (piora)
@@ -11,7 +12,8 @@ CONDICIONAL: --shadow texture — corpo CINZA-NEUTRO (sem croma) COM sombra proj
              projetada use ↑--val-frac ~0.68 (val-frac alto + sombra projetada VAZA)
 CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 10 (v0.10; ver heurísticas)
 
-## cache último-bom (≤5 linhas; 1 linha por objeto; evicta a mais antiga)
+## cache último-bom (≤5 linhas; 1 linha por objeto; evicta a mais antiga; histórico COMPLETO
+## por-passe fica no runs.tsv — nada morre na evicção)
 <!-- formato: - ~WxH mm | <params> | contém=… clearance=… | nota curta -->
 - ~67.62x70.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --symmetry vertical --mask-smooth-mm 2 | contém=0.9999 clearance=-0.06/+0.01 | thermpro (cromático, simétrico)
 - ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 | contém=1.0000 clearance=+0.01/-0.04 | trena azul; assimétrica (aba lateral) → SEM symmetry

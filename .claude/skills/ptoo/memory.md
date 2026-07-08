@@ -1,7 +1,7 @@
 # ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
 # Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=15
+## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=16
 ## vencedores; recalcular a cada update)
 SEMPRE:      --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
@@ -18,7 +18,7 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
 - ~123.00x78.00 mm | --shadow remove --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --val-frac 0.68 --shape rect --corner-radius 7 | contém=1.0000 clearance=+0.10/+0.52 | case_usb; modelo rect DECLARADO; infl 0 (raio real = 7); contorno perfeito de 8 Beziers
 - ~76.88x140.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --val-frac 0.68 | contém=1.0000 clearance=+0.17/+0.22 | zoerax (alicate); keep-bumps salvou o cabo, val-frac pegou o corpo escuro
 - ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 | contém=1.0000 clearance=+0.01/-0.04 | trena azul; assimétrica (aba lateral) → SEM symmetry
-- ~90.00x58.75 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --shape rect --corner-radius 3 --in2 <foto2> | contém=1.0000 clearance=+0.07/+0.03 | pi_up retilínea DECLARADA (v0.13): modelo rect r=3 (infl 0 = r real), 8 Béziers; pós-edit o usuário aperta p/ 88.38x59.14 (contém 0.9949 — a máscara superestima W pela paralaxe dos conectores)
+- ~90.00x58.75 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --shape rect --corner-radius 3 --in2 <foto2> | contém=1.0000 clearance=+0.07/+0.03 | pi_up retilínea DECLARADA (v0.13): modelo rect r=3 (infl 0 = r real), 8 Béziers; reproduzido 1:1 em 2026-07-08; --pocket-eps SEM efeito no modelo quando infl=0; pós-edit o usuário aperta p/ ~88.4x59.1 (paralaxe dos conectores infla a máscara em W)
 - ~65.12x65.50 mm | --shadow texture --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps | contém=1.0000 clearance=-0.21/-0.24 | trena CINZA-neutra, sombra projetada, luz difusa; SEM symmetry; sem keep-bumps o gancho some (contém 0.9968 + aviso)
 
 ## heurísticas (fatos medidos ALÉM do manual §6; não duplicar manual nem SKILL)

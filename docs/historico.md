@@ -435,6 +435,23 @@ o **1º selecionado** ao ponto clicado (`move_selection`; com simetria ativa, ca
 mesmo Δ) — mover ponto a ponto sem arrastar. Suíte: 216 → **228** (`TestManualAdjust` nível F,
 `TestMoveSelection` nível E).
 
+## v0.15 — pins: pontos fixos do contorno marcados no editor
+
+O sidecar de calibração ganhou o terceiro canal: **pins**. Todo nó que o usuário **reposiciona**
+no `--edit` (arrasto ou move em grupo; com simetria, o par junto) fica marcado (alça magenta,
+`self.pinned` remapeado por posição através de insert/delete/Line/Mirror — `remap_pinned`) e ao
+Finalize as posições marcadas são salvas em `<foto>.adjust.json` junto do rot/pan
+(`merge_pins`: pin novo a ≤ 1 mm do herdado o substitui). **Toda execução seguinte reaplica**:
+`apply_pins` deforma a silhueta extraída — e a `sil_ref` do gate, senão o contém puniria a
+correção pedida — p/ passar **exato** por cada pin, com decaimento cos² ao longo do arco
+(`PIN_FALLOFF_MM = 6`), depois do rot+pan (pins vivem no referencial final). É o canal p/ o
+usuário **corrigir a segmentação onde ela insiste em errar** (ex.: sombra que infla um trecho):
+fixa a borda verdadeira uma vez e a correção vale nos passes seguintes da calibração. Pins
+herdados aparecem como marcadores × (botão-direito exclui); Rotate/Pan os arrastam junto do
+contorno; Rotate/Pan/Line/Mirror não marcam. Na /ptoo, o 1º passe com GUI agora fixa
+rotate/pan **e os pontos fortes** do contorno. Suíte: 228 → **241** (`TestPins` nível F,
+`TestPinnedTracking` nível E).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2

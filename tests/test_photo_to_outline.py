@@ -2103,6 +2103,110 @@ class TestManualAdjust(unittest.TestCase):
             self.assertAlmostEqual(ya, yb, places=9)
 
 
+class TestPins(unittest.TestCase):
+    """Pontos FIXOS do contorno (pins, v0.15): nós que o usuário reposicionou no
+    --edit são salvos no sidecar e REAPLICADOS em toda execução — apply_pins deforma
+    a silhueta extraída p/ passar EXATAMENTE por cada pin, com decaimento cos² ao
+    longo do arco (PIN_FALLOFF_MM). É o canal p/ o usuário corrigir a segmentação
+    (ex.: sombra que inflou a borda) de forma persistente."""
+
+    @staticmethod
+    def _square(step=0.1, side=10.0):
+        # perímetro CCW denso do quadrado (0,0)-(side,-side) — Y p/ cima, quadrante
+        # y ≤ 0, como a silhueta real (extract_outline: y = -py·mmpp)
+        pts = []
+        n = int(round(side / step))
+        for i in range(n):                       # base: (0,-side) → (side,-side)
+            pts.append((i * step, -side))
+        for i in range(n):                       # direita: sobe
+            pts.append((side, -side + i * step))
+        for i in range(n):                       # topo: volta
+            pts.append((side - i * step, 0.0))
+        for i in range(n):                       # esquerda: desce
+            pts.append((0.0, -i * step))
+        return pts
+
+    def test_empty_pins_is_noop_copy(self):
+        sil = self._square()
+        out = P.apply_pins(sil, [])
+        self.assertEqual(out, sil)
+        self.assertIsNot(out, sil)
+
+    def test_pin_hits_exactly_and_decays_along_arc(self):
+        sil = self._square()
+        # pin: meio da base (5,−10) puxado 1 mm p/ DENTRO (sombra corrigida)
+        j = min(range(len(sil)), key=lambda i: (sil[i][0] - 5.0) ** 2
+                + (sil[i][1] + 10.0) ** 2)
+        pin = (sil[j][0], sil[j][1] + 1.0)
+        out = P.apply_pins(sil, [pin], falloff_mm=6.0)
+        self.assertEqual(len(out), len(sil))
+        # o vértice mais próximo vai EXATAMENTE ao pin (w=1 no centro da janela)
+        self.assertAlmostEqual(out[j][0], pin[0], places=9)
+        self.assertAlmostEqual(out[j][1], pin[1], places=9)
+        # a 3 mm de arco (metade da janela) o peso cos² vale 0.5
+        k = j + 30                               # 30 passos de 0.1 mm pela base
+        d = math.hypot(out[k][0] - sil[k][0], out[k][1] - sil[k][1])
+        self.assertAlmostEqual(d, 0.5, places=6)
+        # além da janela (≥ 6 mm de arco) nada se move
+        far = (j + len(sil) // 2) % len(sil)
+        self.assertEqual(out[far], sil[far])
+
+    def test_two_pins_apply_both(self):
+        sil = self._square()
+        j0 = min(range(len(sil)), key=lambda i: (sil[i][0] - 5.0) ** 2
+                 + (sil[i][1] + 10.0) ** 2)      # meio da base
+        j1 = min(range(len(sil)), key=lambda i: (sil[i][0] - 5.0) ** 2
+                 + sil[i][1] ** 2)               # meio do topo (lado oposto)
+        pins = [(sil[j0][0], sil[j0][1] + 0.8), (sil[j1][0], sil[j1][1] - 0.6)]
+        out = P.apply_pins(sil, pins, falloff_mm=4.0)
+        self.assertAlmostEqual(out[j0][1], pins[0][1], places=9)
+        self.assertAlmostEqual(out[j1][1], pins[1][1], places=9)
+
+    def test_sidecar_roundtrip_with_pins(self):
+        # Sidecar SÓ com pins (rot/pan zerados) é EFETIVO: mantém o arquivo e volta
+        # na leitura; save sem nada remove.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, "foo.jpg")
+            P.save_adjust(img, 0.0, 0.0, None, pins=[(12.5, -3.25), (0.5, -9.0)])
+            adj = P.load_adjust(img)
+            self.assertIsNotNone(adj)
+            self.assertEqual(adj["rot_deg"], 0.0)
+            self.assertEqual(len(adj["pins"]), 2)
+            self.assertAlmostEqual(adj["pins"][0][0], 12.5, places=6)
+            self.assertAlmostEqual(adj["pins"][1][1], -9.0, places=6)
+            self.assertIsNone(P.save_adjust(img, 0.0, 0.0, None))
+            self.assertFalse(os.path.exists(P.adjust_path(img)))
+
+    def test_legacy_sidecar_has_empty_pins(self):
+        # Sidecar da v0.14 (sem a chave "pins") continua válido: pins = [].
+        import tempfile
+        import json as _json
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, "foo.jpg")
+            with open(P.adjust_path(img), "w", encoding="utf-8") as fh:
+                _json.dump({"rot_deg": 0.0, "pan_mm": 0.4, "center": None}, fh)
+            adj = P.load_adjust(img)
+            self.assertEqual(adj["pins"], [])
+
+    def test_pipeline_replays_pins(self):
+        # E2E na foto real: um pin desloca a silhueta localmente (passa exato por
+        # ele) e o lado oposto do contorno fica INTACTO.
+        base = P.generate_outline(THERMPRO_JPG, min_radius=1.5, smooth_mm=8.0,
+                                  clearance=0.0, return_silhouette=True)[1]
+        j = min(range(len(base)), key=lambda i: base[i][1])   # ponto mais baixo
+        pin = (base[j][0], base[j][1] + 0.7)
+        out = P.generate_outline(THERMPRO_JPG, min_radius=1.5, smooth_mm=8.0,
+                                 clearance=0.0, return_silhouette=True,
+                                 adjust={"rot_deg": 0.0, "pan_mm": 0.0,
+                                         "center": None, "pins": [pin]})[1]
+        self.assertEqual(len(out), len(base))
+        dmin = min(math.hypot(x - pin[0], y - pin[1]) for (x, y) in out)
+        self.assertLess(dmin, 1e-6)
+        far = (j + len(base) // 2) % len(base)   # lado oposto: fora da janela
+        self.assertEqual(out[far], base[far])
+
+
 class TestCubicRoots(unittest.TestCase):
     def test_double_root_found_despite_float_rounding(self):
         # (t−1/3)²·(t−0.8): o det do cúbico deprimido é 0 MATEMATICAMENTE, mas o float

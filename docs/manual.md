@@ -370,14 +370,27 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
     lado). Ao contrário do Rotate, **não** desliga a simetria (nós e eixo andam o mesmo passo,
     o pareamento sobrevive por construção). Reset volta ao deslocamento de abertura e devolve
     o eixo original. Exclusivo com o Rotate (ligar um desliga o outro).
-  - **Persistência (sidecar `.adjust.json`)** — Rotate/Pan são **calibração da foto**, não
-    edição de nós: ao **Finalize**, o total acumulado é salvo em `<foto>.adjust.json` (ao lado
-    da entrada, versionado) e **REAPLICADO automaticamente em toda execução seguinte** da CLI
-    sobre a mesma foto — com ou sem `--edit` (o fluxo padrão imprime
-    `ajuste manual aplicado: rot … · pan …`). O editor reabre já com o ajuste aplicado e o
-    **status bar mostra SEMPRE `rot ±x.xx°` e `pan ±x.xx mm` acumulados** (p/ saber quanto já
-    girou/deslocou). Zerar rot e pan e Finalizar **remove** o sidecar. Por isso vale abrir a
-    GUI já no **1º passe** de uma calibração (fixa rotate/pan uma vez) além do último.
+  - **Pins — pontos fixos do contorno (v0.15)** — todo nó que você **REPOSICIONA** (arrasto ou
+    move em grupo; com simetria, o par junto) fica com a alça **magenta** e vira um **ponto
+    fixo persistente**: ao Finalize, as posições marcadas vão p/ o sidecar (abaixo) e **toda
+    execução seguinte deforma a silhueta detectada p/ passar EXATO por elas** (decaimento cos²
+    ao longo do arco, janela `PIN_FALLOFF_MM = 6 mm` p/ cada lado — correção local). É o canal
+    p/ **corrigir a segmentação onde ela erra** (ex.: sombra que inflou a borda): mova o nó p/
+    a borda verdadeira e a correção fica valendo nos passes seguintes. Pins herdados de sessões
+    anteriores aparecem como **marcadores ×** magenta (o contorno já veio deformado por eles);
+    **botão-direito sobre o ×** exclui o pin herdado; **excluir o nó** desfaz a marca da
+    sessão; um pin novo a ≤ 1 mm de um herdado o **substitui**. Rotate/Pan/Line/Mirror **não**
+    marcam (são calibração/reconstrução, não fixação); inserir também não — o nó inserido marca
+    quando você o arrastar. O status mostra `pins N`.
+  - **Persistência (sidecar `.adjust.json`)** — Rotate/Pan e os **pins** são **calibração da
+    foto**, não edição de nós: ao **Finalize**, o total acumulado (rot, pan, pins mesclados) é
+    salvo em `<foto>.adjust.json` (ao lado da entrada, versionado) e **REAPLICADO
+    automaticamente em toda execução seguinte** da CLI sobre a mesma foto — com ou sem `--edit`
+    (o fluxo padrão imprime `ajuste manual aplicado: rot … · pan … · N pins`). O editor reabre
+    já com o ajuste aplicado e o **status bar mostra SEMPRE `rot ±x.xx°` e `pan ±x.xx mm`
+    acumulados** (p/ saber quanto já girou/deslocou). Zerar rot/pan e excluir os pins ao
+    Finalizar **remove** o sidecar. Por isso vale abrir a GUI já no **1º passe** de uma
+    calibração (fixa rotate/pan e os pontos fortes uma vez) além do último.
 - **`--debug-dir <dir>`** — grava os estágios intermediários (retificação, iluminação,
   segmentação) para inspeção.
 - **`--name <nome>`** — rótulo do contorno no SVG; default = nome da foto.
@@ -401,6 +414,7 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 | peça apoiada **levemente torta** na base (arestas inclinadas ~0.5–5°) | `--level auto` (antes da simetria); ajuste manual fino = modo **Rotate** do `--edit` (salvo no sidecar `.adjust.json`, reaplicado em toda execução) |
 | sombra inflou **um lado** de peça simétrica (eixo detectado puxado) | `--edit` → Symmetry on → arrastar o eixo → **Mirror** com o lado bom |
 | contorno inteiro **deslocado lateralmente** da peça (viés uniforme) | `--edit` → modo **Pan** (0.1 mm/passo; simetria acompanha; salvo no sidecar `.adjust.json`, reaplicado em toda execução) |
+| segmentação erra **num trecho localizado** (sombra infla a borda ali) e insiste a cada passe | `--edit` → **arraste o nó p/ a borda verdadeira** (vira **pin** magenta, salvo no sidecar): toda execução seguinte força a silhueta a passar por ali |
 | bico/canto vivo onde devia arredondar | ↑`--min-radius` (+0.5) |
 | usuário **mediu** o raio dos cantos (paquímetro/descrição) | `--corner-radius R` — o canto sai com o raio declarado, não o estatístico |
 | a peça **é** um retângulo (de cantos arredondados) — usuário declarou | `--shape rect --corner-radius R` — pocket construído exato (8 Béziers); calibre só a segmentação |

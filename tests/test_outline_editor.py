@@ -146,6 +146,57 @@ class TestMoveSelection(unittest.TestCase):
         self.assertEqual(out[1], (7.0, 1.0))
 
 
+class TestPinnedTracking(unittest.TestCase):
+    """Pontos FIXOS (v0.15): nós REPOSICIONADOS pelo usuário viram pins persistidos
+    no sidecar. O conjunto de índices marcados sobrevive a ops estruturais por
+    REMAPEAMENTO POSICIONAL (remap_pinned) — qualquer op que não mova os nós não
+    marcados preserva as marcas; merge_pins funde os pins herdados do sidecar com
+    os da sessão (o novo substitui o herdado a menos de tol)."""
+
+    def test_remap_survives_insert(self):
+        nodes = square_nodes()
+        out = E.insert_node(nodes, 0, (5.0, 0.0))            # desloca índices ≥ 1
+        self.assertEqual(E.remap_pinned(nodes, {2}, out), {3})
+
+    def test_remap_drops_deleted(self):
+        nodes = square_nodes()
+        out = E.delete_node(nodes, 2)                        # nó marcado some
+        self.assertEqual(E.remap_pinned(nodes, {2}, out), set())
+        self.assertEqual(E.remap_pinned(nodes, {3}, out), {2})   # o seguinte desloca
+
+    def test_remap_survives_straighten(self):
+        nodes = [(0.0, 0.0), (2.0, 0.4), (5.0, -0.3), (8.0, 0.2), (10.0, 0.0),
+                 (10.0, 8.0), (0.0, 8.0)]
+        out, _lines, seg = E.straighten_between(nodes, set(), 0, 4)
+        self.assertIsNotNone(seg)
+        self.assertEqual(E.remap_pinned(nodes, {5}, out),    # (10,8) sobrevive
+                         {out.index((10.0, 8.0))})
+
+    def test_remap_wraps_indices(self):
+        nodes = square_nodes()
+        self.assertEqual(E.remap_pinned(nodes, {5}, list(nodes)), {1})   # 5 % 4
+
+    def test_merge_new_pin_supersedes_close_old(self):
+        old = [(5.0, -10.0), (0.0, -5.0)]
+        merged = E.merge_pins(old, [(5.3, -10.2)], tol_mm=1.0)
+        self.assertEqual(len(merged), 2)                     # substituiu, não somou
+        self.assertIn((5.3, -10.2), merged)
+        self.assertIn((0.0, -5.0), merged)
+        self.assertNotIn((5.0, -10.0), merged)
+
+    def test_merge_distant_pins_accumulate(self):
+        old = [(5.0, -10.0)]
+        merged = E.merge_pins(old, [(20.0, -3.0)], tol_mm=1.0)
+        self.assertEqual(len(merged), 2)
+        self.assertIn((5.0, -10.0), merged)
+        self.assertIn((20.0, -3.0), merged)
+
+    def test_merge_empty_cases(self):
+        self.assertEqual(E.merge_pins([], []), [])
+        self.assertEqual(E.merge_pins([(1.0, -1.0)], []), [(1.0, -1.0)])
+        self.assertEqual(E.merge_pins([], [(1.0, -1.0)]), [(1.0, -1.0)])
+
+
 class TestStraightSegments(unittest.TestCase):
     """v0.10: trechos RETOS no editor — shift+clique seleciona 2 nós e o botão Line
     remove os nós intermediários do caminho MAIS CURTO e marca o trecho como reta.

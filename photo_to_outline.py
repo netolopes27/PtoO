@@ -194,6 +194,11 @@ CONTAIN_TOL_MM = 0.3        # tolerância de PROFUNDIDADE do `contém` (v0.6): m
                             # perímetro; penetração ≤ este valor não conta (é ruído de medição,
                             # coberto pelo --clearance a jusante) — um corte profundo (feature
                             # real perdida, ex.: gancho da trena) continua derrubando o gate.
+PIN_FALLOFF_MM = 6.0        # meia-janela (mm de ARCO) da deformação de um PIN (v0.15): o
+                            # vértice mais próximo do pin recebe o Δ inteiro (a curva passa
+                            # EXATA por ele) e o Δ decai em cos² até zerar a esta distância
+                            # ao longo do contorno — correção LOCAL (sombra num trecho) sem
+                            # arrastar o resto da silhueta. Ver apply_pins.
 HUMBLE_MIN_FIRM_FRAC = 0.5  # gatilho do modo AUTO do contorno HUMILDE (v0.12): fração da
                             # borda com apoio visual (gradiente) abaixo disto = "não existe
                             # borda clara em quase todo o objeto" → ativa o fallback de
@@ -3090,6 +3095,10 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno",
 # extraído em x, exato em mm (a foto fica parada, como no editor). Replay
 # canônico: PRIMEIRO o giro, DEPOIS o pan (passos intercalados no editor
 # diferem disso por O(φ·pan) — desprezível nos passos finos de 0.05–0.1).
+# v0.15: o sidecar também guarda PINS — nós que o usuário REPOSICIONOU no editor
+# (pontos fixos da borda verdadeira, ex.: onde a sombra inflou a segmentação);
+# o replay deforma a silhueta extraída p/ passar por eles (apply_pins), DEPOIS
+# do rot+pan (os pins vivem no referencial final, o mesmo do editor).
 # =============================================================================
 def adjust_path(in_path):
     """Caminho do sidecar de ajuste manual da foto `in_path` (`<stem>.adjust.json`,
@@ -3098,9 +3107,10 @@ def adjust_path(in_path):
 
 
 def load_adjust(in_path):
-    """Lê o ajuste salvo: dict `{'rot_deg','pan_mm','center'}` (center = pivô do giro
-    em mm, ou None) — ou None se não há sidecar/ajuste efetivo. Sidecar ilegível é
-    IGNORADO com aviso (calibração corrompida não derruba a CLI)."""
+    """Lê o ajuste salvo: dict `{'rot_deg','pan_mm','center','pins'}` (center = pivô do
+    giro em mm, ou None; pins = pontos FIXOS do contorno em mm, v0.15) — ou None se não
+    há sidecar/ajuste efetivo. Sidecar ilegível é IGNORADO com aviso (calibração
+    corrompida não derruba a CLI)."""
     path = adjust_path(in_path)
     if not os.path.exists(path):
         return None
@@ -3111,32 +3121,68 @@ def load_adjust(in_path):
         pan = float(d.get("pan_mm", 0.0))
         c = d.get("center")
         center = (float(c[0]), float(c[1])) if c is not None else None
-        if rot == 0.0 and pan == 0.0:
+        pins = [(float(p[0]), float(p[1])) for p in (d.get("pins") or [])]
+        if rot == 0.0 and pan == 0.0 and not pins:
             return None
         if rot != 0.0 and center is None:
             raise ValueError("rot_deg sem center (pivô do giro)")
-        return {"rot_deg": rot, "pan_mm": pan, "center": center}
+        return {"rot_deg": rot, "pan_mm": pan, "center": center, "pins": pins}
     except (ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as e:
         warn(f"ajuste manual ignorado ({path}: {e})")
         return None
 
 
-def save_adjust(in_path, rot_deg, pan_mm, center):
+def save_adjust(in_path, rot_deg, pan_mm, center, pins=()):
     """Grava o sidecar do ajuste manual (chamado pelo Finalize do --edit) e devolve o
-    caminho. Ajuste todo ZERADO (usuário desfez a calibração) REMOVE o sidecar e
-    devolve None — a execução seguinte não reaplica nada."""
+    caminho. Ajuste todo ZERADO (rot, pan E pins — usuário desfez a calibração)
+    REMOVE o sidecar e devolve None — a execução seguinte não reaplica nada."""
     path = adjust_path(in_path)
-    if abs(rot_deg) < 1e-9 and abs(pan_mm) < 1e-9:
+    if abs(rot_deg) < 1e-9 and abs(pan_mm) < 1e-9 and not pins:
         if os.path.exists(path):
             os.remove(path)
         return None
     data = {"rot_deg": round(float(rot_deg), 6), "pan_mm": round(float(pan_mm), 6),
             "center": ([round(float(center[0]), 6), round(float(center[1]), 6)]
-                       if center is not None else None)}
+                       if center is not None else None),
+            "pins": [[round(float(x), 6), round(float(y), 6)] for (x, y) in pins]}
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(data, fh)
         fh.write("\n")
     return path
+
+
+def apply_pins(sil, pins, falloff_mm=PIN_FALLOFF_MM):
+    """Replay dos PINS (pontos fixos marcados no --edit, v0.15): deforma a silhueta
+    `sil` (polilinha fechada em mm) p/ passar EXATAMENTE por cada pin. Para cada pin,
+    o vértice mais próximo recebe o Δ inteiro e o Δ decai em cos² ao longo do ARCO
+    (dos dois lados) até zerar em `falloff_mm` — correção local (o usuário fixou a
+    borda verdadeira onde a segmentação errou, ex.: sombra), o resto do contorno fica
+    INTACTO. Pins aplicados em sequência; devolve NOVA lista (cópia se não há pins)."""
+    out = list(sil)
+    n = len(out)
+    if n < 2:
+        return out
+    for pin in pins:
+        px, py = float(pin[0]), float(pin[1])
+        base = list(out)                         # arco medido ANTES da deformação DESTE pin
+        j = min(range(n), key=lambda i: (base[i][0] - px) ** 2 + (base[i][1] - py) ** 2)
+        dx, dy = px - base[j][0], py - base[j][1]
+        if dx == 0.0 and dy == 0.0:
+            continue
+        half = math.pi / (2.0 * falloff_mm)
+        out[j] = (px, py)                        # centro da janela: Δ inteiro (exato)
+        for sgn in (1, -1):                      # decai p/ os dois lados do arco
+            s = 0.0
+            k = j
+            for _ in range(n - 1):
+                k2 = (k + sgn) % n
+                s += math.hypot(base[k2][0] - base[k][0], base[k2][1] - base[k][1])
+                k = k2
+                if s >= falloff_mm or k == j:
+                    break
+                w = math.cos(half * s) ** 2
+                out[k] = (out[k][0] + dx * w, out[k][1] + dy * w)
+    return out
 
 
 def adjust_rot_affine(rot_deg, center_mm, mmpp_x, mmpp_y):
@@ -3186,8 +3232,9 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     HUMBLE_MIN_FIRM_FRAC; ignorado com `faithful` (contradição — avisa se 'on').
     `return_humble_report=True` anexa o report do humilde (ou None) ao fim da tupla.
     `adjust` = ajuste manual salvo pelo editor (`load_adjust`): o giro roda
-    foto+máscaras juntas e o pan translada o contorno extraído (ver a seção do
-    sidecar, acima)."""
+    foto+máscaras juntas, o pan translada o contorno extraído e os pins deformam
+    a silhueta (e a referência do gate) p/ passar pelos pontos fixados (ver a
+    seção do sidecar, acima)."""
     img = load_image(in_path)
     rect, mmpp_x, mmpp_y, _conf = rectify(img, dict_name=dict_name, debug_dir=debug_dir)
     flat = normalize_illumination(rect, debug_dir=debug_dir)
@@ -3295,6 +3342,12 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
         # Replay do PAN manual salvo: translação exata (mm) do contorno em x — a
         # foto fica parada (correção de viés lateral da segmentação, como no editor).
         sil = [(x + adjust["pan_mm"], y) for (x, y) in sil]
+    if adjust and adjust.get("pins"):
+        # Replay dos PINS (pontos fixos do --edit, v0.15): a silhueta é deformada
+        # localmente p/ passar por cada ponto que o usuário fixou — corrige a
+        # segmentação (ex.: sombra) na FONTE, antes do smooth/fit. Depois do pan:
+        # os pins vivem no referencial FINAL (pós rot+pan), o mesmo do editor.
+        sil = apply_pins(sil, adjust["pins"])
     if overlay_svg_path:
         # Mesmos Béziers que o .svg emite (fonte única _fit_for_output, incl. symmetry).
         cub = _fit_for_output(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
@@ -3317,6 +3370,10 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
             sil_ref = extract_outline(raw_mask, mmpp_x, mmpp_y)
             if adjust and adjust.get("pan_mm"):        # gate mede no MESMO referencial
                 sil_ref = [(x + adjust["pan_mm"], y) for (x, y) in sil_ref]
+            if adjust and adjust.get("pins"):          # pins valem p/ a referência tb:
+                # o usuário DECLAROU a borda verdadeira ali — medir o contém contra a
+                # referência crua (com a sombra) puniria a correção que ele pediu.
+                sil_ref = apply_pins(sil_ref, adjust["pins"])
     if return_edit_data:
         res = (out, sil, sil_ref, rect, mmpp_x, mmpp_y)
     elif return_silhouettes:
@@ -3439,12 +3496,14 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
             else 0.5 * (min_y + max_y)
     # Ajuste salvo (sidecar): o pipeline acima JÁ o aplicou (foto girada, contorno
     # deslocado) — o editor recebe os totais só p/ o status/Finalize acumularem.
-    adj = load_adjust(args.in_path) or {"rot_deg": 0.0, "pan_mm": 0.0, "center": None}
+    adj = load_adjust(args.in_path) or {"rot_deg": 0.0, "pan_mm": 0.0, "center": None,
+                                        "pins": []}
     try:
         res = OE.run_editor(rect, nodes0, mmpp_x, mmpp_y,
                             symmetry=args.symmetry, sym_c=sym_c,
                             init_rot_deg=adj["rot_deg"], init_pan_mm=adj["pan_mm"],
-                            init_center=adj["center"])
+                            init_center=adj["center"],
+                            init_pins=adj.get("pins", []))
     except Exception as e:                          # tkinter ausente/sem display etc.
         print(f"ERRO: não consegui abrir o editor ({e}). Rode sem --edit p/ a saída automática.",
               file=sys.stderr)
@@ -3469,12 +3528,14 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     print(f"    overlay {overlay_path}" + (f" | inkscape {overlay_svg_path}" if overlay_svg_path else ""))
     print(f"    EDITADO {len(cub)} Béziers | obj {ow:.2f}x{oh:.2f} | contorno {pw:.2f}x{ph:.2f} "
           f"| contém {coverage(flatten_beziers(cub), sil_ref, tol_mm=CONTAIN_TOL_MM):.4f}")
+    pins_out = adj_out.get("pins", [])
     saved = save_adjust(args.in_path, adj_out["rot_deg"], adj_out["pan_mm"],
-                        adj_out["center"])
+                        adj_out["center"], pins=pins_out)
     if saved:
         print(f"    ajuste salvo: rot {adj_out['rot_deg']:+.2f}° · pan "
-              f"{adj_out['pan_mm']:+.2f} mm → {saved} (reaplicado em toda execução)")
-    elif adj["rot_deg"] or adj["pan_mm"]:
+              f"{adj_out['pan_mm']:+.2f} mm · {len(pins_out)} pins → {saved} "
+              f"(reaplicado em toda execução)")
+    elif adj["rot_deg"] or adj["pan_mm"] or adj.get("pins"):
         print(f"    ajuste zerado: sidecar removido ({adjust_path(args.in_path)})")
     return 0
 
@@ -3720,7 +3781,8 @@ def main(argv=None):
     adj = load_adjust(args.in_path)
     if adj:                                         # calibração do --edit reaplicada
         print(f"    ajuste manual aplicado: rot {adj['rot_deg']:+.2f}° · pan "
-              f"{adj['pan_mm']:+.2f} mm ({adjust_path(args.in_path)})")
+              f"{adj['pan_mm']:+.2f} mm · {len(adj.get('pins', []))} pins "
+              f"({adjust_path(args.in_path)})")
     for (fx, fy), ext in (hrep["flags"] if hrep else []):
         print(f"    AVISO: trecho incerto de ~{ext:.0f} mm perto de ({fx:.0f},{fy:.0f}) "
               f"mm — revisar no --edit", file=sys.stderr)

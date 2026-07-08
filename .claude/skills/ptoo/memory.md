@@ -1,7 +1,7 @@
 # ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
 # Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=16
+## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=10
 ## vencedores; recalcular a cada update)
 SEMPRE:      --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
@@ -18,13 +18,12 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
 - ~123.00x78.00 mm | --shadow remove --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --val-frac 0.68 --shape rect --corner-radius 7 | contém=1.0000 clearance=+0.10/+0.52 | case_usb; modelo rect DECLARADO; infl 0 (raio real = 7); contorno perfeito de 8 Beziers
 - ~76.88x140.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --val-frac 0.68 | contém=1.0000 clearance=+0.17/+0.22 | zoerax (alicate); keep-bumps salvou o cabo, val-frac pegou o corpo escuro
 - ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 | contém=1.0000 clearance=+0.01/-0.04 | trena azul; assimétrica (aba lateral) → SEM symmetry
-- ~90.00x58.75 mm | --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --shape rect --corner-radius 3 --in2 <foto2> | contém=1.0000 clearance=+0.07/+0.03 | pi_up retilínea DECLARADA (v0.13): modelo rect r=3 (infl 0 = r real), 8 Béziers; reproduzido 1:1 em 2026-07-08; --pocket-eps SEM efeito no modelo quando infl=0; pós-edit o usuário aperta p/ ~88.4x59.1 (paralaxe dos conectores infla a máscara em W)
 - ~65.12x65.50 mm | --shadow texture --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps | contém=1.0000 clearance=-0.21/-0.24 | trena CINZA-neutra, sombra projetada, luz difusa; SEM symmetry; sem keep-bumps o gancho some (contém 0.9968 + aviso)
 
 ## heurísticas (fatos medidos ALÉM do manual §6; não duplicar manual nem SKILL)
 - A rampa min-dist fecha onde a FORMA manda: contorno orgânico/cantos arredondados fecha baixo
-  (~1–1.5); PLACA retangular fecha alto (7.5–10; com primitivas v0.10, o default 10 já cola —
-  folga +0.07 no Pi). Se o 1º passe JÁ cruza o gate, SUBA min-dist (menos nós) em vez de descer.
+  (~1–1.5); PLACA retangular fecha alto (7.5–10; com primitivas v0.10, o default 10 já cola).
+  Se o 1º passe JÁ cruza o gate, SUBA min-dist (menos nós) em vez de descer.
 - v0.10 primitivas (--line-tol/--arc-tol 0.3, LIGADO por default): aresta reta vira RETA exata e
   canto vira ARCO → min-dist rege só trechos LIVRES. Facetou curva gentil ou perdeu aresta →
   --line-tol ↓0.2 (conservador) / ↑0.5 (agressivo). --line-tol 0 = legado puro (A/B barato).
@@ -53,13 +52,13 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
   faint readmite é removido pelo humilde (v0.12, abaixo) — não precisa mais do --edit p/ isso.
   Prefira a foto de luz MAIS direcional (menos penumbra = mais borda firme p/ ancorar cordas).
 - v0.13 --shape rect (peça DECLARADA retângulo via --describe): `infl` > 0 com o raio declarado
-  = raio real MENOR → desça --corner-radius até infl≈0 (Pi: r=5→infl .42, r=3→infl 0; o raio
-  real "se mede" pela inflação). O modelo cruza o gate POR CONSTRUÇÃO mas pode sair FOLGADO:
+  = raio real MENOR → desça --corner-radius até infl≈0 (o raio real "se mede" pela inflação:
+  case_usb r=3→infl>0, r=7→infl 0). O modelo cruza o gate POR CONSTRUÇÃO mas pode sair FOLGADO:
   saliência real fora do retângulo (soquete do TC1) entorta o minAreaRect (~2°) → folga
   +2.8/+2.1 vs +0.14 do genérico — SEMPRE compare a folga com o melhor passe genérico antes de
   declarar o modelo vencedor (exceção explícita à regra "menos nós vence"). O modelo NÃO conserta
-  segmentação ruim: Pi em foto ÚNICA (sombra dura sem --in2) deforma a máscara → vão 9.6 →
-  FALLBACK correto; a máscara precisa da MESMA qualidade do genérico.
+  segmentação ruim: placa em foto ÚNICA com sombra dura (sem --in2) deforma a máscara → vão >
+  teto → FALLBACK correto; a máscara precisa da MESMA qualidade do genérico.
 - v0.12 CONTORNO HUMILDE: CLI avisou "só NN% da borda tem apoio visual" → o humilde JÁ ativou
   (cordas entre trechos firmes; métrica `firme NN%`). Conferir os trechos LARANJA (flags) no
   overlay ANTES de mexer em rampas — o défice ali não é densidade, é borda incerta; acabamento

@@ -339,7 +339,12 @@ do 1º selecionado) — mecânica no §Testes E, operação no [manual](manual.m
 **Rotate/Pan persistem**: ao Finalizar, o total acumulado vai p/ o sidecar
 `<foto>.adjust.json` (`save_adjust`) e TODA execução seguinte o reaplica
 (`load_adjust` → kwarg `adjust` de `generate_outline`: o giro roda foto+máscaras juntas pela
-matriz única `adjust_rot_affine`, o pan translada o contorno extraído em mm exatos). `--debug-dir` grava intermediários. Marcadores insuficientes →
+matriz única `adjust_rot_affine`, o pan translada o contorno extraído em mm exatos).
+**Pins persistem (v0.15)**: nós que o usuário REPOSICIONA no editor (arrasto/move em grupo,
+alça magenta) viram **pontos fixos** no mesmo sidecar; o replay (`apply_pins`) deforma a
+silhueta extraída — e a `sil_ref` do gate — p/ passar EXATO por cada pin, com decaimento cos²
+ao longo do arco (`PIN_FALLOFF_MM`), corrigindo a segmentação (ex.: sombra) na fonte em toda
+execução; pins herdados aparecem como marcadores × (botão-direito exclui). `--debug-dir` grava intermediários. Marcadores insuficientes →
 aborta com mensagem clara. (Referência operacional completa das flags: [manual.md](manual.md); resumo em inglês no
 [README.md](../README.md) §4.)
 
@@ -371,6 +376,7 @@ avisa) · `LINE_TOL_MM = 0.3` / `ARC_TOL_MM = 0.3` (primitivas v0.10; defaults d
 mínimos) · `ARC_R_MIN_MM = 0.8` / `ARC_R_MAX_MM = 60.0` (faixa de raio plausível; também veta
 reta que é arco disfarçado) · `PRIM_TRIM_MM = 0.8` (recuo das pontas de reta → filete G1) ·
 `CORNER_RADIUS_MM = 0.0` (prior de raio `--corner-radius`, v0.13; 0 desliga) ·
+`PIN_FALLOFF_MM = 6.0` (meia-janela de arco da deformação de um pin do sidecar, v0.15) ·
 `SHAPE_INFL_MAX_MM = 2.0` / `SHAPE_GAP_MM = 5.0` (salvaguardas do `--shape`: inflação e vão
 máximos antes do fallback) ·
 `FIT_TOL_MM = 0.2` · `BEZIER_GUIDE_MM = 0.5` · `CORNER_ANGLE_DEG = 40.0` ·
@@ -409,7 +415,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 228/228 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 241/241 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -514,12 +520,15 @@ personalizável** a partir do contorno medido.
   eixo deslocado do MESMO dx (é o que permite o modo Pan não desligar a simetria).
   **Move em grupo (`TestMoveSelection`):** `move_selection` leva o 1º selecionado ao alvo e
   aplica o MESMO Δ aos demais (1 nó = teleporte; seleção vazia = cópia; índices com wrap).
+  **Pins (`TestPinnedTracking`, v0.15):** `remap_pinned` preserva as marcas de nó através de
+  ops ESTRUTURAIS por posição (insert desloca, delete desafixa, straighten sobrevive, wrap);
+  `merge_pins` funde herdados+sessão (novo substitui herdado a ≤ tol; distantes somam).
   **Measure (`TestMeasureTool`):** `measure_snap` trava o 2º ponto no eixo dominante (|dx|≥|dy|
   → horizontal, empate incluso; `free=True`/Ctrl mantém livre); `measure_length`/
   `measure_midpoint`; `nearest_measure` mede a distância ao SEGMENTO (hit-test do excluir).
   A view tkinter é glue fino e **não** é instanciada (runner
   headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG), a foto com o giro
-  da sessão e o ajuste rot/pan TOTAL p/ o sidecar, sem recalcular.
+  da sessão e o ajuste TOTAL (rot/pan + pins mesclados) p/ o sidecar, sem recalcular.
 - **F. Saída/CLI (`TestOutputFitSourceOfTruth`, `TestSvgNameEscaping`, `TestCliDictValidation`,
   `TestMakeTargetCli`).** `_fit_for_output` é a **fonte única** do ajuste emitido (.svg final,
   overlay Inkscape e métricas — o overlay recebe a MESMA `--symmetry`; snap de bbox só no modo
@@ -529,7 +538,11 @@ personalizável** a partir do contorno medido.
   persistente): roundtrip do sidecar `save_adjust`/`load_adjust`, zerado REMOVE o arquivo,
   corrompido é ignorado com aviso, `adjust_rot_affine` reproduz exatamente a rotação dos nós
   em mm (anisotropia incluída; 0° = identidade) e o replay do pan translada a silhueta do
-  thermpro EXATAMENTE (sub-pixel, e2e). `TestCubicRoots`: raiz DUPLA
+  thermpro EXATAMENTE (sub-pixel, e2e). `TestPins` (v0.15): `apply_pins` passa EXATO pelo
+  pin (vértice mais próximo), decai em cos² ao longo do arco (peso 0.5 na meia-janela) e não
+  toca fora da janela; dois pins somam; sidecar SÓ com pins é efetivo (mantém o arquivo) e o
+  sidecar legado (sem a chave) lê `pins=[]`; e2e no thermpro: o replay deforma a silhueta
+  localmente (passa pelo pin, lado oposto intacto). `TestCubicRoots`: raiz DUPLA
   achada apesar do arredondamento float (tolerância relativa no `det`; antes `det == 0` exato
   perdia a raiz e um cruzamento tangente do eixo sumia). Robustez do layout: borda que não
   comporta 2 marcadores com o vão mínimo recebe **1 centrado** (nunca um par quase-sobreposto)

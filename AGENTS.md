@@ -103,8 +103,9 @@ rascunhos ignorados pelo git (`.gitignore`: `_overlay_*`, `_debug/`, `.venv/`, `
 o padrão `_overlay_*` casa por basename em qualquer nível, então `images/_overlay_*` também é
 ignorado; o entregável `images/<name>.svg` é versionado normalmente. Os overlays em `images/`, ainda
 que gitignored, são **preservados no disco** como registro visual do item — não os apague (só
-`_debug/` e os tiles de zoom são transitórios). O ajuste manual Rotate/Pan do `--edit` fica num
-sidecar `images/<name>.adjust.json` (**versionado** — é calibração da foto, como o `.svg`) e é
+`_debug/` e os tiles de zoom são transitórios). O ajuste manual do `--edit` — Rotate/Pan **e os pins**
+(nós reposicionados = pontos fixos que corrigem a segmentação, v0.15) — fica num sidecar
+`images/<name>.adjust.json` (**versionado** — é calibração da foto, como o `.svg`) e é
 **reaplicado automaticamente** em toda execução da CLI sobre a mesma foto.
 
 ## Gotchas

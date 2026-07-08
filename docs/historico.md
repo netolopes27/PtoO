@@ -418,6 +418,23 @@ WARNING + fallback genérico + `shape FALLBACK` nas métricas). Com o modelo, as
 reger o contorno — a calibração vira só segmentação. Suíte: 206 → **216** (`TestGeometryPriors`,
 nível A).
 
+## v0.14 — ajuste manual persistente (sidecar) + move em grupo no editor
+
+O Rotate/Pan do editor deixou de ser descartável: é **calibração da foto** (peça torta na base,
+viés lateral da segmentação) e agora **persiste** — ao Finalize o total acumulado é salvo num
+sidecar `<foto>.adjust.json` (`save_adjust`) e **toda execução da CLI o reaplica**
+(`load_adjust` → kwarg `adjust` de `generate_outline`): o giro roda foto+máscaras juntas pela
+MESMA matriz da view do editor (`adjust_rot_affine`, fonte única) e o pan translada o contorno
+extraído em mm exatos (overlay PNG desloca a máscara em px só p/ o desenho). O editor reabre já
+com o ajuste aplicado (a view gira só o delta da sessão; Reset volta ao estado de abertura, não
+a zero) e o **status bar mostra sempre** `rot ±x.xx°` / `pan ±x.xx mm` acumulados; zerar tudo e
+Finalizar remove o sidecar. Motivação operacional: abrir a GUI já no **1º passe** da /ptoo (fixa
+a calibração geométrica uma vez) além do último. Segunda feature: **move em grupo** — a seleção
+por Shift+clique perdeu o teto de 2; com nós selecionados, um clique aplica a TODOS o Δ que leva
+o **1º selecionado** ao ponto clicado (`move_selection`; com simetria ativa, cada par espelha o
+mesmo Δ) — mover ponto a ponto sem arrastar. Suíte: 216 → **228** (`TestManualAdjust` nível F,
+`TestMoveSelection` nível E).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2

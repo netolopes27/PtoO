@@ -109,6 +109,43 @@ class TestEditOps(unittest.TestCase):
         self.assertIsNone(E.nearest_segment([(0.0, 0.0)], (1.0, 1.0)))
 
 
+class TestMoveSelection(unittest.TestCase):
+    """Move em GRUPO (clique com seleção ativa): o Δ que leva o PRIMEIRO selecionado
+    ao alvo é aplicado a TODOS os selecionados — os demais param onde o Δ os levar."""
+
+    def test_single_node_teleports(self):
+        nodes = square_nodes()
+        out = E.move_selection(nodes, [1], (12.0, 3.0))
+        self.assertEqual(out[1], (12.0, 3.0))
+        self.assertEqual(out[0], nodes[0])         # não selecionado: parado
+        self.assertEqual(nodes[1], (10.0, 0.0))    # original intacto (cópia)
+
+    def test_group_moves_rigidly(self):
+        nodes = square_nodes()                     # nó 1=(10,0), nó 2=(10,−10)
+        out = E.move_selection(nodes, [1, 2], (15.0, 5.0))   # Δ = (+5, +5)
+        self.assertEqual(out[1], (15.0, 5.0))      # 1º selecionado vai AO alvo
+        self.assertEqual(out[2], (15.0, -5.0))     # 2º recebe o MESMO Δ
+        self.assertEqual(out[0], nodes[0])
+        self.assertEqual(out[3], nodes[3])
+
+    def test_delta_comes_from_first_selected(self):
+        nodes = square_nodes()                     # ordem invertida: 1º = nó 2
+        out = E.move_selection(nodes, [2, 1], (5.0, -5.0))   # Δ = (−5, +5) do nó 2
+        self.assertEqual(out[2], (5.0, -5.0))
+        self.assertEqual(out[1], (5.0, 5.0))
+
+    def test_empty_selection_is_noop_copy(self):
+        nodes = square_nodes()
+        out = E.move_selection(nodes, [], (99.0, 99.0))
+        self.assertEqual(out, nodes)
+        self.assertIsNot(out, nodes)
+
+    def test_indices_wrap(self):
+        nodes = square_nodes()
+        out = E.move_selection(nodes, [5], (7.0, 1.0))       # 5 % 4 = 1
+        self.assertEqual(out[1], (7.0, 1.0))
+
+
 class TestStraightSegments(unittest.TestCase):
     """v0.10: trechos RETOS no editor — shift+clique seleciona 2 nós e o botão Line
     remove os nós intermediários do caminho MAIS CURTO e marca o trecho como reta.

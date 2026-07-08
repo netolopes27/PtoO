@@ -89,6 +89,23 @@ def move_node(nodes, i, xy):
     return out
 
 
+def move_selection(nodes, sel, target):
+    """Move em GRUPO (clique com seleção ativa): aplica a TODOS os nós de `sel` o
+    deslocamento que leva o PRIMEIRO selecionado a `target` (mm). Um só selecionado =
+    teleporte simples ("mover o ponto sem arrastar"); vários = o bloco anda RÍGIDO
+    (mesmo Δ p/ todos, parem onde pararem). Devolve uma NOVA lista; `sel` vazio = cópia."""
+    if not sel:
+        return list(nodes)
+    n = len(nodes)
+    x0, y0 = nodes[sel[0] % n]
+    dx, dy = float(target[0]) - x0, float(target[1]) - y0
+    out = list(nodes)
+    for i in sel:
+        x, y = out[i % n]
+        out[i % n] = (x + dx, y + dy)
+    return out
+
+
 def insert_node(nodes, i, xy):
     """Insere `xy` LOGO APÓS o nó `i` (entre `i` e `i+1`) — usado ao clicar no trecho
     que sai do nó `i`. Devolve uma NOVA lista."""
@@ -545,11 +562,14 @@ class EditorApp:
     """Janela de ajuste: foto retificada de fundo + nós arrastáveis + curva traçada.
 
     Interações: ARRASTAR alça = mover nó; CLIQUE no trecho da curva = inserir nó;
-    BOTÃO-DIREITO na alça = excluir; SHIFT+CLIQUE na alça = selecionar (até 2, alça
-    vermelha) p/ o botão "Line": remove os nós entre os dois selecionados (caminho
-    mais curto) e traça uma RETA entre eles — os vizinhos saem tangentes à reta (G1) e
-    as retas sobrevivem a mover/inserir/excluir (remap). Rodinha = zoom NO CURSOR (o
-    ponto sob o mouse fica parado); CTRL + arrasto do botão esquerdo = pan. Botões (em
+    BOTÃO-DIREITO na alça = excluir; SHIFT+CLIQUE na alça = selecionar/desselecionar
+    (SEM teto, alças vermelhas). Com seleção ativa, o próximo CLIQUE simples MOVE o
+    grupo: o Δ que leva o 1º selecionado ao ponto clicado é aplicado a TODOS
+    (move_selection — "mover o ponto sem arrastar"; 1 clique = 1 movimento e a seleção
+    limpa). Exatamente 2 selecionados também alimentam o botão "Line": remove os nós
+    entre os dois (caminho mais curto) e traça uma RETA — os vizinhos saem tangentes à
+    reta (G1) e as retas sobrevivem a mover/inserir/excluir (remap). Rodinha = zoom NO
+    CURSOR (o ponto sob o mouse fica parado); CTRL + arrasto do botão esquerdo = pan. Botões (em
     inglês na GUI): Re-trace (spline Catmull-Rom G1 pelos nós), Undo, Reset (volta aos
     nós detectados, sem retas manuais), Line e Finalize. WYSIWYG: Finalize grava
     EXATAMENTE a curva que está na tela (a mesma do último Re-trace) — nada é
@@ -564,6 +584,11 @@ class EditorApp:
     foto+nós juntos em passos de 0.1°/0.05°). **Pan** (gêmeo do Rotate) desloca o
     CONTORNO (nós + eixo de simetria juntos, foto parada) p/ esquerda/direita em
     passos de 0.1/0.05 mm — corrige viés lateral da detecção sem desligar a simetria.
+    Rotate/Pan são CALIBRAÇÃO da foto e PERSISTEM: ao Finalizar, o total acumulado é
+    salvo pelo CLI num sidecar `<foto>.adjust.json` e REAPLICADO em toda execução
+    seguinte (o editor abre já com o ajuste aplicado; o status mostra o total, e a
+    view gira só o delta da sessão). O status na base da janela exibe SEMPRE
+    `rot ±x.xx°` e `pan ±x.xx mm` acumulados.
     **Measure**: modo de medição — 1º clique marca o ponto A, o preview segue o
     cursor TRAVADO no eixo dominante (Ctrl = ângulo livre, measure_snap) e o 2º
     clique fecha; a medição PERSISTE em destaque (linha + marca central + rótulo mm)
@@ -576,7 +601,8 @@ class EditorApp:
     é renderizado por RECORTE do VIEWPORT (só a parte visível é redimensionada/codificada),
     então o custo não explode com o zoom — o polimento pedido."""
 
-    def __init__(self, root, rect, nodes0, mmpp_x, mmpp_y, symmetry="none", sym_c=None):
+    def __init__(self, root, rect, nodes0, mmpp_x, mmpp_y, symmetry="none", sym_c=None,
+                 init_rot_deg=0.0, init_pan_mm=0.0, init_center=None):
         import tkinter as tk
         self.tk = tk
         self.root = root
@@ -586,7 +612,7 @@ class EditorApp:
         self.nodes0 = list(nodes0)          # nós detectados (p/ Reset)
         self.nodes = list(nodes0)           # nós atuais (em mm)
         self.lines = set()                  # trechos RETOS manuais (índices de trecho)
-        self.sel = []                       # nós selecionados via shift+clique (≤ 2)
+        self.sel = []                       # nós selecionados via shift+clique (sem teto)
         self.cubics = cubics_through_nodes(self.nodes)
         self.history = []                   # pilha p/ Desfazer (snapshots do estado editável)
         self.result = None                  # (cúbicas, foto) ao Finalizar; None = cancelado
@@ -609,14 +635,20 @@ class EditorApp:
         self.paired_c = None                # eixo em torno do qual o pareamento VALE
         self._axis_drag = False
         # --- rotação manual (F4): giro acumulado da foto+nós (modo "Rotate") -----
-        self.rot_deg = 0.0
-        self.rot_center = None              # pivô (mm) fixado no 1º passo de giro
+        # `init_*` = ajuste SALVO (sidecar .adjust.json) que o CLI JÁ aplicou no
+        # pipeline: nós e foto chegam ajustados, então a VIEW só gira o DELTA
+        # (rot_deg − _rot0); status e Finalize mostram/devolvem o TOTAL acumulado.
+        self._rot0 = float(init_rot_deg)
+        self._pan0 = float(init_pan_mm)
+        self._center0 = tuple(init_center) if init_center is not None else None
+        self.rot_deg = self._rot0
+        self.rot_center = self._center0     # pivô (mm); fixado no 1º passo de giro
         self._rot_mode = False
         self._guide_y = None                # linha-guia horizontal (y de tela) no modo Rotate
         # --- pan manual (modo "Pan"): desloca o CONTORNO (nós + eixo de simetria)
         # com a FOTO PARADA — corrige viés lateral da detecção (sombra que empurrou
         # o contorno inteiro p/ um lado). O pareamento sobrevive por construção.
-        self.pan_mm = 0.0                   # deslocamento x acumulado (mm), p/ o status
+        self.pan_mm = self._pan0            # deslocamento x acumulado (mm), p/ o status
         self._pan_mode = False
         self._guide_x = None                # linha-guia vertical (x de tela) no modo Pan
         self._last_op = None                # coalesce do histórico ('rot'/'pan'/None)
@@ -735,9 +767,10 @@ class EditorApp:
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
         if cw < 2 or ch < 2:
             return
-        if self.rot_deg and self.rot_center is not None:
-            # giro acumulado (F4): warpAffine DIRETO p/ o viewport — o custo é
-            # proporcional à tela (cada pixel-destino amostra a foto), não ao zoom
+        if self.rot_deg != self._rot0 and self.rot_center is not None:
+            # giro DELTA desta sessão (F4; o giro salvo já veio aplicado na foto):
+            # warpAffine DIRETO p/ o viewport — o custo é proporcional à tela
+            # (cada pixel-destino amostra a foto), não ao zoom
             M = self._bg_affine(self.zoom, self.off_x, self.off_y)
             img = cv2.warpAffine(self.rect, M, (cw, ch), flags=cv2.INTER_LINEAR,
                                  borderMode=cv2.BORDER_CONSTANT, borderValue=(32, 32, 32))
@@ -843,10 +876,10 @@ class EditorApp:
                  f"obj {w:.1f}×{h:.1f} mm · sym {sym}"]
         if self.measures:
             parts.append(f"{len(self.measures)} meas")
-        if self.rot_deg:
-            parts.append(f"rot {self.rot_deg:+.2f}°")
-        if self.pan_mm:
-            parts.append(f"pan {self.pan_mm:+.2f} mm")
+        # rot/pan SEMPRE visíveis (pedido do usuário: "quanto girei/desloquei?") —
+        # é o total acumulado, incluindo o ajuste salvo no sidecar que o CLI reaplicou
+        parts.append(f"rot {self.rot_deg:+.2f}°")
+        parts.append(f"pan {self.pan_mm:+.2f} mm")
         parts.append(f"zoom {self.zoom:.2f}×")
         if self._rot_mode:
             parts.append("ROTATE: right-click=+0.1° · left-click=−0.1° · wheel=rotate "
@@ -858,9 +891,13 @@ class EditorApp:
             parts.append("MEASURE: click 2 points (locks to X/Y) · Ctrl on 2nd click="
                          "free angle · right-click=delete measure / cancel · wheel=zoom "
                          "· toggle Measure to exit")
+        elif self.sel:
+            parts.append(f"SEL {len(self.sel)}: click=MOVE group (Δ from 1st selected) "
+                         "· shift+click=toggle · 2 selected + Line=straight")
         else:
             parts.append("drag=move · click curve=insert · right-click=delete · "
-                         "shift+click=select (2) then Line · wheel=zoom · Ctrl+drag=pan")
+                         "shift+click=select (1+=group move, 2=Line) · wheel=zoom · "
+                         "Ctrl+drag=pan")
         if self._notice:
             parts.insert(0, self._notice.upper())
         self.status.config(text=" · ".join(parts))
@@ -979,6 +1016,27 @@ class EditorApp:
             self._pan_step(-0.1)
             return
         mm = self._screen_to_mm(e.x, e.y)
+        if self.sel:
+            # seleção ativa: o clique MOVE o grupo — Δ = alvo − 1º selecionado,
+            # aplicado a todos ("mover o ponto sem arrastar"; 1 clique = 1 movimento,
+            # re-selecione p/ repetir). Tem precedência sobre arrastar/inserir.
+            self._push_history()
+            if self._sym_active():
+                # espelha o MESMO Δ em cada par; alvos das posições ORIGINAIS (um
+                # selecionado pode ser par de outro — senão o Δ dobraria)
+                orig = list(self.nodes)
+                n = len(orig)
+                x0, y0 = orig[self.sel[0] % n]
+                dx, dy = mm[0] - x0, mm[1] - y0
+                for i in self.sel:
+                    x, y = orig[i % n]
+                    self.nodes = move_node_sym(self.nodes, i, (x + dx, y + dy),
+                                               self.sym_axis, self.sym_c)
+            else:
+                self.nodes = move_selection(self.nodes, self.sel, mm)
+            self.sel = []
+            self.retrace()
+            return
         i = nearest_node(self.nodes, mm, max_dist=self._hit_tol_mm())
         if i is not None:
             self._push_history()
@@ -1062,8 +1120,9 @@ class EditorApp:
         self.retrace()                           # curva na tela segue os nós (WYSIWYG)
 
     def on_shift_press(self, e):
-        """Shift+clique na alça: alterna a seleção do nó (mantém no máximo 2 — os dois
-        extremos da futura reta do botão Line)."""
+        """Shift+clique na alça: alterna a seleção do nó — SEM teto. Com seleção
+        ativa o próximo clique simples MOVE o grupo (move_selection, Δ calculado do
+        1º selecionado); exatamente 2 selecionados também habilitam o botão Line."""
         mm = self._screen_to_mm(e.x, e.y)
         i = nearest_node(self.nodes, mm, max_dist=self._hit_tol_mm())
         if i is None:
@@ -1072,8 +1131,6 @@ class EditorApp:
             self.sel.remove(i)
         else:
             self.sel.append(i)
-            if len(self.sel) > 2:
-                self.sel.pop(0)                  # o mais antigo sai
         self.redraw()
 
     def make_line(self):
@@ -1255,25 +1312,21 @@ class EditorApp:
         self.retrace()                           # foto parada: só o vetor redesenha
 
     def _bg_affine(self, scale, dx, dy):
-        """Matriz 2×3 pixel-da-foto → destino, compondo o giro acumulado (F4) em torno
-        do pivô com a transformada `dst = px·scale + (dx,dy)`. O giro dos NÓS é +φ em
-        mm (Y p/ cima); no referencial do pixel (Y p/ baixo) isso é K = D·R(φ)·D⁻¹ com
-        D = diag(1/mmpp_x, −1/mmpp_y) — anisotropia incluída (mmpp_x ≠ mmpp_y)."""
+        """Matriz 2×3 pixel-da-foto → destino, compondo o giro DELTA desta sessão
+        (rot_deg − _rot0: o giro salvo no sidecar já veio aplicado na foto pelo CLI)
+        com a transformada `dst = px·scale + (dx,dy)`. A matriz do giro K é a MESMA
+        do replay do CLI — fonte única P.adjust_rot_affine."""
         import numpy as np
-        phi = math.radians(self.rot_deg)
-        cphi, sphi = math.cos(phi), math.sin(phi)
-        k01 = (self.mmpp_y / self.mmpp_x) * sphi
-        k10 = -(self.mmpp_x / self.mmpp_y) * sphi
-        pcx, pcy = mm_to_px(self.rot_center, self.mmpp_x, self.mmpp_y)
-        # dst = scale·(K·(p − pc) + pc) + (dx,dy)
+        K = P.adjust_rot_affine(self.rot_deg - self._rot0, self.rot_center,
+                                self.mmpp_x, self.mmpp_y)
+        # dst = scale·(K·p) + (dx,dy)
         return np.array([
-            [scale * cphi, scale * k01, scale * (pcx - cphi * pcx - k01 * pcy) + dx],
-            [scale * k10, scale * cphi, scale * (pcy - k10 * pcx - cphi * pcy) + dy]],
-            np.float64)
+            [scale * K[0, 0], scale * K[0, 1], scale * K[0, 2] + dx],
+            [scale * K[1, 0], scale * K[1, 1], scale * K[1, 2] + dy]], np.float64)
 
     def _rotated_rect_full(self):
-        """Foto INTEIRA girada pelo giro acumulado (p/ o overlay ao Finalizar)."""
-        if not self.rot_deg or self.rot_center is None:
+        """Foto INTEIRA girada pelo giro DELTA da sessão (p/ o overlay ao Finalizar)."""
+        if self.rot_deg == self._rot0 or self.rot_center is None:
             return self.rect
         import cv2
         h, w = self.rect.shape[:2]
@@ -1343,37 +1396,53 @@ class EditorApp:
             self.retrace()
 
     def reset(self):
+        # Reset = estado de ABERTURA da janela (WYSIWYG): nós detectados + o ajuste
+        # SALVO no sidecar (que o CLI já aplicou) — só o editado NESTA sessão sai.
         self._push_history()
         self.nodes = list(self.nodes0)
         self.lines = set()                       # retas manuais também voltam ao zero
         self.sel = []
-        self.pan_mm = 0.0                        # Reset zera o pan e devolve o eixo
+        self.pan_mm = self._pan0                 # pan da sessão fora; o salvo fica
         self.sym_c = self._sym_c0                # ORIGINAL da detecção (pan/arrasto fora)
         if self.sym_var.get() and self.sym_c is None:
             self.sym_c = self._default_axis_c()  # simetria ligada sem eixo do CLI
         self.paired_c = self.sym_c if (self.sym_c is not None and sym_check_pairing(
             self.nodes, self.sym_axis, self.sym_c)) else None
-        if self.rot_deg:                         # Reset zera também o ângulo (F4)
-            self.rot_deg = 0.0
-            self.rot_center = None
+        if self.rot_deg != self._rot0:           # giro da sessão desfeito (F4)
+            self.rot_deg = self._rot0
+            self.rot_center = self._center0
             self._render_bg()
         self.retrace()
 
+    def adjust_state(self):
+        """Ajuste manual TOTAL acumulado (salvo no sidecar + editado nesta sessão) —
+        é o que o CLI persiste em `<foto>.adjust.json` ao Finalizar."""
+        return {"rot_deg": self.rot_deg, "pan_mm": self.pan_mm,
+                "center": self.rot_center if self.rot_center is not None
+                else self._center0}
+
     def finish(self):
         # WYSIWYG: grava EXATAMENTE a curva que está na tela (o último Re-traçar), sem
-        # recalcular — e a FOTO com o mesmo giro acumulado (F4), p/ o overlay casar.
-        self.result = (self.cubics, self._rotated_rect_full())
+        # recalcular — a FOTO com o giro DELTA da sessão (p/ o overlay casar) e o
+        # ajuste TOTAL rot/pan (p/ o CLI persistir no sidecar e reaplicar sempre).
+        self.result = (self.cubics, self._rotated_rect_full(), self.adjust_state())
         self.root.destroy()
 
 
-def run_editor(rect, nodes0, mmpp_x, mmpp_y, symmetry="none", sym_c=None):
+def run_editor(rect, nodes0, mmpp_x, mmpp_y, symmetry="none", sym_c=None,
+               init_rot_deg=0.0, init_pan_mm=0.0, init_center=None):
     """Abre o editor e BLOQUEIA até o usuário Finalizar ou fechar a janela. Devolve
-    `(cúbicas, foto)` ao Finalizar — as cúbicas EXATAMENTE como exibidas (Catmull-Rom
-    G1 pelos nós, o mesmo do Re-traçar) e a foto retificada com o giro acumulado do
-    modo Rotate (p/ o overlay continuar casado) — ou `None` se cancelado. `symmetry`/
-    `sym_c` (F1): modo e eixo detectados pelo CLI — o editor NÃO recalcula o eixo."""
+    `(cúbicas, foto, ajuste)` ao Finalizar — as cúbicas EXATAMENTE como exibidas
+    (Catmull-Rom G1 pelos nós, o mesmo do Re-traçar), a foto retificada com o giro
+    da sessão (p/ o overlay continuar casado) e o dict `{'rot_deg','pan_mm','center'}`
+    TOTAL p/ o CLI salvar no sidecar — ou `None` se cancelado. `symmetry`/`sym_c`
+    (F1): modo e eixo detectados pelo CLI — o editor NÃO recalcula o eixo.
+    `init_rot_deg`/`init_pan_mm`/`init_center`: ajuste salvo que o CLI já aplicou no
+    pipeline (o editor parte dele: status mostra o total, a view só gira o delta)."""
     import tkinter as tk
     root = tk.Tk()
-    app = EditorApp(root, rect, nodes0, mmpp_x, mmpp_y, symmetry=symmetry, sym_c=sym_c)
+    app = EditorApp(root, rect, nodes0, mmpp_x, mmpp_y, symmetry=symmetry, sym_c=sym_c,
+                    init_rot_deg=init_rot_deg, init_pan_mm=init_pan_mm,
+                    init_center=init_center)
     root.mainloop()
     return app.result

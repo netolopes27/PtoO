@@ -27,6 +27,7 @@
 
 import argparse
 import base64
+import json
 import math
 import os
 import sys
@@ -3077,6 +3078,83 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno",
         fh.write(svg)
 
 
+# =============================================================================
+# Ajuste manual PERSISTENTE (sidecar `<foto>.adjust.json`)
+# -----------------------------------------------------------------------------
+# O Rotate/Pan do editor (--edit) é CALIBRAÇÃO da foto (peça torta na base, viés
+# lateral da segmentação) — não edição de nós — e por isso vale p/ TODAS as
+# execuções seguintes sobre a mesma foto. Ao Finalize o total acumulado é salvo
+# num sidecar JSON ao lado da entrada; toda execução (com ou sem --edit) o lê e
+# REAPLICA no pipeline: o giro roda foto+máscaras JUNTAS (mesma matriz da view
+# do editor — fonte única adjust_rot_affine) e o pan translada o contorno
+# extraído em x, exato em mm (a foto fica parada, como no editor). Replay
+# canônico: PRIMEIRO o giro, DEPOIS o pan (passos intercalados no editor
+# diferem disso por O(φ·pan) — desprezível nos passos finos de 0.05–0.1).
+# =============================================================================
+def adjust_path(in_path):
+    """Caminho do sidecar de ajuste manual da foto `in_path` (`<stem>.adjust.json`,
+    ao lado da entrada — versionado junto com o `<name>.svg`)."""
+    return os.path.splitext(in_path)[0] + ".adjust.json"
+
+
+def load_adjust(in_path):
+    """Lê o ajuste salvo: dict `{'rot_deg','pan_mm','center'}` (center = pivô do giro
+    em mm, ou None) — ou None se não há sidecar/ajuste efetivo. Sidecar ilegível é
+    IGNORADO com aviso (calibração corrompida não derruba a CLI)."""
+    path = adjust_path(in_path)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+        rot = float(d.get("rot_deg", 0.0))
+        pan = float(d.get("pan_mm", 0.0))
+        c = d.get("center")
+        center = (float(c[0]), float(c[1])) if c is not None else None
+        if rot == 0.0 and pan == 0.0:
+            return None
+        if rot != 0.0 and center is None:
+            raise ValueError("rot_deg sem center (pivô do giro)")
+        return {"rot_deg": rot, "pan_mm": pan, "center": center}
+    except (ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as e:
+        warn(f"ajuste manual ignorado ({path}: {e})")
+        return None
+
+
+def save_adjust(in_path, rot_deg, pan_mm, center):
+    """Grava o sidecar do ajuste manual (chamado pelo Finalize do --edit) e devolve o
+    caminho. Ajuste todo ZERADO (usuário desfez a calibração) REMOVE o sidecar e
+    devolve None — a execução seguinte não reaplica nada."""
+    path = adjust_path(in_path)
+    if abs(rot_deg) < 1e-9 and abs(pan_mm) < 1e-9:
+        if os.path.exists(path):
+            os.remove(path)
+        return None
+    data = {"rot_deg": round(float(rot_deg), 6), "pan_mm": round(float(pan_mm), 6),
+            "center": ([round(float(center[0]), 6), round(float(center[1]), 6)]
+                       if center is not None else None)}
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(data, fh)
+        fh.write("\n")
+    return path
+
+
+def adjust_rot_affine(rot_deg, center_mm, mmpp_x, mmpp_y):
+    """Matriz 2×3 (pixel→pixel) do giro manual: +φ em mm (Y p/ cima) em torno de
+    `center_mm` vira K = D·R(φ)·D⁻¹ no referencial do pixel (Y p/ baixo), com
+    D = diag(1/mmpp_x, −1/mmpp_y) — anisotropia mmpp_x ≠ mmpp_y incluída. FONTE
+    ÚNICA da matriz: a view do editor (fundo girado no modo Rotate) e o replay do
+    sidecar compõem/aplicam esta mesma K."""
+    phi = math.radians(rot_deg)
+    c, s = math.cos(phi), math.sin(phi)
+    k01 = (mmpp_y / mmpp_x) * s
+    k10 = -(mmpp_x / mmpp_y) * s
+    pcx = center_mm[0] / mmpp_x
+    pcy = -center_mm[1] / mmpp_y
+    return np.array([[c, k01, pcx - c * pcx - k01 * pcy],
+                     [k10, c, pcy - k10 * pcx - c * pcy]], np.float64)
+
+
 def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      smooth_mm=SMOOTH_MM, clearance=CLEARANCE_MM, symmetry="none",
                      deshadow=False, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
@@ -3085,7 +3163,7 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                      val_frac=SEG_VAL_FRAC, in2_path=None, fuse_grow_mm=FUSE_GROW_MM,
                      line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
                      shape="off", corner_radius_mm=CORNER_RADIUS_MM, level="off",
-                     humble="auto", overlay_path=None, overlay_svg_path=None,
+                     humble="auto", adjust=None, overlay_path=None, overlay_svg_path=None,
                      debug_dir=None, return_silhouette=False, return_silhouettes=False,
                      return_edit_data=False, return_humble_report=False):
     """Pipeline completo → lista de pontos (x,y) em mm. Usado pelos testes E pelo CLI.
@@ -3106,7 +3184,10 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     troca os vãos da borda SEM apoio visual por cordas entre trechos firmes (ver
     humble_rewrite); 'auto' só ativa quando a fração firme fica abaixo de
     HUMBLE_MIN_FIRM_FRAC; ignorado com `faithful` (contradição — avisa se 'on').
-    `return_humble_report=True` anexa o report do humilde (ou None) ao fim da tupla."""
+    `return_humble_report=True` anexa o report do humilde (ou None) ao fim da tupla.
+    `adjust` = ajuste manual salvo pelo editor (`load_adjust`): o giro roda
+    foto+máscaras juntas e o pan translada o contorno extraído (ver a seção do
+    sidecar, acima)."""
     img = load_image(in_path)
     rect, mmpp_x, mmpp_y, _conf = rectify(img, dict_name=dict_name, debug_dir=debug_dir)
     flat = normalize_illumination(rect, debug_dir=debug_dir)
@@ -3180,10 +3261,40 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                     raw_mask = mask
             if debug_dir and humble_report["active"]:
                 cv2.imwrite(os.path.join(debug_dir, "02h_humble.png"), mask)
+    if adjust and adjust.get("rot_deg"):
+        # Replay do GIRO manual salvo (--edit → sidecar): foto e máscaras giram
+        # JUNTAS pela mesma matriz da view do editor — a relação foto↔contorno não
+        # muda, só a orientação (a peça torta que o usuário nivelou fica nivelada
+        # em toda execução). Depois de --level/--symmetry/--humble, que rodaram no
+        # frame original, como na sessão em que o usuário calibrou.
+        M = adjust_rot_affine(adjust["rot_deg"], adjust["center"], mmpp_x, mmpp_y)
+        ah, aw = rect.shape[:2]
+        same_ref = raw_mask is mask
+        rect = cv2.warpAffine(rect, M, (aw, ah), flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_REPLICATE)
+        mask = cv2.warpAffine(mask, M, (aw, ah), flags=cv2.INTER_NEAREST,
+                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        raw_mask = mask if same_ref else cv2.warpAffine(
+            raw_mask, M, (aw, ah), flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     if overlay_path:
-        write_overlay(rect, mask, overlay_path,
+        mask_ov = mask
+        if adjust and adjust.get("pan_mm"):
+            # O overlay mostra o contorno JÁ deslocado pelo pan salvo: a máscara é
+            # deslocada em pixels SÓ p/ o desenho (≤ meio pixel de arredondamento);
+            # o pan EXATO (sub-pixel, em mm) vai nos pontos da silhueta, abaixo.
+            Mt = np.array([[1.0, 0.0, adjust["pan_mm"] / mmpp_x],
+                           [0.0, 1.0, 0.0]], np.float64)
+            mask_ov = cv2.warpAffine(mask, Mt, (mask.shape[1], mask.shape[0]),
+                                     flags=cv2.INTER_NEAREST,
+                                     borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        write_overlay(rect, mask_ov, overlay_path,
                       flag_runs=(humble_report or {}).get("flag_runs_px"))
     sil = extract_outline(mask, mmpp_x, mmpp_y, debug_dir=debug_dir)
+    if adjust and adjust.get("pan_mm"):
+        # Replay do PAN manual salvo: translação exata (mm) do contorno em x — a
+        # foto fica parada (correção de viés lateral da segmentação, como no editor).
+        sil = [(x + adjust["pan_mm"], y) for (x, y) in sil]
     if overlay_svg_path:
         # Mesmos Béziers que o .svg emite (fonte única _fit_for_output, incl. symmetry).
         cub = _fit_for_output(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
@@ -3200,7 +3311,12 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
         # Silhueta de REFERÊNCIA (pré --mask-smooth-mm) do gate honesto (v0.7): é contra ela
         # que o `contém`/`encaixe` é medido — nos DOIS fluxos (padrão e --edit). Sem
         # regularização a referência É a própria `sil` (mesmo objeto, sem custo extra).
-        sil_ref = sil if raw_mask is mask else extract_outline(raw_mask, mmpp_x, mmpp_y)
+        if raw_mask is mask:
+            sil_ref = sil
+        else:
+            sil_ref = extract_outline(raw_mask, mmpp_x, mmpp_y)
+            if adjust and adjust.get("pan_mm"):        # gate mede no MESMO referencial
+                sil_ref = [(x + adjust["pan_mm"], y) for (x, y) in sil_ref]
     if return_edit_data:
         res = (out, sil, sil_ref, rect, mmpp_x, mmpp_y)
     elif return_silhouettes:
@@ -3268,6 +3384,8 @@ def _pipeline_kwargs(args, overlay_path, overlay_svg_path):
                 corner_radius_mm=getattr(args, "corner_radius", CORNER_RADIUS_MM),
                 level=getattr(args, "level", "off"),
                 humble=getattr(args, "humble", "auto"),
+                # ajuste manual salvo pelo editor (sidecar): reaplicado em TODA execução
+                adjust=load_adjust(args.in_path),
                 overlay_path=overlay_path, overlay_svg_path=overlay_svg_path,
                 debug_dir=args.debug_dir)
 
@@ -3319,9 +3437,14 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
         min_x, min_y, max_x, max_y = bbox(sil)
         sym_c = 0.5 * (min_x + max_x) if args.symmetry == "vertical" \
             else 0.5 * (min_y + max_y)
+    # Ajuste salvo (sidecar): o pipeline acima JÁ o aplicou (foto girada, contorno
+    # deslocado) — o editor recebe os totais só p/ o status/Finalize acumularem.
+    adj = load_adjust(args.in_path) or {"rot_deg": 0.0, "pan_mm": 0.0, "center": None}
     try:
         res = OE.run_editor(rect, nodes0, mmpp_x, mmpp_y,
-                            symmetry=args.symmetry, sym_c=sym_c)
+                            symmetry=args.symmetry, sym_c=sym_c,
+                            init_rot_deg=adj["rot_deg"], init_pan_mm=adj["pan_mm"],
+                            init_center=adj["center"])
     except Exception as e:                          # tkinter ausente/sem display etc.
         print(f"ERRO: não consegui abrir o editor ({e}). Rode sem --edit p/ a saída automática.",
               file=sys.stderr)
@@ -3329,8 +3452,9 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     if res is None:
         print("editor cancelado — nada gravado (rode de novo ou sem --edit).")
         return 0
-    # F4: a foto volta com o giro acumulado do modo Rotate (p/ o overlay casar)
-    cub, rect_edit = res
+    # F4: a foto volta com o giro acumulado do modo Rotate (p/ o overlay casar) e o
+    # ajuste TOTAL (rot/pan) volta p/ persistir no sidecar — vale p/ as próximas execuções.
+    cub, rect_edit, adj_out = res
     if not cub:                                 # lista vazia ≠ cancelar: nada p/ gravar
         print("ERRO: contorno vazio ao finalizar — nada gravado.", file=sys.stderr)
         return 4
@@ -3345,6 +3469,13 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     print(f"    overlay {overlay_path}" + (f" | inkscape {overlay_svg_path}" if overlay_svg_path else ""))
     print(f"    EDITADO {len(cub)} Béziers | obj {ow:.2f}x{oh:.2f} | contorno {pw:.2f}x{ph:.2f} "
           f"| contém {coverage(flatten_beziers(cub), sil_ref, tol_mm=CONTAIN_TOL_MM):.4f}")
+    saved = save_adjust(args.in_path, adj_out["rot_deg"], adj_out["pan_mm"],
+                        adj_out["center"])
+    if saved:
+        print(f"    ajuste salvo: rot {adj_out['rot_deg']:+.2f}° · pan "
+              f"{adj_out['pan_mm']:+.2f} mm → {saved} (reaplicado em toda execução)")
+    elif adj["rot_deg"] or adj["pan_mm"]:
+        print(f"    ajuste zerado: sidecar removido ({adjust_path(args.in_path)})")
     return 0
 
 
@@ -3586,6 +3717,10 @@ def main(argv=None):
     print(f"OK  {args.in_path}  ->  {out_path}")
     print(f"    {overlays}")
     print(f"    {metrics}")
+    adj = load_adjust(args.in_path)
+    if adj:                                         # calibração do --edit reaplicada
+        print(f"    ajuste manual aplicado: rot {adj['rot_deg']:+.2f}° · pan "
+              f"{adj['pan_mm']:+.2f} mm ({adjust_path(args.in_path)})")
     for (fx, fy), ext in (hrep["flags"] if hrep else []):
         print(f"    AVISO: trecho incerto de ~{ext:.0f} mm perto de ({fx:.0f},{fy:.0f}) "
               f"mm — revisar no --edit", file=sys.stderr)

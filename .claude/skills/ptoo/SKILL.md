@@ -100,6 +100,15 @@ memory.md v0.13).
    `--symmetry vertical|horizontal` desde o início (limpa ruído, sobe contém). **Nunca** em peça
    assimétrica (distorce).
 4. Tiles vão para o scratchpad: `…/scratchpad/ptoo_tiles/<name>/` (transitório).
+5. **1º passe com GUI (padrão):** a PRIMEIRA chamada da CLI vai com `--edit`, p/ o usuário fixar a
+   **calibração geométrica** da foto — só **Rotate** (peça torta) e **Pan** (viés lateral), sem
+   mexer nos nós — e **Finalize**. O ajuste fica salvo em `images/<name>.adjust.json` e é
+   **reaplicado automaticamente em todos os passes seguintes** (a CLI imprime `ajuste manual
+   aplicado: rot … · pan …`; o status bar da GUI mostra o acumulado). Foto já nivelada e sem
+   viés → Finalize direto (nada salvo). Como o fluxo `--edit` imprime chaves diferentes
+   (`EDITADO … | contém …`), **rode em seguida a MESMA chamada sem `--edit`** p/ colher as
+   métricas completas do passe (`pocket`/`folga`) — conta como o mesmo passe. Sidecar de uma
+   sessão anterior já existente e usuário sem queixa de geometria → pode pular a GUI do 1º passe.
 
 ## Cada passe (repita até o gate cruzar OU os passes esgotarem)
 
@@ -158,16 +167,20 @@ Abre a GUI (foto retificada de fundo + nós da curva como alças). WYSIWYG: ao *
 Finalize (cancelar não grava). Controles (barra, rótulos em inglês; detalhe no
 [manual](../../../docs/manual.md) §`--edit`):
 - **Básico** — arrastar = mover · clique na curva = inserir · botão-direito = excluir · roda =
-  zoom no cursor · Ctrl+arrasto = pan de vista · shift+clique (2 nós) + **Line** = reta entre eles.
+  zoom no cursor · Ctrl+arrasto = pan de vista · shift+clique = selecionar nós (sem teto): com
+  seleção ativa, o próximo clique **move o grupo** (o Δ do 1º selecionado vale p/ todos — mover
+  ponto a ponto sem arrastar); 2 selecionados + **Line** = reta entre eles.
 - **Symmetry** (se `--symmetry`) — espelha cada edição no par; eixo pontilhado arrastável,
   **Mirror ◀/▶** reconstrói um lado como espelho do outro (conserta lado inflado por sombra).
 - **Size** — cota W×H verde do objeto (bate a largura com o paquímetro).
 - **Rotate** / **Pan** — giro (0.1°) e deslocamento lateral (0.1 mm) finos de foto+contorno.
+  **Persistem**: ao Finalize o acumulado vai p/ `images/<name>.adjust.json` e é reaplicado em
+  toda execução; o status bar mostra sempre `rot ±x.xx°` / `pan ±x.xx mm`.
 - **Measure** — medição ponto-a-ponto em mm (trava no eixo; Ctrl = ângulo livre); persiste
   em destaque até excluir com botão-direito.
 
-**Só no ÚLTIMO passe**: nunca use `--edit` nos passes de calibração (eles precisam do
-stdout/overlay p/ diagnóstico).
+**GUI só no 1º passe (Rotate/Pan, ver §Antes do laço) e no ÚLTIMO (nós)**: nunca use `--edit`
+nos passes intermediários de calibração (eles precisam do stdout/overlay p/ diagnóstico).
 
 ## Depois do laço
 

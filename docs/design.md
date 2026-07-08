@@ -332,9 +332,14 @@ a foto retificada); `--inkscape` gera também `_overlay_<nome>.svg` editável. `
 por **recorte do viewport** (custo independente do zoom); "Re-trace" traça a curva G1 pelos nós
 (`cubics_through_nodes`); **WYSIWYG** — "Finalize" grava **EXATAMENTE a curva na tela** (literal,
 sem recalcular nem snap). Além das ops de nó, expõe (011) Symmetry/Mirror (`mirror_contour`),
-cota W×H (Size), Rotate (`rotate_nodes`), Pan (`translate_nodes`) e Measure (`measure_snap`/
-`nearest_measure` — medição em mm com trava de eixo, persistente até excluir) — mecânica no
-§Testes E, operação no [manual](manual.md) §`--edit`. `--debug-dir` grava intermediários. Marcadores insuficientes →
+cota W×H (Size), Rotate (`rotate_nodes`), Pan (`translate_nodes`), Measure (`measure_snap`/
+`nearest_measure` — medição em mm com trava de eixo, persistente até excluir) e **move em
+grupo** (`move_selection`: com nós selecionados via Shift+clique, um clique aplica a todos o Δ
+do 1º selecionado) — mecânica no §Testes E, operação no [manual](manual.md) §`--edit`.
+**Rotate/Pan persistem**: ao Finalizar, o total acumulado vai p/ o sidecar
+`<foto>.adjust.json` (`save_adjust`) e TODA execução seguinte o reaplica
+(`load_adjust` → kwarg `adjust` de `generate_outline`: o giro roda foto+máscaras juntas pela
+matriz única `adjust_rot_affine`, o pan translada o contorno extraído em mm exatos). `--debug-dir` grava intermediários. Marcadores insuficientes →
 aborta com mensagem clara. (Referência operacional completa das flags: [manual.md](manual.md); resumo em inglês no
 [README.md](../README.md) §4.)
 
@@ -404,7 +409,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 216/216 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 228/228 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -507,18 +512,24 @@ personalizável** a partir do contorno medido.
   **Rotação (F4, `rotate_nodes`):** preserva distâncias/área, centro fixo, ida-e-volta.
   **Pan (`translate_nodes`):** translação pura preserva a forma e o pareamento sobrevive com o
   eixo deslocado do MESMO dx (é o que permite o modo Pan não desligar a simetria).
+  **Move em grupo (`TestMoveSelection`):** `move_selection` leva o 1º selecionado ao alvo e
+  aplica o MESMO Δ aos demais (1 nó = teleporte; seleção vazia = cópia; índices com wrap).
   **Measure (`TestMeasureTool`):** `measure_snap` trava o 2º ponto no eixo dominante (|dx|≥|dy|
   → horizontal, empate incluso; `free=True`/Ctrl mantém livre); `measure_length`/
   `measure_midpoint`; `nearest_measure` mede a distância ao SEGMENTO (hit-test do excluir).
   A view tkinter é glue fino e **não** é instanciada (runner
-  headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG) e a foto com o giro
-  acumulado do modo Rotate, sem recalcular.
+  headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG), a foto com o giro
+  da sessão e o ajuste rot/pan TOTAL p/ o sidecar, sem recalcular.
 - **F. Saída/CLI (`TestOutputFitSourceOfTruth`, `TestSvgNameEscaping`, `TestCliDictValidation`,
   `TestMakeTargetCli`).** `_fit_for_output` é a **fonte única** do ajuste emitido (.svg final,
   overlay Inkscape e métricas — o overlay recebe a MESMA `--symmetry`; snap de bbox só no modo
   fiel); o `name` (arquivo/`--name`) entra **escapado** no SVG (nome hostil não injeta markup nem
   quebra o XML); `--dict` restrito às `choices` da tabela `DICT_CAPACITY` nos dois CLIs e
-  `target_layout` levanta `ValueError` p/ dicionário desconhecido. `TestCubicRoots`: raiz DUPLA
+  `target_layout` levanta `ValueError` p/ dicionário desconhecido. `TestManualAdjust` (ajuste
+  persistente): roundtrip do sidecar `save_adjust`/`load_adjust`, zerado REMOVE o arquivo,
+  corrompido é ignorado com aviso, `adjust_rot_affine` reproduz exatamente a rotação dos nós
+  em mm (anisotropia incluída; 0° = identidade) e o replay do pan translada a silhueta do
+  thermpro EXATAMENTE (sub-pixel, e2e). `TestCubicRoots`: raiz DUPLA
   achada apesar do arredondamento float (tolerância relativa no `det`; antes `det == 0` exato
   perdia a raiz e um cruzamento tangente do eixo sumia). Robustez do layout: borda que não
   comporta 2 marcadores com o vão mínimo recebe **1 centrado** (nunca um par quase-sobreposto)

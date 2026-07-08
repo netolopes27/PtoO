@@ -321,7 +321,11 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
   O overlay **PNG** de conferência (contorno sobre a foto) sai **sempre**.
 - **`--edit`** (default off) — abre o **editor de nós** (GUI tkinter, stdlib, rótulos em inglês): a
   foto retificada de fundo + os nós da curva detectada como alças. Arraste = mover; clique na curva =
-  inserir; botão-direito = excluir; roda = **zoom no cursor** (o ponto sob o mouse fica parado);
+  inserir; botão-direito = excluir; **Shift+clique = selecionar/desselecionar nós (sem teto)** — com
+  seleção ativa, o próximo **clique simples MOVE o grupo**: o Δ que leva o **1º selecionado** ao ponto
+  clicado é aplicado a TODOS (1 nó = "mover o ponto sem arrastar"; 1 clique = 1 movimento, a seleção
+  limpa; exatamente 2 selecionados também alimentam o botão **Line**); roda = **zoom no cursor** (o
+  ponto sob o mouse fica parado);
   **Ctrl + arrasto do botão esquerdo = pan**. **Re-trace** traça a curva G1 pelos nós (spline
   Catmull-Rom); mover/inserir/excluir um nó já re-traça. **WYSIWYG:** **Finalize** grava as mesmas
   saídas a partir de **EXATAMENTE a curva que está na tela** — nada é recalculado (fechar sem finalizar
@@ -357,14 +361,23 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
   - **Rotate** (F4) — modo explícito de **giro fino**: linha-guia horizontal no cursor,
     clique-direito = +0.1°, clique-esquerdo = −0.1°, roda = girar (0.05° com Shift); gira
     **foto + nós juntos** (o SVG e o overlay saem girados — WYSIWYG). Girar desliga a simetria
-    (v1); p/ peça torta COM simetria prefira `--level` no CLI. Reset zera o ângulo.
+    (v1); p/ peça torta COM simetria prefira `--level` no CLI. Reset volta ao ângulo de
+    abertura (o salvo no sidecar — ver Persistência).
   - **Pan** (gêmeo do Rotate) — modo explícito de **deslocamento fino**: linha-guia vertical no
     cursor, clique-direito = +0.1 mm (→), clique-esquerdo = −0.1 mm (←), roda = deslocar
     (0.05 mm com Shift). Move o **contorno inteiro (e o eixo de simetria junto)** com a **foto
     parada** — corrige viés LATERAL da detecção (ex.: sombra que empurrou o contorno p/ um
     lado). Ao contrário do Rotate, **não** desliga a simetria (nós e eixo andam o mesmo passo,
-    o pareamento sobrevive por construção). Reset zera o deslocamento e devolve o eixo
-    original. Exclusivo com o Rotate (ligar um desliga o outro).
+    o pareamento sobrevive por construção). Reset volta ao deslocamento de abertura e devolve
+    o eixo original. Exclusivo com o Rotate (ligar um desliga o outro).
+  - **Persistência (sidecar `.adjust.json`)** — Rotate/Pan são **calibração da foto**, não
+    edição de nós: ao **Finalize**, o total acumulado é salvo em `<foto>.adjust.json` (ao lado
+    da entrada, versionado) e **REAPLICADO automaticamente em toda execução seguinte** da CLI
+    sobre a mesma foto — com ou sem `--edit` (o fluxo padrão imprime
+    `ajuste manual aplicado: rot … · pan …`). O editor reabre já com o ajuste aplicado e o
+    **status bar mostra SEMPRE `rot ±x.xx°` e `pan ±x.xx mm` acumulados** (p/ saber quanto já
+    girou/deslocou). Zerar rot e pan e Finalizar **remove** o sidecar. Por isso vale abrir a
+    GUI já no **1º passe** de uma calibração (fixa rotate/pan uma vez) além do último.
 - **`--debug-dir <dir>`** — grava os estágios intermediários (retificação, iluminação,
   segmentação) para inspeção.
 - **`--name <nome>`** — rótulo do contorno no SVG; default = nome da foto.
@@ -385,9 +398,9 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 | `--mask-smooth-mm` arredondou uma **saliência convexa real** (aba) | + `--mask-smooth-keep-bumps` |
 | AVISO `--mask-smooth-mm removeu uma saliência convexa` (e contém caiu) | + `--mask-smooth-keep-bumps` (ou ↓`--mask-smooth-mm`) |
 | peça simétrica com contorno ruidoso/torto | `--symmetry vertical\|horizontal` (eixo do objeto) |
-| peça apoiada **levemente torta** na base (arestas inclinadas ~0.5–5°) | `--level auto` (antes da simetria); ajuste manual fino = modo **Rotate** do `--edit` |
+| peça apoiada **levemente torta** na base (arestas inclinadas ~0.5–5°) | `--level auto` (antes da simetria); ajuste manual fino = modo **Rotate** do `--edit` (salvo no sidecar `.adjust.json`, reaplicado em toda execução) |
 | sombra inflou **um lado** de peça simétrica (eixo detectado puxado) | `--edit` → Symmetry on → arrastar o eixo → **Mirror** com o lado bom |
-| contorno inteiro **deslocado lateralmente** da peça (viés uniforme) | `--edit` → modo **Pan** (0.1 mm/passo; simetria acompanha) |
+| contorno inteiro **deslocado lateralmente** da peça (viés uniforme) | `--edit` → modo **Pan** (0.1 mm/passo; simetria acompanha; salvo no sidecar `.adjust.json`, reaplicado em toda execução) |
 | bico/canto vivo onde devia arredondar | ↑`--min-radius` (+0.5) |
 | usuário **mediu** o raio dos cantos (paquímetro/descrição) | `--corner-radius R` — o canto sai com o raio declarado, não o estatístico |
 | a peça **é** um retângulo (de cantos arredondados) — usuário declarou | `--shape rect --corner-radius R` — pocket construído exato (8 Béziers); calibre só a segmentação |

@@ -1930,8 +1930,9 @@ class TestEditFlowGuards(unittest.TestCase):
     def _run(self, fit_result, editor_cubics):
         """Roda `_edit_flow` com o pipeline e o editor MOCKADOS (sem foto nem GUI):
         `fit_result` = cúbicas detectadas (cub0); `editor_cubics` = cúbicas devolvidas
-        pelo editor (None = cancelar; o editor devolve `(cúbicas, foto)` desde o F4).
-        Devolve (código de saída, out_path foi escrito?, editor foi aberto?)."""
+        pelo editor (None = cancelar; o editor devolve `(cúbicas, foto, ajuste)` desde
+        o sidecar de pan/rotate). Devolve (código de saída, out_path foi escrito?,
+        editor foi aberto?)."""
         import io
         import tempfile
         from contextlib import redirect_stderr
@@ -1941,7 +1942,8 @@ class TestEditFlowGuards(unittest.TestCase):
         sil = [(0.0, 0.0), (2.0, 0.0), (2.0, -2.0), (0.0, -2.0)]
         # return_edit_data devolve (out, sil, sil_ref, rect, mmpp_x, mmpp_y)
         gen = (sil, sil, sil, rect, 0.125, 0.125)
-        editor_result = None if editor_cubics is None else (editor_cubics, rect)
+        zero_adj = {"rot_deg": 0.0, "pan_mm": 0.0, "center": None}
+        editor_result = None if editor_cubics is None else (editor_cubics, rect, zero_adj)
         with tempfile.TemporaryDirectory() as td:
             out = os.path.join(td, "x.svg")
             with mock.patch.object(P, "generate_outline", return_value=gen), \
@@ -1998,13 +2000,107 @@ class TestEditFlowGuards(unittest.TestCase):
             out = os.path.join(td, "x.svg")
             with mock.patch.object(P, "generate_outline", return_value=gen), \
                  mock.patch.object(P, "_fit_for_output", return_value=tri), \
-                 mock.patch.object(OE, "run_editor", return_value=(tri, rect)), \
+                 mock.patch.object(OE, "run_editor",
+                                   return_value=(tri, rect, {"rot_deg": 0.0,
+                                                             "pan_mm": 0.0,
+                                                             "center": None})), \
                  mock.patch.object(P, "coverage", side_effect=fake_cov), \
                  redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 P._edit_flow(self._cli_args(), out, "x",
                              os.path.join(td, "_overlay_x.png"), None)
         self.assertIs(seen["inner"], sil_ref)
         self.assertEqual(seen["tol"], P.CONTAIN_TOL_MM)
+
+
+class TestManualAdjust(unittest.TestCase):
+    """Ajuste manual PERSISTENTE (sidecar `<foto>.adjust.json`): o pan/rotate feito no
+    editor (--edit) é salvo ao Finalize e REAPLICADO em toda execução da CLI sobre a
+    mesma foto — roundtrip do sidecar, remoção quando zerado, a matriz de giro
+    (fonte única com a view do editor) e o replay do pan no pipeline real."""
+
+    def test_sidecar_roundtrip(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, "foo.jpg")
+            path = P.save_adjust(img, 0.3, -0.25, (40.0, -30.0))
+            self.assertEqual(path, os.path.join(td, "foo.adjust.json"))
+            self.assertEqual(path, P.adjust_path(img))
+            adj = P.load_adjust(img)
+            self.assertAlmostEqual(adj["rot_deg"], 0.3, places=6)
+            self.assertAlmostEqual(adj["pan_mm"], -0.25, places=6)
+            self.assertAlmostEqual(adj["center"][0], 40.0, places=6)
+            self.assertAlmostEqual(adj["center"][1], -30.0, places=6)
+
+    def test_zeroed_adjust_removes_sidecar(self):
+        # Usuário desfez a calibração (rot e pan de volta a 0): o sidecar SOME —
+        # execução seguinte não reaplica nada.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, "foo.jpg")
+            P.save_adjust(img, 0.5, 0.2, (10.0, -10.0))
+            self.assertIsNotNone(P.load_adjust(img))
+            self.assertIsNone(P.save_adjust(img, 0.0, 0.0, None))
+            self.assertFalse(os.path.exists(P.adjust_path(img)))
+            self.assertIsNone(P.load_adjust(img))
+
+    def test_missing_or_corrupt_sidecar_is_none(self):
+        # Sem sidecar → None; sidecar ilegível → None com AVISO (não derruba a CLI).
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, "foo.jpg")
+            self.assertIsNone(P.load_adjust(img))
+            with open(P.adjust_path(img), "w", encoding="utf-8") as fh:
+                fh.write("{nao é json")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(P.load_adjust(img))
+            self.assertIn("ajuste", err.getvalue().lower())
+
+    def test_pan_only_sidecar_needs_no_center(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, "foo.jpg")
+            P.save_adjust(img, 0.0, 0.4, None)
+            adj = P.load_adjust(img)
+            self.assertEqual(adj["rot_deg"], 0.0)
+            self.assertAlmostEqual(adj["pan_mm"], 0.4, places=6)
+            self.assertIsNone(adj["center"])
+
+    def test_rot_affine_matches_node_rotation(self):
+        # A matriz pixel→pixel do giro tem de reproduzir EXATAMENTE a rotação dos nós
+        # em mm (Y p/ cima) que o editor aplica: mm→px → M → px→mm == R(φ) em torno do
+        # centro, com anisotropia mmpp_x ≠ mmpp_y incluída.
+        mmpp_x, mmpp_y = 0.2, 0.25
+        center, phi, pt = (10.0, -8.0), 12.0, (14.0, -3.0)
+        M = P.adjust_rot_affine(phi, center, mmpp_x, mmpp_y)
+        px = np.array([pt[0] / mmpp_x, -pt[1] / mmpp_y, 1.0])
+        ox, oy = M @ px
+        got = (ox * mmpp_x, -oy * mmpp_y)
+        a = math.radians(phi)
+        ca, sa = math.cos(a), math.sin(a)
+        want = (center[0] + (pt[0] - center[0]) * ca - (pt[1] - center[1]) * sa,
+                center[1] + (pt[0] - center[0]) * sa + (pt[1] - center[1]) * ca)
+        self.assertAlmostEqual(got[0], want[0], places=9)
+        self.assertAlmostEqual(got[1], want[1], places=9)
+
+    def test_rot_affine_zero_is_identity(self):
+        M = P.adjust_rot_affine(0.0, (5.0, -5.0), 0.2, 0.2)
+        want = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        self.assertTrue(np.allclose(M, want, atol=1e-12))
+
+    def test_pipeline_replays_pan_exactly(self):
+        # E2E na foto real: `adjust` com SÓ pan translada a silhueta EXATAMENTE em x
+        # (sub-pixel, aplicado nos pontos em mm — a foto fica parada).
+        base = P.generate_outline(THERMPRO_JPG, min_radius=1.5, smooth_mm=8.0,
+                                  clearance=0.0, return_silhouette=True)[1]
+        pan = P.generate_outline(THERMPRO_JPG, min_radius=1.5, smooth_mm=8.0,
+                                 clearance=0.0, return_silhouette=True,
+                                 adjust={"rot_deg": 0.0, "pan_mm": 0.5,
+                                         "center": None})[1]
+        self.assertEqual(len(pan), len(base))
+        for (xa, ya), (xb, yb) in zip(pan, base):
+            self.assertAlmostEqual(xa, xb + 0.5, places=9)
+            self.assertAlmostEqual(ya, yb, places=9)
 
 
 class TestCubicRoots(unittest.TestCase):

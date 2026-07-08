@@ -173,7 +173,8 @@ Finalize (cancelar não grava). Controles (barra, rótulos em inglês; detalhe n
 - **Básico** — arrastar = mover · clique na curva = inserir · botão-direito = excluir · roda =
   zoom no cursor · Ctrl+arrasto = pan de vista · shift+clique = selecionar nós (sem teto): com
   seleção ativa, o próximo clique **move o grupo** (o Δ do 1º selecionado vale p/ todos — mover
-  ponto a ponto sem arrastar); 2 selecionados + **Line** = reta entre eles. Nó REPOSICIONADO
+  ponto a ponto sem arrastar); 2 selecionados + **Line** = reta entre eles; 2+ selecionados +
+  **Align V/H** = alinha na coordenada do 1º selecionado (v0.16). Nó REPOSICIONADO
   fica **magenta = pin** (ponto fixo persistente, ver Rotate/Pan abaixo); pin herdado = marcador
   **×** (botão-direito exclui).
 - **Symmetry** (se `--symmetry`) — espelha cada edição no par; eixo pontilhado arrastável,

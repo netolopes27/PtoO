@@ -333,9 +333,10 @@ por **recorte do viewport** (custo independente do zoom); "Re-trace" traça a cu
 (`cubics_through_nodes`); **WYSIWYG** — "Finalize" grava **EXATAMENTE a curva na tela** (literal,
 sem recalcular nem snap). Além das ops de nó, expõe (011) Symmetry/Mirror (`mirror_contour`),
 cota W×H (Size), Rotate (`rotate_nodes`), Pan (`translate_nodes`), Measure (`measure_snap`/
-`nearest_measure` — medição em mm com trava de eixo, persistente até excluir) e **move em
+`nearest_measure` — medição em mm com trava de eixo, persistente até excluir), **move em
 grupo** (`move_selection`: com nós selecionados via Shift+clique, um clique aplica a todos o Δ
-do 1º selecionado) — mecânica no §Testes E, operação no [manual](manual.md) §`--edit`.
+do 1º selecionado) e **Align V/H** (`align_selection`, v0.16: 2+ selecionados alinham na
+coordenada do 1º) — mecânica no §Testes E, operação no [manual](manual.md) §`--edit`.
 **Rotate/Pan persistem**: ao Finalizar, o total acumulado vai p/ o sidecar
 `<foto>.adjust.json` (`save_adjust`) e TODA execução seguinte o reaplica
 (`load_adjust` → kwarg `adjust` de `generate_outline`: o giro roda foto+máscaras juntas pela
@@ -415,7 +416,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 241/241 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 246/246 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -523,6 +524,9 @@ personalizável** a partir do contorno medido.
   **Pins (`TestPinnedTracking`, v0.15):** `remap_pinned` preserva as marcas de nó através de
   ops ESTRUTURAIS por posição (insert desloca, delete desafixa, straighten sobrevive, wrap);
   `merge_pins` funde herdados+sessão (novo substitui herdado a ≤ tol; distantes somam).
+  **Align (`TestAlignSelection`, v0.16):** `align_selection` alinha 2+ selecionados na
+  vertical/horizontal na coordenada do 1º selecionado (outra coordenada preservada; < 2 =
+  cópia no-op; wrap).
   **Measure (`TestMeasureTool`):** `measure_snap` trava o 2º ponto no eixo dominante (|dx|≥|dy|
   → horizontal, empate incluso; `free=True`/Ctrl mantém livre); `measure_length`/
   `measure_midpoint`; `nearest_measure` mede a distância ao SEGMENTO (hit-test do excluir).

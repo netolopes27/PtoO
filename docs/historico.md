@@ -452,6 +452,15 @@ contorno; Rotate/Pan/Line/Mirror não marcam. Na /ptoo, o 1º passe com GUI agor
 rotate/pan **e os pontos fortes** do contorno. Suíte: 228 → **241** (`TestPins` nível F,
 `TestPinnedTracking` nível E).
 
+## v0.16 — Align V/H no editor
+
+Dois botões novos na toolbar de edição: com **2+ nós selecionados** (shift+clique), **Align V**
+alinha todos na vertical (mesmo x) e **Align H** na horizontal (mesmo y) — a coordenada de
+referência é sempre a do **1º selecionado** (ele não se move; a outra coordenada de cada nó é
+preservada). Com simetria ativa, cada nó vai ao alvo alinhado via op-par (o espelho recebe o
+alinhamento espelhado). Como o Line, é reconstrução geométrica: **não marca pin**. Núcleo puro
+`align_selection`; suíte: 241 → **246** (`TestAlignSelection` nível E).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2

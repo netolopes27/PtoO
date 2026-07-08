@@ -106,6 +106,22 @@ def move_selection(nodes, sel, target):
     return out
 
 
+def align_selection(nodes, sel, axis):
+    """Botões Align V/H (v0.16): alinha os nós de `sel` na VERTICAL (todos com o
+    mesmo x) ou na HORIZONTAL (mesmo y). A coordenada de referência é SEMPRE a do
+    PRIMEIRO selecionado — ele não se move; a OUTRA coordenada de cada nó é
+    preservada. Devolve uma NOVA lista; menos de 2 selecionados = cópia."""
+    if len(sel) < 2:
+        return list(nodes)
+    n = len(nodes)
+    x0, y0 = nodes[sel[0] % n]
+    out = list(nodes)
+    for i in sel[1:]:
+        x, y = out[i % n]
+        out[i % n] = (x0, y) if axis == "vertical" else (x, y0)
+    return out
+
+
 def remap_pinned(nodes_old, pinned, nodes_new, eps=1e-9):
     """Remapeia o conjunto de nós MARCADOS (pins, v0.15) através de uma op ESTRUTURAL
     (inserir/excluir/Line/Mirror) por POSIÇÃO: toda op estrutural preserva a posição
@@ -598,7 +614,10 @@ class EditorApp:
     (move_selection — "mover o ponto sem arrastar"; 1 clique = 1 movimento e a seleção
     limpa). Exatamente 2 selecionados também alimentam o botão "Line": remove os nós
     entre os dois (caminho mais curto) e traça uma RETA — os vizinhos saem tangentes à
-    reta (G1) e as retas sobrevivem a mover/inserir/excluir (remap). Rodinha = zoom NO
+    reta (G1) e as retas sobrevivem a mover/inserir/excluir (remap). **Align V/H**
+    (v0.16): com 2+ selecionados, alinha todos na VERTICAL (mesmo x) ou HORIZONTAL
+    (mesmo y) na coordenada do 1º SELECIONADO (align_selection; reconstrução como o
+    Line — não marca pin). Rodinha = zoom NO
     CURSOR (o ponto sob o mouse fica parado); CTRL + arrasto do botão esquerdo = pan. Botões (em
     inglês na GUI): Re-trace (spline Catmull-Rom G1 pelos nós), Undo, Reset (volta aos
     nós detectados, sem retas manuais), Line e Finalize. WYSIWYG: Finalize grava
@@ -717,6 +736,11 @@ class EditorApp:
         ttk.Button(bar, text="Undo", command=self.undo).pack(side=tk.LEFT, padx=(2, 0))
         ttk.Button(bar, text="Reset", command=self.reset).pack(side=tk.LEFT, padx=(2, 0))
         ttk.Button(bar, text="Line", command=self.make_line).pack(side=tk.LEFT, padx=(2, 0))
+        # Align V/H (v0.16): 2+ selecionados alinham na coordenada do 1º selecionado
+        ttk.Button(bar, text="Align V",
+                   command=lambda: self.align_sel("vertical")).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(bar, text="Align H",
+                   command=lambda: self.align_sel("horizontal")).pack(side=tk.LEFT, padx=(2, 0))
         sep()
         # simetria: toggle sempre habilitado (o Mirror CONSTRÓI o pareamento quando o
         # CLI não trouxe --symmetry); orientação V/H travada quando o CLI a definiu.
@@ -946,7 +970,8 @@ class EditorApp:
                          "· toggle Measure to exit")
         elif self.sel:
             parts.append(f"SEL {len(self.sel)}: click=MOVE group (Δ from 1st selected) "
-                         "· shift+click=toggle · 2 selected + Line=straight")
+                         "· Align V/H=align to 1st · shift+click=toggle · "
+                         "2 selected + Line=straight")
         else:
             parts.append("drag=move · click curve=insert · right-click=delete · "
                          "shift+click=select (1+=group move, 2=Line) · wheel=zoom · "
@@ -1219,6 +1244,29 @@ class EditorApp:
             return
         self.pinned = remap_pinned(self.nodes, self.pinned, nodes)
         self.nodes, self.lines, self.sel = nodes, lines, []
+        self.retrace()
+
+    def align_sel(self, axis):
+        """Botões Align V/H: alinha os 2+ nós selecionados na coordenada do 1º
+        selecionado (align_selection). Com simetria ativa, cada nó vai ao seu alvo
+        alinhado via op-par (o espelho recebe o alinhamento espelhado). Alinhar é
+        RECONSTRUÇÃO geométrica, como o Line — não marca pin."""
+        if len(self.sel) < 2:
+            self.status.config(text=f"Align {'V' if axis == 'vertical' else 'H'}: "
+                                    "shift+click TWO or more nodes first")
+            return
+        self._push_history()
+        if self._sym_active():
+            orig = list(self.nodes)
+            n = len(orig)
+            x0, y0 = orig[self.sel[0] % n]
+            for i in self.sel[1:]:
+                x, y = orig[i % n]
+                t = (x0, y) if axis == "vertical" else (x, y0)
+                self.nodes = move_node_sym(self.nodes, i, t, self.sym_axis, self.sym_c)
+        else:
+            self.nodes = align_selection(self.nodes, self.sel, axis)
+        self.sel = []
         self.retrace()
 
     def on_pan_start(self, e):

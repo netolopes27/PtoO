@@ -146,6 +146,47 @@ class TestMoveSelection(unittest.TestCase):
         self.assertEqual(out[1], (7.0, 1.0))
 
 
+class TestAlignSelection(unittest.TestCase):
+    """Botões Align V/H (v0.16): com 2+ nós selecionados via shift+clique, alinha
+    todos na VERTICAL (mesmo x) ou na HORIZONTAL (mesmo y) — a coordenada de
+    referência é SEMPRE a do PRIMEIRO selecionado (ele não se move)."""
+
+    def test_align_vertical_uses_first_x(self):
+        nodes = [(0.0, 0.0), (10.2, -3.0), (9.7, -7.0), (0.0, -10.0)]
+        out = E.align_selection(nodes, [1, 2], "vertical")
+        self.assertEqual(out[1], (10.2, -3.0))     # 1º selecionado: parado
+        self.assertEqual(out[2], (10.2, -7.0))     # x do 1º; y preservado
+        self.assertEqual(out[0], nodes[0])         # não selecionado: intacto
+        self.assertEqual(out[3], nodes[3])
+        self.assertEqual(nodes[2], (9.7, -7.0))    # original intacto (cópia)
+
+    def test_align_horizontal_uses_first_y(self):
+        nodes = [(0.0, -0.3), (5.0, 0.2), (10.0, -0.1), (5.0, -8.0)]
+        out = E.align_selection(nodes, [0, 1, 2], "horizontal")
+        self.assertEqual(out[0], (0.0, -0.3))
+        self.assertEqual(out[1], (5.0, -0.3))      # y do 1º; x preservado
+        self.assertEqual(out[2], (10.0, -0.3))
+        self.assertEqual(out[3], nodes[3])
+
+    def test_order_of_selection_defines_reference(self):
+        nodes = square_nodes()                     # nó 2=(10,−10) primeiro na seleção
+        out = E.align_selection(nodes, [2, 1], "vertical")
+        self.assertEqual(out[2], (10.0, -10.0))
+        self.assertEqual(out[1], (10.0, 0.0))      # já estava em x=10: fica
+
+    def test_fewer_than_two_is_noop_copy(self):
+        nodes = square_nodes()
+        for sel in ([], [1]):
+            out = E.align_selection(nodes, sel, "vertical")
+            self.assertEqual(out, nodes)
+            self.assertIsNot(out, nodes)
+
+    def test_indices_wrap(self):
+        nodes = square_nodes()                     # 5 % 4 = 1; 6 % 4 = 2
+        out = E.align_selection(nodes, [5, 6], "horizontal")
+        self.assertEqual(out[2], (10.0, 0.0))      # y do nó 1
+
+
 class TestPinnedTracking(unittest.TestCase):
     """Pontos FIXOS (v0.15): nós REPOSICIONADOS pelo usuário viram pins persistidos
     no sidecar. O conjunto de índices marcados sobrevive a ops estruturais por

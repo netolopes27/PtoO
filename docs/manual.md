@@ -324,7 +324,11 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
   inserir; botão-direito = excluir; **Shift+clique = selecionar/desselecionar nós (sem teto)** — com
   seleção ativa, o próximo **clique simples MOVE o grupo**: o Δ que leva o **1º selecionado** ao ponto
   clicado é aplicado a TODOS (1 nó = "mover o ponto sem arrastar"; 1 clique = 1 movimento, a seleção
-  limpa; exatamente 2 selecionados também alimentam o botão **Line**); roda = **zoom no cursor** (o
+  limpa; exatamente 2 selecionados também alimentam o botão **Line**); **Align V / Align H**
+  (v0.16) — com **2+ selecionados**, alinha todos na **vertical** (mesmo x) ou na **horizontal**
+  (mesmo y), sempre na coordenada do **1º selecionado** (ele não se move; a outra coordenada de
+  cada nó é preservada; com simetria ativa o par recebe o alinhamento espelhado; reconstrução
+  como o Line — **não** marca pin); roda = **zoom no cursor** (o
   ponto sob o mouse fica parado);
   **Ctrl + arrasto do botão esquerdo = pan**. **Re-trace** traça a curva G1 pelos nós (spline
   Catmull-Rom); mover/inserir/excluir um nó já re-traça. **WYSIWYG:** **Finalize** grava as mesmas

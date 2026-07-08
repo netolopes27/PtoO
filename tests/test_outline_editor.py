@@ -191,8 +191,9 @@ class TestPinnedTracking(unittest.TestCase):
     """Pontos FIXOS (v0.15): nós REPOSICIONADOS pelo usuário viram pins persistidos
     no sidecar. O conjunto de índices marcados sobrevive a ops estruturais por
     REMAPEAMENTO POSICIONAL (remap_pinned) — qualquer op que não mova os nós não
-    marcados preserva as marcas; merge_pins funde os pins herdados do sidecar com
-    os da sessão (o novo substitui o herdado a menos de tol)."""
+    marcados preserva as marcas. v0.17: pins HERDADOS do sidecar entram como NÓS
+    on-curve (snap_pins_to_nodes: encaixa no nó perto ou insere um novo), não mais
+    como marcadores × soltos."""
 
     def test_remap_survives_insert(self):
         nodes = square_nodes()
@@ -217,25 +218,40 @@ class TestPinnedTracking(unittest.TestCase):
         nodes = square_nodes()
         self.assertEqual(E.remap_pinned(nodes, {5}, list(nodes)), {1})   # 5 % 4
 
-    def test_merge_new_pin_supersedes_close_old(self):
-        old = [(5.0, -10.0), (0.0, -5.0)]
-        merged = E.merge_pins(old, [(5.3, -10.2)], tol_mm=1.0)
-        self.assertEqual(len(merged), 2)                     # substituiu, não somou
-        self.assertIn((5.3, -10.2), merged)
-        self.assertIn((0.0, -5.0), merged)
-        self.assertNotIn((5.0, -10.0), merged)
+    def test_snap_empty_pins_is_noop(self):
+        nodes = square_nodes()
+        out, pinned = E.snap_pins_to_nodes(nodes, [], 1.0)
+        self.assertEqual(out, nodes)
+        self.assertEqual(pinned, set())
 
-    def test_merge_distant_pins_accumulate(self):
-        old = [(5.0, -10.0)]
-        merged = E.merge_pins(old, [(20.0, -3.0)], tol_mm=1.0)
-        self.assertEqual(len(merged), 2)
-        self.assertIn((5.0, -10.0), merged)
-        self.assertIn((20.0, -3.0), merged)
+    def test_snap_near_node_moves_it_exactly(self):
+        nodes = square_nodes()                               # (0,0) é o nó 0
+        out, pinned = E.snap_pins_to_nodes(nodes, [(0.3, -0.2)], 1.0)
+        self.assertEqual(len(out), 4)                        # ENCAIXOU: sem nó novo
+        self.assertEqual(out[0], (0.3, -0.2))                # nó 0 foi EXATO p/ o pin
+        self.assertEqual(pinned, {0})
 
-    def test_merge_empty_cases(self):
-        self.assertEqual(E.merge_pins([], []), [])
-        self.assertEqual(E.merge_pins([(1.0, -1.0)], []), [(1.0, -1.0)])
-        self.assertEqual(E.merge_pins([], [(1.0, -1.0)]), [(1.0, -1.0)])
+    def test_snap_far_pin_inserts_node_on_segment(self):
+        nodes = square_nodes()                               # trecho 0 = (0,0)→(10,0)
+        out, pinned = E.snap_pins_to_nodes(nodes, [(5.0, 2.0)], 1.0)
+        self.assertEqual(len(out), 5)                        # INSERIU um nó novo
+        self.assertEqual(out[1], (5.0, 2.0))                 # entre os nós 0 e 1
+        self.assertEqual(pinned, {1})
+
+    def test_snap_two_pins_mix_snap_and_insert(self):
+        nodes = square_nodes()
+        out, pinned = E.snap_pins_to_nodes(nodes, [(0.2, -0.1), (10.0, -5.0)], 1.0)
+        self.assertEqual(out[0], (0.2, -0.1))                # encaixou no nó 0
+        self.assertEqual(out[2], (10.0, -5.0))               # inseriu no trecho 1
+        self.assertEqual(pinned, {0, 2})
+        # a curva re-traçada PASSA por cada pin (nós são on-curve)
+        for (px, py) in [(0.2, -0.1), (10.0, -5.0)]:
+            self.assertIn((px, py), out)
+
+    def test_snap_degenerate_appends(self):
+        out, pinned = E.snap_pins_to_nodes([(0.0, 0.0)], [(5.0, 5.0)], 1.0)
+        self.assertEqual(out, [(0.0, 0.0), (5.0, 5.0)])      # < 2 nós: sem trecho → append
+        self.assertEqual(pinned, {1})
 
 
 class TestStraightSegments(unittest.TestCase):

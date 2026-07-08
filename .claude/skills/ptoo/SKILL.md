@@ -100,8 +100,12 @@ memory.md v0.13).
    `--symmetry vertical|horizontal` desde o início (limpa ruído, sobe contém). **Nunca** em peça
    assimétrica (distorce).
 4. Tiles vão para o scratchpad: `…/scratchpad/ptoo_tiles/<name>/` (transitório).
-5. **1º passe com GUI (padrão — não pule):** a PRIMEIRA chamada da CLI vai com `--edit`, p/ o
-   usuário fixar a **calibração da foto**: **Rotate** (peça torta), **Pan** (viés lateral) **e
+5. **1º passe SEMPRE com GUI (OBRIGATÓRIO — regra dura, sem exceção):** a PRIMEIRA chamada da CLI
+   vai com `--edit`, **inclusive em runs 2-fotos (`--in2`)**. **NUNCA** a substitua por um passe
+   "diagnóstico" sem `--edit` (erro do passado): validar registro/segmentação NÃO é motivo p/ pular
+   a GUI — o usuário precisa dela p/ **fixar os pontos importantes (pins) já no 1º passe**, o que
+   guia a precisão de TODOS os passes seguintes. A GUI serve p/ o usuário fixar a **calibração da
+   foto**: **Rotate** (peça torta), **Pan** (viés lateral) **e
    os PONTOS FORTES do contorno** (v0.15) — arrastar um nó p/ a borda verdadeira o marca em
    magenta e vira **pin**: ponto fixo que corrige a segmentação (ex.: sombra) ali — e
    **Finalize**. Tudo fica salvo em `images/<name>.adjust.json` e é **reaplicado
@@ -112,7 +116,9 @@ memory.md v0.13).
    colher as métricas completas do passe (`pocket`/`folga`) — conta como o mesmo passe. Sidecar
    de sessão anterior já existente → **abra a GUI mesmo assim** (ela mostra o ajuste e os
    pins herdados; confirmar custa um Finalize) — só pule se o usuário disser explicitamente
-   que a calibração está OK.
+   que a calibração está OK. **Se o laço fechar já no 1º passe**, o 1º e o último passe
+   **coincidem** → a GUI aparece **uma vez só** (o `--edit` do 1º passe JÁ é o final; não abra
+   de novo).
 
 ## Cada passe (repita até o gate cruzar OU os passes esgotarem)
 
@@ -168,15 +174,26 @@ params vencedores:
 ```
 Abre a GUI (foto retificada de fundo + nós da curva como alças). WYSIWYG: ao **Finalize**, o
 `.svg` final é **EXATAMENTE a curva na tela** (nada recalculado); a janela **bloqueia** até
-Finalize (cancelar não grava). Controles (barra, rótulos em inglês; detalhe no
+Finalize (cancelar não grava).
+
+> **O contorno que sai do editor no ÚLTIMO passe é DEFINITIVO — regra dura.** É sempre o que
+> permanece como entregável. **NUNCA** pergunte ao usuário se deve mantê-lo (não gaste tokens
+> nisso) e **NUNCA** re-rode a MESMA chamada sem `--edit` "p/ recolher métricas pocket/folga":
+> sem sidecar isso **recomputa e sobrescreve** a curva finalizada. A chave `EDITADO … | contém …`
+> impressa pela própria chamada `--edit` **É** a métrica final — reporte-a e pare. (O "rode em
+> seguida sem `--edit`" vale **só no 1º passe**, onde o sidecar de pins/rotate/pan é reaplicado e
+> nada se perde.)
+
+Controles (barra, rótulos em inglês; detalhe no
 [manual](../../../docs/manual.md) §`--edit`):
 - **Básico** — arrastar = mover · clique na curva = inserir · botão-direito = excluir · roda =
   zoom no cursor · Ctrl+arrasto = pan de vista · shift+clique = selecionar nós (sem teto): com
   seleção ativa, o próximo clique **move o grupo** (o Δ do 1º selecionado vale p/ todos — mover
   ponto a ponto sem arrastar); 2 selecionados + **Line** = reta entre eles; 2+ selecionados +
   **Align V/H** = alinha na coordenada do 1º selecionado (v0.16). Nó REPOSICIONADO
-  fica **magenta = pin** (ponto fixo persistente, ver Rotate/Pan abaixo); pin herdado = marcador
-  **×** (botão-direito exclui).
+  fica **magenta = pin** (ponto fixo persistente, ver Rotate/Pan abaixo); pin herdado (v0.17)
+  também abre como **nó magenta on-curve** — a curva passa exato por ele e é arrastável/deletável
+  como qualquer pin (botão-direito no nó exclui).
 - **Symmetry** (se `--symmetry`) — espelha cada edição no par; eixo pontilhado arrastável,
   **Mirror ◀/▶** reconstrói um lado como espelho do outro (conserta lado inflado por sombra).
 - **Size** — cota W×H verde do objeto (bate a largura com o paquímetro).
@@ -188,8 +205,9 @@ Finalize (cancelar não grava). Controles (barra, rótulos em inglês; detalhe n
 - **Measure** — medição ponto-a-ponto em mm (trava no eixo; Ctrl = ângulo livre); persiste
   em destaque até excluir com botão-direito.
 
-**GUI só no 1º passe (Rotate/Pan + pontos fortes/pins, ver §Antes do laço) e no ÚLTIMO
-(nós)**: nunca use `--edit` nos passes intermediários de calibração (eles precisam do
+**GUI SEMPRE no 1º passe (Rotate/Pan + pontos fortes/pins, ver §Antes do laço) e SEMPRE no ÚLTIMO
+(nós)** — as duas são obrigatórias; se o laço fecha em 1 passe, elas coincidem e a GUI aparece
+uma vez só. **Nunca** use `--edit` nos passes intermediários de calibração (eles precisam do
 stdout/overlay p/ diagnóstico).
 
 ## Depois do laço

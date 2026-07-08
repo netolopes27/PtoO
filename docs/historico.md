@@ -461,6 +461,21 @@ preservada). Com simetria ativa, cada nó vai ao alvo alinhado via op-par (o esp
 alinhamento espelhado). Como o Line, é reconstrução geométrica: **não marca pin**. Núcleo puro
 `align_selection`; suíte: 241 → **246** (`TestAlignSelection` nível E).
 
+## v0.17 — pins herdados viram nós on-curve no editor
+
+Unificação do modelo de pins pedida pelo usuário: os pins **herdados** do sidecar deixam de ser
+**marcadores × soltos** (que só marcavam a posição, com a curva passando por eles apenas porque o
+pipeline já deformara a silhueta) e passam a abrir como **nós magenta on-curve normais** — a curva
+passa **exato** por eles (nós são pontos de interpolação em `cubics_through_nodes`) e são
+**arrastáveis/deletáveis** como um pin da sessão. Na abertura (e no Reset), `snap_pins_to_nodes`
+(núcleo puro) converte cada pin: **encaixa** no nó existente a ≤ `PIN_SNAP_TOL_MM = 1 mm` (movido
+exato p/ o pin) ou, se nenhum está perto, **insere** um nó novo no trecho mais próximo. Some o
+conceito de `loose_pins`/`_delete_loose_pin_at`/`merge_pins` (obsoleto: não há mais herdado-vs-sessão
+a fundir) e o rotate/pan especial dos loose pins (nós já giram/transladam junto). `adjust_state`
+grava as posições atuais de **todos** os nós marcados; a idempotência se mantém (Finalize salva os
+pins → próximo run `apply_pins` reproduz → o editor re-encaixa). Suíte: 246 → **248**
+(`snap_pins_to_nodes` substitui os testes de `merge_pins` em `TestPinnedTracking`).
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2

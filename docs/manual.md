@@ -381,9 +381,11 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
     ao longo do arco, janela `PIN_FALLOFF_MM = 6 mm` p/ cada lado — correção local). É o canal
     p/ **corrigir a segmentação onde ela erra** (ex.: sombra que inflou a borda): mova o nó p/
     a borda verdadeira e a correção fica valendo nos passes seguintes. Pins herdados de sessões
-    anteriores aparecem como **marcadores ×** magenta (o contorno já veio deformado por eles);
-    **botão-direito sobre o ×** exclui o pin herdado; **excluir o nó** desfaz a marca da
-    sessão; um pin novo a ≤ 1 mm de um herdado o **substitui**. Rotate/Pan/Line/Mirror **não**
+    anteriores (v0.17) abrem como **nós magenta on-curve normais** — a curva passa **exato** por
+    eles e são **arrastáveis/deletáveis** como um pin da sessão (não há mais marcador × solto):
+    na abertura cada pin herdado **encaixa** no nó existente a ≤ 1 mm (`PIN_SNAP_TOL_MM`) ou, se
+    nenhum está perto, **insere** um nó novo ali (`snap_pins_to_nodes`). **Excluir o nó**
+    (botão-direito) desfaz o pin. Rotate/Pan/Line/Mirror **não**
     marcam (são calibração/reconstrução, não fixação); inserir também não — o nó inserido marca
     quando você o arrastar. O status mostra `pins N`.
   - **Persistência (sidecar `.adjust.json`)** — Rotate/Pan e os **pins** são **calibração da

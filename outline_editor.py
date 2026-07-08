@@ -139,17 +139,6 @@ def remap_pinned(nodes_old, pinned, nodes_new, eps=1e-9):
     return out
 
 
-def merge_pins(old_pins, new_pins, tol_mm=1.0):
-    """Funde os pins HERDADOS do sidecar com os pins NOVOS da sessão (posições dos
-    nós reposicionados): um pin novo a ≤ `tol_mm` de um herdado o SUBSTITUI (é a
-    correção da correção, não um segundo pin); os demais se somam. Devolve NOVA
-    lista (herdados sobreviventes primeiro, novos depois)."""
-    new_pins = [(float(x), float(y)) for (x, y) in new_pins]
-    kept = [(float(x), float(y)) for (x, y) in old_pins
-            if all(math.hypot(x - q[0], y - q[1]) > tol_mm for q in new_pins)]
-    return kept + new_pins
-
-
 def insert_node(nodes, i, xy):
     """Insere `xy` LOGO APÓS o nó `i` (entre `i` e `i+1`) — usado ao clicar no trecho
     que sai do nó `i`. Devolve uma NOVA lista."""
@@ -533,6 +522,39 @@ def nearest_segment(nodes, xy):
     return best_i
 
 
+PIN_SNAP_TOL_MM = 1.0           # v0.17: pin herdado a ≤ isto de um nó ENCAIXA nele
+                                # (o nó vai exato p/ o pin); além disso, INSERE um nó novo
+
+
+def snap_pins_to_nodes(nodes, pins, tol_mm=PIN_SNAP_TOL_MM):
+    """Pins HERDADOS do sidecar (pontos fixos do --edit) viram NÓS on-curve (v0.17):
+    cada pin ENCAIXA no nó existente mais próximo (≤ `tol_mm`, movido EXATO p/ o pin)
+    ou, se nenhum está perto, é INSERIDO como nó novo no trecho mais próximo. Assim o
+    pin herdado é um nó magenta normal — a curva passa exato por ele (é on-curve) e ele
+    é arrastável/deletável como um pin da sessão, sem o antigo marcador × solto. Devolve
+    (NOVA lista de nós, set de índices marcados). Puro (testável no runner headless)."""
+    out = [(float(x), float(y)) for (x, y) in nodes]
+    for p in pins:
+        pin = (float(p[0]), float(p[1]))
+        j = nearest_node(out, pin, max_dist=tol_mm)
+        if j is not None:
+            out[j] = pin                         # encaixa: nó existente vai EXATO p/ o pin
+        else:
+            seg = nearest_segment(out, pin)
+            if seg is None:                      # < 2 nós: sem trecho p/ inserir
+                out.append(pin)
+            else:
+                out = insert_node(out, seg, pin)  # nó novo no trecho mais próximo
+    pinned = set()
+    for p in pins:
+        pin = (float(p[0]), float(p[1]))
+        for k, q in enumerate(out):
+            if q[0] == pin[0] and q[1] == pin[1]:
+                pinned.add(k)
+                break
+    return out, pinned
+
+
 # --- transforms mm ↔ pixel da foto retificada --------------------------------
 # Convenção idêntica à de P.write_overlay_svg: a silhueta/cúbicas estão em mm com
 # Y p/ CIMA (x ≥ 0, y ≤ 0, pois P.extract_outline faz y = -py·mmpp); a foto tem o
@@ -600,8 +622,9 @@ ZOOM_STEP = 1.25      # fator de zoom por passo da rodinha
 ZOOM_MIN = 0.05
 ZOOM_MAX = 40.0
 MEASURE_COLOR = "#ff9000"   # medições (Measure): laranja destaca da curva/nós/cota
-PIN_COLOR = "#ff30d0"       # nós FIXADOS (pins, v0.15) e marcadores × dos pins herdados:
-                            # magenta separa do amarelo (nó), vermelho (seleção) e laranja
+PIN_COLOR = "#ff30d0"       # nós FIXADOS (pins, v0.15) — reposicionados na sessão OU
+                            # herdados do sidecar (v0.17): magenta separa do amarelo (nó),
+                            # vermelho (seleção) e laranja
 
 
 class EditorApp:
@@ -642,10 +665,11 @@ class EditorApp:
     fica marcado em magenta e vira PONTO FIXO persistente: ao Finalizar, as posições
     marcadas vão p/ o sidecar e o pipeline passa a deformar a silhueta detectada p/
     passar por elas em TODA execução (P.apply_pins — é o canal p/ corrigir a
-    segmentação onde ela erra, ex.: sombra). Pins herdados de sessões anteriores
-    aparecem como marcadores × magenta (o contorno já veio deformado por eles);
-    botão-direito sobre o × exclui o pin herdado, excluir o nó desfaz a marca da
-    sessão. Rotate/Pan/Line/Mirror NÃO marcam (calibração/reconstrução ≠ fixação).
+    segmentação onde ela erra, ex.: sombra). v0.17: pins herdados de sessões
+    anteriores abrem como NÓS magenta on-curve normais (snap_pins_to_nodes encaixa-os
+    no nó perto ou insere um) — a curva passa exato por eles e são arrastáveis; excluir
+    o nó (botão-direito) desfaz a marca. Rotate/Pan/Line/Mirror NÃO marcam
+    (calibração/reconstrução ≠ fixação).
     **Measure**: modo de medição — 1º clique marca o ponto A, o preview segue o
     cursor TRAVADO no eixo dominante (Ctrl = ângulo livre, measure_snap) e o 2º
     clique fecha; a medição PERSISTE em destaque (linha + marca central + rótulo mm)
@@ -672,11 +696,13 @@ class EditorApp:
         self.sel = []                       # nós selecionados via shift+clique (sem teto)
         # --- pins (v0.15): nós REPOSICIONADOS nesta sessão (arrasto/move em grupo)
         # ficam marcados (self.pinned, índices — cor própria) e viram PONTOS FIXOS no
-        # sidecar ao Finalizar; os pins HERDADOS do sidecar (o pipeline já deformou a
-        # silhueta por eles) entram como marcadores × soltos, deletáveis c/ botão-direito.
+        # sidecar ao Finalizar. v0.17: os pins HERDADOS do sidecar (o pipeline já
+        # deformou a silhueta por eles) entram como NÓS on-curve magenta — não mais
+        # marcadores × soltos — via snap_pins_to_nodes: a curva passa exato por eles e
+        # eles são arrastáveis/deletáveis como um pin da sessão. `_pins0` guarda os
+        # herdados p/ o Reset re-encaixar.
         self._pins0 = [(float(p[0]), float(p[1])) for p in init_pins]
-        self.loose_pins = list(self._pins0)
-        self.pinned = set()
+        self.nodes, self.pinned = snap_pins_to_nodes(self.nodes, self._pins0)
         self.cubics = cubics_through_nodes(self.nodes)
         self.history = []                   # pilha p/ Desfazer (snapshots do estado editável)
         self.result = None                  # (cúbicas, foto) ao Finalizar; None = cancelado
@@ -909,12 +935,8 @@ class EditorApp:
                     c.create_line(pos, 0, pos, ch, dash=(6, 4), fill="#ffd800", width=1)
                 else:
                     c.create_line(0, pos, cw, pos, dash=(6, 4), fill="#ffd800", width=1)
-        # pins HERDADOS do sidecar (marcadores × soltos; botão-direito exclui)
-        for (px, py) in self.loose_pins:
-            sx, sy = self._mm_to_screen((px, py))
-            c.create_line(sx - 5, sy - 5, sx + 5, sy + 5, fill=PIN_COLOR, width=2)
-            c.create_line(sx - 5, sy + 5, sx + 5, sy - 5, fill=PIN_COLOR, width=2)
-        # alças dos nós (seleção p/ Line/grupo: vermelha; REPOSICIONADO = pin: magenta)
+        # alças dos nós (seleção p/ Line/grupo: vermelha; pin — reposicionado OU
+        # herdado do sidecar (v0.17): magenta)
         for i, pt in enumerate(self.nodes):
             sx, sy = self._mm_to_screen(pt)
             fill = ("#ff4040" if i in self.sel
@@ -949,8 +971,8 @@ class EditorApp:
                   ("·paired" if self._sym_active() else "·unpaired")
         parts = [f"{len(self.nodes)} nodes · {len(self.lines)} lines · "
                  f"obj {w:.1f}×{h:.1f} mm · sym {sym}"]
-        if self.pinned or self.loose_pins:       # pontos fixos (persistem no sidecar)
-            parts.append(f"pins {len(self.loose_pins) + len(self.pinned)}")
+        if self.pinned:                          # pontos fixos (persistem no sidecar)
+            parts.append(f"pins {len(self.pinned)}")
         if self.measures:
             parts.append(f"{len(self.measures)} meas")
         # rot/pan SEMPRE visíveis (pedido do usuário: "quanto girei/desloquei?") —
@@ -990,7 +1012,7 @@ class EditorApp:
     def _push_history(self):
         self.history.append((list(self.nodes), set(self.lines), self.sym_c,
                              self.paired_c, self.rot_deg, self.rot_center, self.pan_mm,
-                             set(self.pinned), list(self.loose_pins)))
+                             set(self.pinned)))
         if len(self.history) > 100:
             self.history.pop(0)
         self._last_op = None
@@ -1195,9 +1217,8 @@ class EditorApp:
             return
         i = nearest_node(self.nodes, mm, max_dist=self._hit_tol_mm())
         if i is None or len(self.nodes) <= 3:    # delete guarda o mínimo de 3
-            if i is None:                        # fora de alça: pin herdado, senão medição
-                if not self._delete_loose_pin_at(mm):
-                    self._delete_measure_at(mm)
+            if i is None:                        # fora de alça: tenta excluir medição
+                self._delete_measure_at(mm)
             return
         self._push_history()
         old = list(self.nodes)
@@ -1371,17 +1392,6 @@ class EditorApp:
             self._meas_preview = None
         self.redraw()
 
-    def _delete_loose_pin_at(self, mm):
-        """Exclui o pin HERDADO (marcador ×) sob o cursor (botão-direito fora de
-        alça). True se excluiu — o Finalize deixa de persisti-lo."""
-        k = nearest_node(self.loose_pins, mm, max_dist=self._hit_tol_mm())
-        if k is None:
-            return False
-        self._push_history()
-        del self.loose_pins[k]
-        self.redraw()
-        return True
-
     def _delete_measure_at(self, mm):
         """Exclui a medição sob o cursor (botão-direito). True se excluiu."""
         k = nearest_measure(self.measures, mm, max_dist=self._hit_tol_mm())
@@ -1419,10 +1429,9 @@ class EditorApp:
             min_x, min_y, max_x, max_y = P.bbox(self.nodes)
             self.rot_center = (0.5 * (min_x + max_x), 0.5 * (min_y + max_y))
         self._coalesce_history("rot")
+        # pins são nós (v0.17): giram JUNTO com o resto do contorno — o replay do CLI
+        # aplica os pins DEPOIS do rot+pan (referencial final), casando com nodes[i].
         self.nodes = rotate_nodes(self.nodes, step_deg, self.rot_center)
-        # pins herdados vivem COLADOS no contorno: giram/deslocam junto (o replay do
-        # CLI aplica os pins DEPOIS do rot+pan — referencial final)
-        self.loose_pins = rotate_nodes(self.loose_pins, step_deg, self.rot_center)
         self.rot_deg += step_deg
         self.cubics = cubics_through_nodes(self.nodes, self.lines)
         self._refresh()                          # fundo muda junto (foto gira)
@@ -1433,8 +1442,7 @@ class EditorApp:
         corrige viés lateral da detecção, ex.: sombra que empurrou o contorno p/ um
         lado). O pareamento sobrevive (nós e eixo andam o mesmo dx), simetria segue ON."""
         self._coalesce_history("pan")
-        self.nodes = translate_nodes(self.nodes, (dx_mm, 0.0))
-        self.loose_pins = translate_nodes(self.loose_pins, (dx_mm, 0.0))
+        self.nodes = translate_nodes(self.nodes, (dx_mm, 0.0))   # pins são nós: vão junto
         self.pan_mm += dx_mm
         if self.sym_c is not None and self.sym_axis == "vertical":
             self.sym_c += dx_mm                  # o eixo acompanha o objeto
@@ -1519,7 +1527,7 @@ class EditorApp:
         if self.history:
             (self.nodes, self.lines, self.sym_c, self.paired_c,
              rot, self.rot_center, self.pan_mm,
-             self.pinned, self.loose_pins) = self.history.pop()
+             self.pinned) = self.history.pop()
             self.sel = []
             self._last_op = None
             if rot != self.rot_deg:              # giro desfeito: o fundo muda junto
@@ -1531,11 +1539,11 @@ class EditorApp:
         # Reset = estado de ABERTURA da janela (WYSIWYG): nós detectados + o ajuste
         # SALVO no sidecar (que o CLI já aplicou) — só o editado NESTA sessão sai.
         self._push_history()
-        self.nodes = list(self.nodes0)
         self.lines = set()                       # retas manuais também voltam ao zero
         self.sel = []
-        self.pinned = set()                      # marcas da sessão fora…
-        self.loose_pins = list(self._pins0)      # …pins herdados (abertura) de volta
+        # v0.17: nós detectados + pins herdados re-encaixados como nós (estado de
+        # ABERTURA); as marcas/moves da sessão saem.
+        self.nodes, self.pinned = snap_pins_to_nodes(self.nodes0, self._pins0)
         self.pan_mm = self._pan0                 # pan da sessão fora; o salvo fica
         self.sym_c = self._sym_c0                # ORIGINAL da detecção (pan/arrasto fora)
         if self.sym_var.get() and self.sym_c is None:
@@ -1550,15 +1558,15 @@ class EditorApp:
 
     def adjust_state(self):
         """Ajuste manual TOTAL acumulado (salvo no sidecar + editado nesta sessão) —
-        é o que o CLI persiste em `<foto>.adjust.json` ao Finalizar. `pins` = pins
-        herdados sobreviventes + posições ATUAIS dos nós reposicionados na sessão
-        (merge_pins: o novo substitui o herdado a menos de 1 mm)."""
+        é o que o CLI persiste em `<foto>.adjust.json` ao Finalizar. v0.17: `pins` =
+        posições ATUAIS de TODOS os nós marcados (herdados que sobreviveram + os
+        reposicionados/criados na sessão); um pin excluído saiu de `self.pinned`."""
         n = len(self.nodes)
-        session = [self.nodes[i % n] for i in sorted(self.pinned)] if n else []
+        pins = [self.nodes[i % n] for i in sorted(self.pinned)] if n else []
         return {"rot_deg": self.rot_deg, "pan_mm": self.pan_mm,
                 "center": self.rot_center if self.rot_center is not None
                 else self._center0,
-                "pins": merge_pins(self.loose_pins, session)}
+                "pins": pins}
 
     def finish(self):
         # WYSIWYG: grava EXATAMENTE a curva que está na tela (o último Re-traçar), sem
@@ -1578,7 +1586,8 @@ def run_editor(rect, nodes0, mmpp_x, mmpp_y, symmetry="none", sym_c=None,
     `None` se cancelado. `symmetry`/`sym_c` (F1): modo e eixo detectados pelo CLI —
     o editor NÃO recalcula o eixo. `init_rot_deg`/`init_pan_mm`/`init_center`/
     `init_pins`: ajuste salvo que o CLI já aplicou no pipeline (o editor parte dele:
-    status mostra o total, a view só gira o delta; pins herdados viram marcadores ×)."""
+    status mostra o total, a view só gira o delta; pins herdados viram NÓS on-curve
+    magenta, v0.17)."""
     import tkinter as tk
     root = tk.Tk()
     app = EditorApp(root, rect, nodes0, mmpp_x, mmpp_y, symmetry=symmetry, sym_c=sym_c,

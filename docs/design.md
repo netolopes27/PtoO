@@ -345,7 +345,7 @@ matriz única `adjust_rot_affine`, o pan translada o contorno extraído em mm ex
 alça magenta) viram **pontos fixos** no mesmo sidecar; o replay (`apply_pins`) deforma a
 silhueta extraída — e a `sil_ref` do gate — p/ passar EXATO por cada pin, com decaimento cos²
 ao longo do arco (`PIN_FALLOFF_MM`), corrigindo a segmentação (ex.: sombra) na fonte em toda
-execução; pins herdados aparecem como marcadores × (botão-direito exclui). `--debug-dir` grava intermediários. Marcadores insuficientes →
+execução; pins herdados abrem como nós magenta on-curve normais (v0.17, `snap_pins_to_nodes` encaixa/insere; botão-direito exclui). `--debug-dir` grava intermediários. Marcadores insuficientes →
 aborta com mensagem clara. (Referência operacional completa das flags: [manual.md](manual.md); resumo em inglês no
 [README.md](../README.md) §4.)
 
@@ -416,7 +416,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 246/246 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 248/248 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -521,9 +521,10 @@ personalizável** a partir do contorno medido.
   eixo deslocado do MESMO dx (é o que permite o modo Pan não desligar a simetria).
   **Move em grupo (`TestMoveSelection`):** `move_selection` leva o 1º selecionado ao alvo e
   aplica o MESMO Δ aos demais (1 nó = teleporte; seleção vazia = cópia; índices com wrap).
-  **Pins (`TestPinnedTracking`, v0.15):** `remap_pinned` preserva as marcas de nó através de
-  ops ESTRUTURAIS por posição (insert desloca, delete desafixa, straighten sobrevive, wrap);
-  `merge_pins` funde herdados+sessão (novo substitui herdado a ≤ tol; distantes somam).
+  **Pins (`TestPinnedTracking`, v0.15/v0.17):** `remap_pinned` preserva as marcas de nó através
+  de ops ESTRUTURAIS por posição (insert desloca, delete desafixa, straighten sobrevive, wrap);
+  `snap_pins_to_nodes` (v0.17) converte os pins HERDADOS do sidecar em nós on-curve na abertura
+  (encaixa no nó a ≤ `PIN_SNAP_TOL_MM` ou insere um novo; empty = no-op; degenerado = append).
   **Align (`TestAlignSelection`, v0.16):** `align_selection` alinha 2+ selecionados na
   vertical/horizontal na coordenada do 1º selecionado (outra coordenada preservada; < 2 =
   cópia no-op; wrap).

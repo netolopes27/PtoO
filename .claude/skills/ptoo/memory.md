@@ -1,9 +1,9 @@
 # ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
 # Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=9
+## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=8
 ## vencedores; recalcular a cada update)
-SEMPRE:      --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
+SEMPRE:      --shadow remove --min-dist 2.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
              assimétrica; com sombra vazando, a simetria UNE o vazamento p/ os dois lados (piora)
 CONDICIONAL: --mask-smooth-keep-bumps — quando o CLI avisar "removeu uma saliência convexa"
@@ -15,9 +15,9 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
 ## cache último-bom (≤5 linhas; 1 linha por objeto; evicta a mais antiga; histórico COMPLETO
 ## por-passe fica no runs.tsv — nada morre na evicção)
 <!-- formato: - ~WxH mm | <params> | contém=… clearance=… | nota curta -->
-- ~90.20x59.00 mm | --in2 pi_down --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --corner-radius 3 | contém=0.9993 clearance=+0.07/-0.15 | Raspberry Pi 2B; 2 fotos; GENÉRICO (NÃO --shape); keep-bumps preserva conectores; md10 = ótimo da rampa (com 9 pins NÃO arqueia p/ dentro, ≠ caso 17-pin). v0.18: sidecar tem 23 pins + 22 TRECHOS FIXOS — setores INTOCÁVEIS pelo algoritmo (reaplicados literais); parâmetros/rampas só mexem no resto (amarelo). NÃO re-rodar sem --edit (sobrescreve o amarelo finalizado). final --edit WYSIWYG 55 Béziers contém 0.9998 definitivo
+- ~77.62x140.07 mm | --val-frac 0.75 --shadow remove --min-dist 2 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps | contém=0.9992 clearance=-/+ | zoerax (alicate); ajuste fino intenso refinado (rot -1.9, 18 pins, 16 trechos fixos); contém 0.9992 definitivo; 66 Béziers
+- ~90.53x58.98 mm | --in2 pi_down --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --corner-radius 3 | contém=1.0000 clearance=+0.00/+0.00 | Raspberry Pi 2B; 2 fotos; GENÉRICO; 34 pins + 34 TRECHOS FIXOS = contorno 100% fixo (sem amarelo); rampas sem efeito; --edit WYSIWYG 34 Béziers contém 1.0000 definitivo; firme 94%
 - ~123.00x78.00 mm | --shadow remove --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --val-frac 0.68 --shape rect --corner-radius 7 | contém=1.0000 clearance=+0.10/+0.52 | case_usb; modelo rect DECLARADO; infl 0 (raio real = 7); contorno perfeito de 8 Beziers
-- ~76.88x140.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --val-frac 0.68 | contém=1.0000 clearance=+0.17/+0.22 | zoerax (alicate); keep-bumps salvou o cabo, val-frac pegou o corpo escuro
 - ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 | contém=1.0000 clearance=+0.01/-0.04 | trena azul; assimétrica (aba lateral) → SEM symmetry
 - ~65.12x65.50 mm | --shadow texture --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps | contém=1.0000 clearance=-0.21/-0.24 | trena CINZA-neutra, sombra projetada, luz difusa; SEM symmetry; sem keep-bumps o gancho some (contém 0.9968 + aviso)
 

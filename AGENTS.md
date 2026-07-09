@@ -122,7 +122,7 @@ que gitignored, são **preservados no disco** como registro visual do item — n
   (SKILL.md §Análise da descrição). **Não altera a CLI** — o `--debug` só *propõe* mudanças
   (planos em `docs/melhorias/`). A
   memória (`memory.md`) e o log de treino (`runs.tsv`, 1 linha por passe;
-  `scripts/derive_start.py` agrega por forma × tamanho) são compartilhados entre as integrações
+  `.claude/skills/ptoo/scripts/derive_start.py` agrega por forma × tamanho) são compartilhados entre as integrações
   Claude (Skill tool), Gemini CLI (`.gemini/commands/ptoo.toml`) e Antigravity
   (`.agent/workflows/ptoo.md`) — os três são só adaptadores; o procedimento vive no `SKILL.md`.
   **[ANTIGRAVITY TRIGGER]** Se você (Antigravity) receber uma mensagem iniciando com `/ptoo`,

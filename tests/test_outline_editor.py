@@ -254,6 +254,82 @@ class TestPinnedTracking(unittest.TestCase):
         self.assertEqual(pinned, {1})
 
 
+class TestFixedSegmentsEditor(unittest.TestCase):
+    """Segmentos FIXOS no núcleo do editor (v0.18): trecho com as DUAS pontas
+    pinned é magenta (fixo) — derivado de `pinned`, sem estado paralelo. Ao
+    Finalizar, cada trecho fixo é exportado p/ o sidecar com a cúbica DA TELA
+    (WYSIWYG) e o flag de reta; na reabertura, o flag de reta herdado volta p/
+    `lines`. Nó inserido DENTRO de um trecho fixo nasce pin (refina o setor do
+    usuário — não pode rebaixá-lo a calculado)."""
+
+    def test_fixed_segment_indices(self):
+        nodes = square_nodes()
+        self.assertEqual(E.fixed_segment_indices(nodes, {0, 1}), {0})
+        self.assertEqual(E.fixed_segment_indices(nodes, {0, 2}), set())
+        self.assertEqual(E.fixed_segment_indices(nodes, {3, 0}), {3})   # wrap
+        self.assertEqual(E.fixed_segment_indices(nodes, {0, 1, 2}), {0, 1})
+        self.assertEqual(E.fixed_segment_indices(nodes, set()), set())
+
+    def test_export_oriented_a_to_b_despite_ccw_flip(self):
+        # square_nodes é CW: o re-traçar inverte p/ CCW internamente — a cúbica
+        # exportada tem de sair orientada a→b (a = nó k, b = nó k+1) mesmo assim.
+        nodes = square_nodes()
+        cub = E.cubics_through_nodes(nodes, {0})
+        segs = E.export_fixed_segments(nodes, {0, 1}, {0}, cub)
+        self.assertEqual(len(segs), 1)
+        s = segs[0]
+        self.assertEqual(s["a"], nodes[0])
+        self.assertEqual(s["b"], nodes[1])
+        self.assertTrue(s["line"])
+        self.assertEqual(s["cubic"][0], nodes[0])
+        self.assertEqual(s["cubic"][3], nodes[1])
+
+    def test_export_skips_non_fixed(self):
+        nodes = square_nodes()
+        cub = E.cubics_through_nodes(nodes)
+        self.assertEqual(E.export_fixed_segments(nodes, {0, 2}, set(), cub), [])
+        segs = E.export_fixed_segments(nodes, {1, 2, 3}, set(), cub)
+        self.assertEqual({(s["a"], s["b"]) for s in segs},
+                         {(nodes[1], nodes[2]), (nodes[2], nodes[3])})
+        self.assertFalse(any(s["line"] for s in segs))
+
+    def test_lines_from_segments_restores_flag(self):
+        nodes = square_nodes()
+        line = ((10.0, -10.0), (10.0 - 10 / 3, -10.0), (10.0 - 20 / 3, -10.0),
+                (0.0, -10.0))
+        seg = {"a": nodes[2], "b": nodes[3], "line": True, "cubic": line}
+        self.assertEqual(E.lines_from_segments(nodes, [seg]), {2})
+        rev = dict(seg, a=nodes[3], b=nodes[2])              # orientação invertida
+        self.assertEqual(E.lines_from_segments(nodes, [rev]), {2})
+        curva = dict(seg, line=False)                        # curva: nada a restaurar
+        self.assertEqual(E.lines_from_segments(nodes, [curva]), set())
+        solto = dict(seg, a=nodes[1])                        # pontas NÃO adjacentes
+        self.assertEqual(E.lines_from_segments(nodes, [solto]), set())
+
+    def test_inserted_node_in_fixed_segment_is_pinned(self):
+        nodes = square_nodes()                               # trecho 0 FIXO (pins 0 e 1)
+        out = E.insert_node(nodes, 0, (5.0, 0.0))
+        pinned = E.remap_pinned(nodes, {0, 1}, out)          # {0, 2} após o insert
+        self.assertEqual(pinned, {0, 2})
+        self.assertEqual(E.pin_inserted_nodes(nodes, out, pinned), {0, 1, 2})
+
+    def test_inserted_node_in_calculated_segment_stays_yellow(self):
+        nodes = square_nodes()                               # só o nó 0 é pin
+        out = E.insert_node(nodes, 0, (5.0, 0.0))
+        pinned = E.remap_pinned(nodes, {0}, out)
+        self.assertEqual(E.pin_inserted_nodes(nodes, out, pinned), {0})
+
+    def test_toggle_pin_flips_and_forms_segment(self):
+        n = 4
+        self.assertEqual(E.toggle_pin(set(), 1, n), {1})     # amarelo → fixo
+        self.assertEqual(E.toggle_pin({1}, 1, n), set())     # fixo → amarelo
+        self.assertEqual(E.toggle_pin({0}, 1, n), {0, 1})    # 2ª ponta: trecho 0 fixo
+        self.assertEqual(E.fixed_segment_indices(square_nodes(),
+                                                 E.toggle_pin({0}, 1, n)), {0})
+        self.assertEqual(E.toggle_pin({0, 1}, 5, n), {0})     # 5%4=1 (já fixo) → solta
+        self.assertEqual(E.toggle_pin({2}, -1, n), {2, 3})    # negativo → wrap (3)
+
+
 class TestStraightSegments(unittest.TestCase):
     """v0.10: trechos RETOS no editor — shift+clique seleciona 2 nós e o botão Line
     remove os nós intermediários do caminho MAIS CURTO e marca o trecho como reta.

@@ -2207,6 +2207,212 @@ class TestPins(unittest.TestCase):
         self.assertEqual(out[far], base[far])
 
 
+def _line_cubic(a, b):
+    """Cúbica DEGENERADA na corda a→b (mesmo formato que o editor exporta p/ um
+    trecho marcado como reta)."""
+    return ((float(a[0]), float(a[1])),
+            (a[0] + (b[0] - a[0]) / 3.0, a[1] + (b[1] - a[1]) / 3.0),
+            (a[0] + 2.0 * (b[0] - a[0]) / 3.0, a[1] + 2.0 * (b[1] - a[1]) / 3.0),
+            (float(b[0]), float(b[1])))
+
+
+class TestFixedSegments(unittest.TestCase):
+    """Segmentos FIXOS (v0.18): trecho do contorno com as DUAS pontas pinned é salvo
+    no sidecar (geometria exata + flag de reta) e REAPLICADO em toda execução —
+    apply_segments costura a geometria salva na silhueta e splice_fixed_cubics
+    emite as cúbicas salvas LITERALMENTE na saída (o algoritmo não adiciona nós
+    nem deforma o trecho protegido)."""
+
+    @staticmethod
+    def _bumped_square(step=0.1, side=10.0, x0=4.0, x1=6.0, depth=2.0):
+        # quadrado CCW denso (Y p/ cima, y ≤ 0) com um CALOMBO p/ fora na base
+        # entre x0 e x1 (sombra que inflou a borda) — o alvo do segmento fixo.
+        pts = []
+        n = int(round(side / step))
+        for i in range(n):                       # base: (0,-side) → (side,-side)
+            x = i * step
+            y = -side - (depth if x0 < x < x1 else 0.0)
+            pts.append((x, y))
+        for i in range(n):                       # direita: sobe
+            pts.append((side, -side + i * step))
+        for i in range(n):                       # topo: volta
+            pts.append((side - i * step, 0.0))
+        for i in range(n):                       # esquerda: desce
+            pts.append((0.0, -i * step))
+        return pts
+
+    def test_sidecar_roundtrip_with_segments(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, "foo.jpg")
+            a, b = (2.0, -10.0), (8.0, -10.0)
+            seg = {"a": a, "b": b, "line": True, "cubic": _line_cubic(a, b)}
+            P.save_adjust(img, 0.0, 0.0, None, pins=[a, b], segments=[seg])
+            adj = P.load_adjust(img)
+            self.assertIsNotNone(adj)
+            self.assertEqual(len(adj["segments"]), 1)
+            got = adj["segments"][0]
+            self.assertAlmostEqual(got["a"][0], 2.0, places=6)
+            self.assertAlmostEqual(got["b"][1], -10.0, places=6)
+            self.assertTrue(got["line"])
+            for (px, py), (qx, qy) in zip(got["cubic"], seg["cubic"]):
+                self.assertAlmostEqual(px, qx, places=6)
+                self.assertAlmostEqual(py, qy, places=6)
+            # zerar tudo (rot, pan, pins E segments) remove o sidecar
+            self.assertIsNone(P.save_adjust(img, 0.0, 0.0, None))
+            self.assertFalse(os.path.exists(P.adjust_path(img)))
+
+    def test_segments_only_sidecar_is_effective(self):
+        # Sidecar SÓ com segments (rot/pan/pins zerados) mantém o arquivo.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, "foo.jpg")
+            a, b = (0.0, 0.0), (5.0, 0.0)
+            seg = {"a": a, "b": b, "line": False, "cubic": _line_cubic(a, b)}
+            path = P.save_adjust(img, 0.0, 0.0, None, segments=[seg])
+            self.assertIsNotNone(path)
+            self.assertTrue(os.path.exists(path))
+            adj = P.load_adjust(img)
+            self.assertEqual(len(adj["segments"]), 1)
+            self.assertFalse(adj["segments"][0]["line"])
+
+    def test_legacy_sidecar_has_empty_segments(self):
+        # Sidecar ≤ v0.17 (sem a chave "segments") continua válido: segments = [].
+        import tempfile
+        import json as _json
+        with tempfile.TemporaryDirectory() as td:
+            img = os.path.join(td, "foo.jpg")
+            with open(P.adjust_path(img), "w", encoding="utf-8") as fh:
+                _json.dump({"rot_deg": 0.0, "pan_mm": 0.4, "center": None,
+                            "pins": [[1.0, -1.0]]}, fh)
+            adj = P.load_adjust(img)
+            self.assertEqual(adj["segments"], [])
+
+    def test_apply_segments_replaces_bumped_arc(self):
+        sil = self._bumped_square()
+        a, b = (2.0, -10.0), (8.0, -10.0)        # pontas FORA do calombo (já na sil)
+        seg = {"a": a, "b": b, "line": True, "cubic": _line_cubic(a, b)}
+        out = P.apply_segments(sil, [seg])
+        self.assertIn(a, out)                    # pontas EXATAS na silhueta nova
+        self.assertIn(b, out)
+        # o arco entre a e b virou a corda salva (calombo removido)…
+        ia, ib = out.index(a), out.index(b)
+        n = len(out)
+        def arc(i0, i1):
+            pts, k = [out[i0]], i0
+            while k != i1:
+                k = (k + 1) % n
+                pts.append(out[k])
+            return pts
+        devs = [max(P._dist_point_seg(p, a, b) for p in cand)
+                for cand in (arc(ia, ib), arc(ib, ia))]
+        self.assertLess(min(devs), 1e-6)
+        # …e o lado oposto (topo) ficou INTACTO
+        self.assertIn((5.0, 0.0), out)
+
+    def test_apply_segments_handles_cw_silhouette(self):
+        # A escolha do arco é por MENOR DESVIO à geometria salva — funciona com a
+        # silhueta em qualquer orientação (CW inclusive).
+        sil = list(reversed(self._bumped_square()))
+        a, b = (2.0, -10.0), (8.0, -10.0)
+        seg = {"a": a, "b": b, "line": True, "cubic": _line_cubic(a, b)}
+        out = P.apply_segments(sil, [seg])
+        self.assertIn(a, out)
+        self.assertIn(b, out)
+        base_pts = [p for p in out if abs(p[1] + 10.0) < 1e-9 and 2.0 <= p[0] <= 8.0]
+        self.assertGreater(len(base_pts), 2)     # a corda está lá…
+        self.assertFalse(any(p[1] < -10.0 - 1e-9 for p in out))   # …e o calombo saiu
+
+    def test_apply_segments_far_segment_is_skipped(self):
+        # Costura recusada (desvio > SEG_SPLICE_DEV_MM): avisa e devolve a silhueta
+        # intacta (fallback = comportamento v0.17, só pins).
+        sil = self._bumped_square()
+        a, b = (200.0, -200.0), (260.0, -200.0)  # longe de tudo
+        seg = {"a": a, "b": b, "line": True, "cubic": _line_cubic(a, b)}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = P.apply_segments(sil, [seg])
+        self.assertEqual(out, sil)
+        self.assertIn("segmento fixo", err.getvalue().lower())
+
+    def test_splice_fixed_cubics_emits_literally(self):
+        import outline_editor as OE
+        nodes = [(20.0 * math.cos(2 * math.pi * k / 12),
+                  20.0 * math.sin(2 * math.pi * k / 12)) for k in range(12)]
+        cub = OE.cubics_through_nodes(nodes)
+        a, b = nodes[0], nodes[2]
+        seg = {"a": a, "b": b, "line": True, "cubic": _line_cubic(a, b)}
+        out = P.splice_fixed_cubics(cub, [seg])
+        # a cúbica salva sai LITERAL (bit a bit)…
+        self.assertTrue(any(
+            all(abs(p[0] - q[0]) < 1e-9 and abs(p[1] - q[1]) < 1e-9
+                for p, q in zip(bez, seg["cubic"])) for bez in out))
+        # …o nó intermediário do arco substituído SUMIU…
+        self.assertFalse(any(math.hypot(bez[0][0] - nodes[1][0],
+                                        bez[0][1] - nodes[1][1]) < 1e-6 for bez in out))
+        # …e o caminho segue FECHADO e encadeado
+        for k in range(len(out)):
+            p3 = out[k][3]
+            p0n = out[(k + 1) % len(out)][0]
+            self.assertAlmostEqual(p3[0], p0n[0], places=6)
+            self.assertAlmostEqual(p3[1], p0n[1], places=6)
+
+    def test_fit_for_output_protects_fixed_arc(self):
+        # Com um segmento fixo salvo, o ajuste NÃO adiciona nó no arco protegido e a
+        # saída contém a cúbica salva literalmente — teste 4 do plano v0.18.
+        sil = self._bumped_square(step=0.1, side=40.0, x0=15.0, x1=25.0, depth=3.0)
+        a, b = (10.0, -40.0), (30.0, -40.0)
+        seg = {"a": a, "b": b, "line": True, "cubic": _line_cubic(a, b)}
+        sil2 = P.apply_segments(sil, [seg])
+        cub = P._fit_for_output(sil2, smooth_mm=2.0, min_dist_mm=6.0, segments=[seg])
+        self.assertTrue(any(
+            all(abs(p[0] - q[0]) < 1e-9 and abs(p[1] - q[1]) < 1e-9
+                for p, q in zip(bez, seg["cubic"])) for bez in cub))
+        # nenhum nó DENTRO do trecho protegido (a menos das pontas a e b)
+        inner = [bez[0] for bez in cub
+                 if a[0] + 0.5 < bez[0][0] < b[0] - 0.5 and abs(bez[0][1] + 40.0) < 0.5]
+        self.assertEqual(inner, [])
+        for k in range(len(cub)):                # fechado e encadeado
+            p3 = cub[k][3]
+            p0n = cub[(k + 1) % len(cub)][0]
+            self.assertAlmostEqual(p3[0], p0n[0], places=6)
+            self.assertAlmostEqual(p3[1], p0n[1], places=6)
+
+    def test_pipeline_replays_segments(self):
+        # E2E na foto real: um segmento fixo RETO entre dois pontos do contorno sai
+        # como corda exata na silhueta; o lado oposto fica intacto.
+        base = P.generate_outline(THERMPRO_JPG, min_radius=1.5, smooth_mm=8.0,
+                                  clearance=0.0, return_silhouette=True)[1]
+        n = len(base)
+        j = min(range(n), key=lambda i: base[i][1])   # ponto mais baixo
+        k, s = j, 0.0
+        while s < 15.0:                          # anda ~15 mm de arco adiante
+            k2 = (k + 1) % n
+            s += math.hypot(base[k2][0] - base[k][0], base[k2][1] - base[k][1])
+            k = k2
+        a, b = base[j], base[k]
+        seg = {"a": a, "b": b, "line": True, "cubic": _line_cubic(a, b)}
+        out = P.generate_outline(THERMPRO_JPG, min_radius=1.5, smooth_mm=8.0,
+                                 clearance=0.0, return_silhouette=True,
+                                 adjust={"rot_deg": 0.0, "pan_mm": 0.0, "center": None,
+                                         "pins": [a, b], "segments": [seg]})[1]
+        self.assertIn(a, out)
+        self.assertIn(b, out)
+        ia, ib = out.index(a), out.index(b)
+        m = len(out)
+        def arc(i0, i1):
+            pts, kk = [out[i0]], i0
+            while kk != i1:
+                kk = (kk + 1) % m
+                pts.append(out[kk])
+            return pts
+        devs = [max(P._dist_point_seg(p, a, b) for p in cand)
+                for cand in (arc(ia, ib), arc(ib, ia))]
+        self.assertLess(min(devs), 1e-6)         # um dos arcos é a corda salva
+        far = base[(j + n // 2) % n]             # lado oposto: intacto
+        self.assertIn(far, out)
+
+
 class TestCubicRoots(unittest.TestCase):
     def test_double_root_found_despite_float_rounding(self):
         # (t−1/3)²·(t−0.8): o det do cúbico deprimido é 0 MATEMATICAMENTE, mas o float

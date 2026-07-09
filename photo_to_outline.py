@@ -188,7 +188,7 @@ MASK_SMOOTH_WARN_AREA_MM2 = 1.0  # área mínima (mm²) de uma saliência REMOVI
                             # --mask-smooth-mm p/ disparar o aviso (junto com proeminência
                             # ≥ PROTRUSION_DEV_MM): abaixo disso é ruído de borda, que
                             # remover é justamente o trabalho da regularização.
-CONTAIN_TOL_MM = 0.3        # tolerância de PROFUNDIDADE do `contém` (v0.6): medindo contra a
+CONTAIN_TOL_MM = 0.3        # tolerância de PROFUNDIDADE do `contém` (v0.7): medindo contra a
                             # silhueta de REFERÊNCIA crua (pré --mask-smooth-mm), a serrilha de
                             # ruído da segmentação fura o pocket em lascas rasas por todo o
                             # perímetro; penetração ≤ este valor não conta (é ruído de medição,
@@ -199,6 +199,14 @@ PIN_FALLOFF_MM = 6.0        # meia-janela (mm de ARCO) da deformação de um PIN
                             # EXATA por ele) e o Δ decai em cos² até zerar a esta distância
                             # ao longo do contorno — correção LOCAL (sombra num trecho) sem
                             # arrastar o resto da silhueta. Ver apply_pins.
+SEG_SPLICE_DEV_MM = 15.0    # v0.18: desvio máximo (mm) p/ CASAR um arco do contorno com um
+                            # SEGMENTO FIXO salvo no sidecar (apply_segments e
+                            # splice_fixed_cubics escolhem, entre os dois arcos possíveis
+                            # entre A e B, o de menor desvio à geometria salva). Generoso de
+                            # propósito: o desvio legítimo é o ERRO de detecção que o usuário
+                            # corrigiu (sombra de vários mm); acima disto a costura é
+                            # recusada com aviso e o replay cai no comportamento v0.17
+                            # (pins apenas) — melhor não costurar do que costurar errado.
 HUMBLE_MIN_FIRM_FRAC = 0.5  # gatilho do modo AUTO do contorno HUMILDE (v0.12): fração da
                             # borda com apoio visual (gradiente) abaixo disto = "não existe
                             # borda clara em quase todo o objeto" → ativa o fallback de
@@ -1262,7 +1270,7 @@ def regularize_silhouette(mask, radius_mm, ppmm=PX_PER_MM, debug_dir=None,
     # max(sdf,blur) = closing no SDF: escolhe o mais "dentro" → enche côncavos, mantém convexos.
     sdf = np.maximum(sdf, blur) if preserve_convex else blur
     out = _mask_from_sdf(sdf)
-    # v0.6: a remoção de uma saliência convexa REAL (ex.: o gancho da fita de uma trena) é
+    # v0.7: a remoção de uma saliência convexa REAL (ex.: o gancho da fita de uma trena) é
     # silenciosa p/ o gate `contém` (medido sobre a silhueta já regularizada) — então AVISA
     # quando some algo com proeminência ≥ PROTRUSION_DEV_MM e área ≥ o piso (ruído de borda,
     # que é o alvo legítimo da regularização, fica abaixo dos dois cortes).
@@ -2131,7 +2139,7 @@ def _protrusion_anchors(rp, min_dev_mm, span_mm=ANCHOR_MIN_DIST_MM):
 
 
 def _preserve_spikes(raw, smoothed, min_dev_mm=PROTRUSION_DEV_MM, span_mm=ANCHOR_MIN_DIST_MM):
-    """Reinjeta na curva SUAVIZADA os espigões convexos REAIS da curva crua (v0.6, caso
+    """Reinjeta na curva SUAVIZADA os espigões convexos REAIS da curva crua (v0.7, caso
     "gancho da trena"): o low-pass do `smooth_mm` RECUA a ponta de uma protuberância fina
     antes da seleção de âncoras — o piso de contenção nasce sem ela e o pocket corta o
     topo do espigão sem que o `contém` mal se mova. Os picos vêm de `_protrusion_anchors`
@@ -2894,11 +2902,13 @@ def _fit_for_output(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
                     faithful=False, min_dist_mm=ANCHOR_MIN_DIST_MM,
                     pocket_eps=POCKET_EPS_MM, symmetry="none",
                     line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
-                    shape="off", corner_radius_mm=CORNER_RADIUS_MM):
+                    shape="off", corner_radius_mm=CORNER_RADIUS_MM, segments=()):
     """Cúbicas PRONTAS p/ emissão — fonte ÚNICA dos três consumidores (.svg final, overlay
     Inkscape e métricas do CLI), garantindo que todos usem os MESMOS parâmetros (inclusive
     `symmetry`) e a mesma chave do cache: ajuste ancorado memoizado + snap de bbox no modo
-    FIEL. No POCKET não há snap (o pocket fica ≥ objeto p/ conter a peça)."""
+    FIEL. No POCKET não há snap (o pocket fica ≥ objeto p/ conter a peça). `segments`
+    (v0.18) = trechos FIXOS do sidecar: aplicados POR ÚLTIMO (splice_fixed_cubics), depois
+    de tudo que deforma — a geometria salva sai literal, nenhum estágio a toca."""
     cub = fit_anchored_cached(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
                               faithful=faithful, min_dist_mm=min_dist_mm,
                               pocket_eps=pocket_eps, symmetry=symmetry,
@@ -2906,6 +2916,8 @@ def _fit_for_output(sil, smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM,
                               shape=shape, corner_radius_mm=corner_radius_mm)
     if cub and faithful:
         cub = _scale_cubics_to_bbox(cub, *size(sil))
+    if cub and segments:
+        cub = splice_fixed_cubics(cub, segments)
     return cub
 
 
@@ -2914,7 +2926,7 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                    smooth_mm=SMOOTH_MM, simplify_mm=ANCHOR_SIMPLIFY_MM, faithful=False,
                    min_dist_mm=ANCHOR_MIN_DIST_MM, pocket_eps=POCKET_EPS_MM, symmetry='none',
                    line_tol_mm=LINE_TOL_MM, arc_tol_mm=ARC_TOL_MM,
-                   shape="off", corner_radius_mm=CORNER_RADIUS_MM):
+                   shape="off", corner_radius_mm=CORNER_RADIUS_MM, segments=()):
     """Estágio 5: SVG em mm — contorno + PREENCHIMENTO translúcido (`OUTLINE_COLOR` a
     `OUTLINE_FILL_OPACITY`, cor destacada quase transparente p/ sobrepor o objeto e
     conferir cobertura), feito SÓ de curvas de Bézier cúbicas (`C`). Com `silhouette`:
@@ -2939,7 +2951,8 @@ def polygon_to_svg(pts_mm, name="outline", curves=True, tol=FIT_TOL_MM,
                                      min_dist_mm=min_dist_mm, pocket_eps=pocket_eps,
                                      symmetry=symmetry, line_tol_mm=line_tol_mm,
                                      arc_tol_mm=arc_tol_mm, shape=shape,
-                                     corner_radius_mm=corner_radius_mm)
+                                     corner_radius_mm=corner_radius_mm,
+                                     segments=segments)
         else:
             cubics = fit_closed_beziers_contained(p, silhouette, c_fit=c_fit)
             if cubics:                            # snap p/ a dimensão real medida pela grade
@@ -3099,6 +3112,13 @@ def write_overlay_svg(rect, cubics, mmpp_x, mmpp_y, path, name="contorno",
 # (pontos fixos da borda verdadeira, ex.: onde a sombra inflou a segmentação);
 # o replay deforma a silhueta extraída p/ passar por eles (apply_pins), DEPOIS
 # do rot+pan (os pins vivem no referencial final, o mesmo do editor).
+# v0.18: o sidecar também guarda SEGMENTS — trechos FIXOS do contorno (as duas
+# pontas são pins), com a geometria exata da tela (cúbica) e o flag de reta. O
+# replay costura a geometria salva na silhueta (apply_segments, depois dos pins)
+# e a emissão substitui o arco correspondente da curva ajustada pelas cúbicas
+# salvas LITERALMENTE (splice_fixed_cubics em _fit_for_output): no trecho
+# protegido o algoritmo não adiciona nó nem deforma nada — magenta = do usuário,
+# fixo; amarelo = calculado.
 # =============================================================================
 def adjust_path(in_path):
     """Caminho do sidecar de ajuste manual da foto `in_path` (`<stem>.adjust.json`,
@@ -3107,9 +3127,10 @@ def adjust_path(in_path):
 
 
 def load_adjust(in_path):
-    """Lê o ajuste salvo: dict `{'rot_deg','pan_mm','center','pins'}` (center = pivô do
-    giro em mm, ou None; pins = pontos FIXOS do contorno em mm, v0.15) — ou None se não
-    há sidecar/ajuste efetivo. Sidecar ilegível é IGNORADO com aviso (calibração
+    """Lê o ajuste salvo: dict `{'rot_deg','pan_mm','center','pins','segments'}`
+    (center = pivô do giro em mm, ou None; pins = pontos FIXOS do contorno em mm,
+    v0.15; segments = trechos FIXOS `{'a','b','line','cubic'}`, v0.18) — ou None se
+    não há sidecar/ajuste efetivo. Sidecar ilegível é IGNORADO com aviso (calibração
     corrompida não derruba a CLI)."""
     path = adjust_path(in_path)
     if not os.path.exists(path):
@@ -3122,29 +3143,42 @@ def load_adjust(in_path):
         c = d.get("center")
         center = (float(c[0]), float(c[1])) if c is not None else None
         pins = [(float(p[0]), float(p[1])) for p in (d.get("pins") or [])]
-        if rot == 0.0 and pan == 0.0 and not pins:
+        segments = [{"a": (float(s["a"][0]), float(s["a"][1])),
+                     "b": (float(s["b"][0]), float(s["b"][1])),
+                     "line": bool(s.get("line")),
+                     "cubic": tuple((float(p[0]), float(p[1])) for p in s["cubic"])}
+                    for s in (d.get("segments") or [])]
+        if rot == 0.0 and pan == 0.0 and not pins and not segments:
             return None
         if rot != 0.0 and center is None:
             raise ValueError("rot_deg sem center (pivô do giro)")
-        return {"rot_deg": rot, "pan_mm": pan, "center": center, "pins": pins}
+        return {"rot_deg": rot, "pan_mm": pan, "center": center, "pins": pins,
+                "segments": segments}
     except (ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as e:
         warn(f"ajuste manual ignorado ({path}: {e})")
         return None
 
 
-def save_adjust(in_path, rot_deg, pan_mm, center, pins=()):
+def save_adjust(in_path, rot_deg, pan_mm, center, pins=(), segments=()):
     """Grava o sidecar do ajuste manual (chamado pelo Finalize do --edit) e devolve o
-    caminho. Ajuste todo ZERADO (rot, pan E pins — usuário desfez a calibração)
-    REMOVE o sidecar e devolve None — a execução seguinte não reaplica nada."""
+    caminho. Ajuste todo ZERADO (rot, pan, pins E segments — usuário desfez a
+    calibração) REMOVE o sidecar e devolve None — a execução seguinte não reaplica
+    nada."""
     path = adjust_path(in_path)
-    if abs(rot_deg) < 1e-9 and abs(pan_mm) < 1e-9 and not pins:
+    if abs(rot_deg) < 1e-9 and abs(pan_mm) < 1e-9 and not pins and not segments:
         if os.path.exists(path):
             os.remove(path)
         return None
     data = {"rot_deg": round(float(rot_deg), 6), "pan_mm": round(float(pan_mm), 6),
             "center": ([round(float(center[0]), 6), round(float(center[1]), 6)]
                        if center is not None else None),
-            "pins": [[round(float(x), 6), round(float(y), 6)] for (x, y) in pins]}
+            "pins": [[round(float(x), 6), round(float(y), 6)] for (x, y) in pins],
+            "segments": [{"a": [round(float(s["a"][0]), 6), round(float(s["a"][1]), 6)],
+                          "b": [round(float(s["b"][0]), 6), round(float(s["b"][1]), 6)],
+                          "line": bool(s.get("line")),
+                          "cubic": [[round(float(x), 6), round(float(y), 6)]
+                                    for (x, y) in s["cubic"]]}
+                         for s in segments]}
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(data, fh)
         fh.write("\n")
@@ -3185,6 +3219,216 @@ def apply_pins(sil, pins, falloff_mm=PIN_FALLOFF_MM):
     return out
 
 
+# --- segmentos FIXOS (v0.18): replay da geometria salva no sidecar ------------
+def _pts_close(p, q, eps=1e-6):
+    return abs(p[0] - q[0]) <= eps and abs(p[1] - q[1]) <= eps
+
+
+def _segment_chains(segments, eps=1e-6):
+    """Agrupa os segmentos fixos em CADEIAS de trechos consecutivos (o `b` de um é
+    o `a` do próximo) — um setor inteiro protegido é costurado de uma vez, com um
+    único par de emendas nas pontas."""
+    remaining = list(segments)
+    chains = []
+    while remaining:
+        chain = [remaining.pop(0)]
+        grew = True
+        while grew and remaining:
+            grew = False
+            for s in list(remaining):
+                if _pts_close(s["a"], chain[-1]["b"], eps):
+                    chain.append(s)
+                    remaining.remove(s)
+                    grew = True
+                elif _pts_close(s["b"], chain[0]["a"], eps):
+                    chain.insert(0, s)
+                    remaining.remove(s)
+                    grew = True
+        chains.append(chain)
+    return chains
+
+
+def _chain_polyline(chain, seg=16):
+    """Polilinha ABERTA a→b da cadeia (cúbicas salvas achatadas + o ponto final —
+    flatten_beziers omite o endpoint, que aqui é a ponta B da emenda)."""
+    pts = flatten_beziers([s["cubic"] for s in chain], seg=seg)
+    b = chain[-1]["cubic"][3]
+    pts.append((float(b[0]), float(b[1])))
+    return pts
+
+
+def _mean_dev_to_polyline(pts, poly, max_samples=64):
+    """Desvio MÉDIO (mm) dos pontos `pts` à polilinha `poly` (subamostrado — é só o
+    critério de escolha do arco, não precisa de precisão fina)."""
+    if not pts or len(poly) < 2:
+        return float("inf")
+    step = max(1, len(pts) // max_samples)
+    sample = pts[::step]
+    total = 0.0
+    for p in sample:
+        total += min(_dist_point_seg(p, poly[k], poly[k + 1])
+                     for k in range(len(poly) - 1))
+    return total / len(sample)
+
+
+def apply_segments(sil, segments, max_dev_mm=SEG_SPLICE_DEV_MM):
+    """Replay dos SEGMENTOS FIXOS (v0.18) na silhueta: p/ cada cadeia de trechos
+    fixos, substitui o arco de `sil` entre as pontas A e B pela geometria SALVA
+    (cúbicas do editor achatadas). O arco certo (entre os dois possíveis) é o de
+    menor desvio à geometria salva — robusto à orientação da silhueta; desvio acima
+    de `max_dev_mm` recusa a costura com AVISO (fallback: silhueta intacta, valem só
+    os pins). Roda DEPOIS de apply_pins (A e B já estão exatos na silhueta).
+    Devolve NOVA lista (cópia se não há segmentos)."""
+    out = list(sil)
+    if not segments or len(out) < 3:
+        return out
+    for chain in _segment_chains(segments):
+        target = _chain_polyline(chain)
+        a, b = target[0], target[-1]
+        if _pts_close(a, b):                     # cadeia FECHADA: contorno todo fixo
+            return target[:-1]
+        n = len(out)
+        ia = min(range(n), key=lambda i: (out[i][0] - a[0]) ** 2 + (out[i][1] - a[1]) ** 2)
+        ib = min(range(n), key=lambda i: (out[i][0] - b[0]) ** 2 + (out[i][1] - b[1]) ** 2)
+        if ia == ib:
+            warn(f"segmento fixo ignorado (pontas A e B caem no mesmo vértice da "
+                 f"silhueta perto de ({a[0]:.1f},{a[1]:.1f}) mm)")
+            continue
+        arc_ab = [out[(ia + k) % n] for k in range(((ib - ia) % n) + 1)]
+        arc_ba = [out[(ib + k) % n] for k in range(((ia - ib) % n) + 1)]
+        dev_ab = _mean_dev_to_polyline(arc_ab, target)
+        dev_ba = _mean_dev_to_polyline(arc_ba, target)
+        if min(dev_ab, dev_ba) > max_dev_mm:
+            warn(f"segmento fixo NÃO costurado (desvio {min(dev_ab, dev_ba):.1f} mm > "
+                 f"{max_dev_mm:.0f} perto de ({a[0]:.1f},{a[1]:.1f}) mm) — contorno "
+                 f"mudou demais; refaça o trecho no --edit")
+            continue
+        if dev_ab <= dev_ba:                     # arco ia→ib é o fixo: entra a→b
+            kept = [out[(ib + k) % n] for k in range(1, (ia - ib) % n)]
+            out = list(target) + kept
+        else:                                    # arco ib→ia é o fixo: entra b→a
+            kept = [out[(ia + k) % n] for k in range(1, (ib - ia) % n)]
+            out = list(reversed(target)) + kept
+    return out
+
+
+def _nearest_on_path(cubics, pt, coarse=32, refine=24):
+    """(índice da cúbica, t, distância) do ponto do caminho fechado `cubics` mais
+    próximo de `pt` — amostragem grossa + busca ternária local (precisão de sobra
+    p/ um corte de emenda, que depois é ENCAIXADO exato no pin)."""
+    best = (0, 0.0, float("inf"))
+    for k, bez in enumerate(cubics):
+        for i in range(coarse + 1):
+            t = i / coarse
+            q = bezier_point(bez, t)
+            d = math.hypot(q[0] - pt[0], q[1] - pt[1])
+            if d < best[2]:
+                best = (k, t, d)
+    k, t0, _ = best
+    lo, hi = max(0.0, t0 - 1.0 / coarse), min(1.0, t0 + 1.0 / coarse)
+    for _ in range(refine):
+        m1 = lo + (hi - lo) / 3.0
+        m2 = hi - (hi - lo) / 3.0
+        q1 = bezier_point(cubics[k], m1)
+        q2 = bezier_point(cubics[k], m2)
+        if math.hypot(q1[0] - pt[0], q1[1] - pt[1]) <= \
+           math.hypot(q2[0] - pt[0], q2[1] - pt[1]):
+            hi = m2
+        else:
+            lo = m1
+    t = 0.5 * (lo + hi)
+    q = bezier_point(cubics[k], t)
+    return k, t, math.hypot(q[0] - pt[0], q[1] - pt[1])
+
+
+def _cubic_len(bez):
+    """Comprimento aproximado (corda + polígono de controle) / 2 — só p/ descartar
+    pedaços DEGENERADOS de um corte em t≈0/1."""
+    chord = math.hypot(bez[3][0] - bez[0][0], bez[3][1] - bez[0][1])
+    poly = sum(math.hypot(bez[i + 1][0] - bez[i][0], bez[i + 1][1] - bez[i][1])
+               for i in range(3))
+    return 0.5 * (chord + poly)
+
+
+def _path_portion(cubics, k1, t1, k2, t2, min_len=1e-9):
+    """Pedaço do caminho fechado de (k1,t1) até (k2,t2) ANDANDO ADIANTE, como lista
+    de cúbicas (cortes de de Casteljau nas pontas; pedaços degenerados filtrados)."""
+    n = len(cubics)
+    if k1 == k2 and t1 < t2:                     # dentro de UMA cúbica
+        mid = _split_cubic(cubics[k1], t1)[1]
+        piece = _split_cubic(mid, (t2 - t1) / (1.0 - t1))[0] if t1 < 1.0 else mid
+        return [piece] if _cubic_len(piece) > min_len else []
+    out = [_split_cubic(cubics[k1], t1)[1]]
+    k = (k1 + 1) % n
+    while k != k2:
+        out.append(cubics[k])
+        k = (k + 1) % n
+    out.append(_split_cubic(cubics[k2], t2)[0])
+    return [bez for bez in out if _cubic_len(bez) > min_len]
+
+
+def _snap_endpoint(bez, which, pt):
+    """Encaixa uma ponta da cúbica EXATAMENTE em `pt`, transladando o handle junto
+    (posição exata no pin; a tangente do lado calculado se preserva — G1 aproximado,
+    G0 garantido, como o plano v0.18 §5.3 admite)."""
+    p0, c1, c2, p3 = bez
+    if which == 0:
+        dx, dy = pt[0] - p0[0], pt[1] - p0[1]
+        return ((float(pt[0]), float(pt[1])), (c1[0] + dx, c1[1] + dy), c2, p3)
+    dx, dy = pt[0] - p3[0], pt[1] - p3[1]
+    return (p0, c1, (c2[0] + dx, c2[1] + dy), (float(pt[0]), float(pt[1])))
+
+
+def splice_fixed_cubics(cubics, segments, max_dev_mm=SEG_SPLICE_DEV_MM):
+    """Emissão LITERAL dos segmentos fixos (v0.18): substitui, no caminho ajustado
+    `cubics`, o arco correspondente a cada cadeia de trechos fixos pelas cúbicas
+    SALVAS — bit a bit o que o usuário finalizou no --edit. O caminho é CORTADO
+    (de Casteljau) nos pontos mais próximos de A e B, o arco de menor desvio à
+    geometria salva sai, e as emendas do lado calculado são encaixadas EXATAS em
+    A/B (o lado fixo nunca cede). No trecho protegido nenhum nó do ajuste
+    sobrevive — o algoritmo não adiciona nem move nada ali. Desvio acima de
+    `max_dev_mm` recusa a costura com aviso (caminho intacto)."""
+    out = list(cubics)
+    if not segments or not out:
+        return out
+    for chain in _segment_chains(segments):
+        stored = [tuple((float(x), float(y)) for (x, y) in s["cubic"]) for s in chain]
+        target = _chain_polyline(chain)
+        a, b = target[0], target[-1]
+        if _pts_close(a, b):                     # cadeia FECHADA: contorno todo fixo
+            return stored
+        k1, t1, _da = _nearest_on_path(out, a)
+        k2, t2, _db = _nearest_on_path(out, b)
+        if k1 == k2 and abs(t1 - t2) < 1e-9:
+            warn(f"segmento fixo ignorado na emissão (A e B caem no mesmo ponto do "
+                 f"caminho perto de ({a[0]:.1f},{a[1]:.1f}) mm)")
+            continue
+        arc_ab = flatten_beziers(_path_portion(out, k1, t1, k2, t2))
+        arc_ba = flatten_beziers(_path_portion(out, k2, t2, k1, t1))
+        dev_ab = _mean_dev_to_polyline(arc_ab, target)
+        dev_ba = _mean_dev_to_polyline(arc_ba, target)
+        if min(dev_ab, dev_ba) > max_dev_mm:
+            warn(f"segmento fixo NÃO emitido literalmente (desvio "
+                 f"{min(dev_ab, dev_ba):.1f} mm > {max_dev_mm:.0f} perto de "
+                 f"({a[0]:.1f},{a[1]:.1f}) mm) — refaça o trecho no --edit")
+            continue
+        if dev_ab <= dev_ba:                     # arco (k1,t1)→(k2,t2) é o fixo
+            kept = _path_portion(out, k2, t2, k1, t1)
+            first_pt, last_pt = b, a             # o que fica vai de B de volta a A
+            fixed = stored
+        else:                                    # orientação oposta: salvo entra b→a
+            kept = _path_portion(out, k1, t1, k2, t2)
+            first_pt, last_pt = a, b
+            fixed = [(p3, c2, c1, p0) for (p0, c1, c2, p3) in reversed(stored)]
+        if not kept:                             # arco calculado sumiu: nada p/ emendar
+            out = fixed
+            continue
+        kept[0] = _snap_endpoint(kept[0], 0, first_pt)
+        kept[-1] = _snap_endpoint(kept[-1], 3, last_pt)
+        out = list(fixed) + kept
+    return out
+
+
 def adjust_rot_affine(rot_deg, center_mm, mmpp_x, mmpp_y):
     """Matriz 2×3 (pixel→pixel) do giro manual: +φ em mm (Y p/ cima) em torno de
     `center_mm` vira K = D·R(φ)·D⁻¹ no referencial do pixel (Y p/ baixo), com
@@ -3220,7 +3464,7 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     overlay PNG de conferência (contorno segmentado sobre a foto); `overlay_svg_path`
     grava o overlay SVG EDITÁVEL (foto embutida + Béziers do .svg) p/ ajuste no Inkscape.
     `return_silhouette=True` devolve também a silhueta crua (p/ checar encaixe).
-    `return_silhouettes=True` (v0.6) devolve `(out, sil, sil_ref)`: `sil_ref` é a silhueta
+    `return_silhouettes=True` (v0.7) devolve `(out, sil, sil_ref)`: `sil_ref` é a silhueta
     de REFERÊNCIA pré `--mask-smooth-mm` (o que a segmentação viu) — é contra ela que o CLI
     mede o `contém`, senão o gate validaria uma silhueta já mutilada pela regularização.
     `return_edit_data=True` devolve `(out, sil, sil_ref, rect, mmpp_x, mmpp_y)` — inclui a
@@ -3232,9 +3476,10 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
     HUMBLE_MIN_FIRM_FRAC; ignorado com `faithful` (contradição — avisa se 'on').
     `return_humble_report=True` anexa o report do humilde (ou None) ao fim da tupla.
     `adjust` = ajuste manual salvo pelo editor (`load_adjust`): o giro roda
-    foto+máscaras juntas, o pan translada o contorno extraído e os pins deformam
-    a silhueta (e a referência do gate) p/ passar pelos pontos fixados (ver a
-    seção do sidecar, acima)."""
+    foto+máscaras juntas, o pan translada o contorno extraído, os pins deformam
+    a silhueta (e a referência do gate) p/ passar pelos pontos fixados e os
+    segmentos fixos (v0.18) substituem o arco entre pins vizinhos pela geometria
+    salva (ver a seção do sidecar, acima)."""
     img = load_image(in_path)
     rect, mmpp_x, mmpp_y, _conf = rectify(img, dict_name=dict_name, debug_dir=debug_dir)
     flat = normalize_illumination(rect, debug_dir=debug_dir)
@@ -3348,13 +3593,19 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
         # segmentação (ex.: sombra) na FONTE, antes do smooth/fit. Depois do pan:
         # os pins vivem no referencial FINAL (pós rot+pan), o mesmo do editor.
         sil = apply_pins(sil, adjust["pins"])
+    if adjust and adjust.get("segments"):
+        # Replay dos SEGMENTOS FIXOS (v0.18): o arco entre dois pins vizinhos é
+        # SUBSTITUÍDO pela geometria salva no --edit — depois dos pins (as pontas
+        # A/B já estão exatas na silhueta) e no mesmo referencial final.
+        sil = apply_segments(sil, adjust["segments"])
     if overlay_svg_path:
         # Mesmos Béziers que o .svg emite (fonte única _fit_for_output, incl. symmetry).
         cub = _fit_for_output(sil, smooth_mm=smooth_mm, simplify_mm=simplify_mm,
                               faithful=faithful, min_dist_mm=min_dist_mm,
                               pocket_eps=pocket_eps, symmetry=symmetry,
                               line_tol_mm=line_tol_mm, arc_tol_mm=arc_tol_mm,
-                              shape=shape, corner_radius_mm=corner_radius_mm)
+                              shape=shape, corner_radius_mm=corner_radius_mm,
+                              segments=(adjust or {}).get("segments", ()))
         flag_pl = [[(float(x) * mmpp_x, float(y) * mmpp_y) for (x, y) in run]
                    for run in (humble_report or {}).get("flag_runs_px", [])]
         write_overlay_svg(rect, cub, mmpp_x, mmpp_y, overlay_svg_path,
@@ -3374,6 +3625,8 @@ def generate_outline(in_path, dict_name=DICT_NAME, min_radius=MIN_RADIUS_MM,
                 # o usuário DECLAROU a borda verdadeira ali — medir o contém contra a
                 # referência crua (com a sombra) puniria a correção que ele pediu.
                 sil_ref = apply_pins(sil_ref, adjust["pins"])
+            if adjust and adjust.get("segments"):      # idem p/ os trechos fixos (v0.18)
+                sil_ref = apply_segments(sil_ref, adjust["segments"])
     if return_edit_data:
         res = (out, sil, sil_ref, rect, mmpp_x, mmpp_y)
     elif return_silhouettes:
@@ -3400,7 +3653,7 @@ def boundary_roughness(pts, win_mm=2.0, step=0.2):
 
 def coverage(outer, inner, ppm=8.0, tol_mm=0.0):
     """Fração da área de `inner` contida em `outer` (mesmo referencial mm). 1.0 =
-    `inner` totalmente dentro de `outer` (a peça cabe no pocket). `tol_mm` > 0 (v0.6)
+    `inner` totalmente dentro de `outer` (a peça cabe no pocket). `tol_mm` > 0 (v0.7)
     ERODE `inner` por essa profundidade antes de medir: penetrações rasas (≤ tol — a
     serrilha de ruído da referência crua) não contam, sem perdoar cortes profundos
     (uma feature perdida continua descoberta mesmo erodida)."""
@@ -3471,13 +3724,16 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
 
     # Nós iniciais = curva ancorada (mesma geometria que o .svg padrão emitiria).
     # getattr: Namespaces sintéticos dos testes antecedem as flags novas (default)
+    adj = load_adjust(args.in_path) or {"rot_deg": 0.0, "pan_mm": 0.0, "center": None,
+                                        "pins": [], "segments": []}
     cub0 = _fit_for_output(sil, smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
                            faithful=args.faithful, min_dist_mm=args.min_dist,
                            pocket_eps=args.pocket_eps, symmetry=args.symmetry,
                            line_tol_mm=getattr(args, "line_tol", LINE_TOL_MM),
                            arc_tol_mm=getattr(args, "arc_tol", ARC_TOL_MM),
                            shape=getattr(args, "shape", "off"),
-                           corner_radius_mm=getattr(args, "corner_radius", CORNER_RADIUS_MM))
+                           corner_radius_mm=getattr(args, "corner_radius", CORNER_RADIUS_MM),
+                           segments=adj.get("segments", []))
     if not cub0:
         # Editor sem nós é beco sem saída (nem inserir dá: precisa de ≥ 2 nós) e o
         # Finalize crasharia em bbox de lista vazia — aborta com diagnóstico.
@@ -3495,15 +3751,15 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
         sym_c = 0.5 * (min_x + max_x) if args.symmetry == "vertical" \
             else 0.5 * (min_y + max_y)
     # Ajuste salvo (sidecar): o pipeline acima JÁ o aplicou (foto girada, contorno
-    # deslocado) — o editor recebe os totais só p/ o status/Finalize acumularem.
-    adj = load_adjust(args.in_path) or {"rot_deg": 0.0, "pan_mm": 0.0, "center": None,
-                                        "pins": []}
+    # deslocado, trechos fixos costurados) — o editor recebe os totais p/ o
+    # status/Finalize acumularem e os segments p/ restaurar retas/pins herdados.
     try:
         res = OE.run_editor(rect, nodes0, mmpp_x, mmpp_y,
                             symmetry=args.symmetry, sym_c=sym_c,
                             init_rot_deg=adj["rot_deg"], init_pan_mm=adj["pan_mm"],
                             init_center=adj["center"],
-                            init_pins=adj.get("pins", []))
+                            init_pins=adj.get("pins", []),
+                            init_segments=adj.get("segments", []))
     except Exception as e:                          # tkinter ausente/sem display etc.
         print(f"ERRO: não consegui abrir o editor ({e}). Rode sem --edit p/ a saída automática.",
               file=sys.stderr)
@@ -3529,13 +3785,15 @@ def _edit_flow(args, out_path, name, overlay_path, overlay_svg_path):
     print(f"    EDITADO {len(cub)} Béziers | obj {ow:.2f}x{oh:.2f} | contorno {pw:.2f}x{ph:.2f} "
           f"| contém {coverage(flatten_beziers(cub), sil_ref, tol_mm=CONTAIN_TOL_MM):.4f}")
     pins_out = adj_out.get("pins", [])
+    segs_out = adj_out.get("segments", [])
     saved = save_adjust(args.in_path, adj_out["rot_deg"], adj_out["pan_mm"],
-                        adj_out["center"], pins=pins_out)
+                        adj_out["center"], pins=pins_out, segments=segs_out)
     if saved:
         print(f"    ajuste salvo: rot {adj_out['rot_deg']:+.2f}° · pan "
-              f"{adj_out['pan_mm']:+.2f} mm · {len(pins_out)} pins → {saved} "
+              f"{adj_out['pan_mm']:+.2f} mm · {len(pins_out)} pins · "
+              f"{len(segs_out)} trechos fixos → {saved} "
               f"(reaplicado em toda execução)")
-    elif adj["rot_deg"] or adj["pan_mm"] or adj.get("pins"):
+    elif adj["rot_deg"] or adj["pan_mm"] or adj.get("pins") or adj.get("segments"):
         print(f"    ajuste zerado: sidecar removido ({adjust_path(args.in_path)})")
     return 0
 
@@ -3710,7 +3968,7 @@ def main(argv=None):
 
     try:
         # `sil` (regularizada) gera o SVG; `sil_ref` (pré --mask-smooth-mm) é a referência
-        # do `contém`/`encaixe` — o gate mede contra o que a SEGMENTAÇÃO viu (v0.6).
+        # do `contém`/`encaixe` — o gate mede contra o que a SEGMENTAÇÃO viu (v0.7).
         pts, sil, sil_ref, hrep = generate_outline(
             args.in_path, return_silhouettes=True, return_humble_report=True,
             **_pipeline_kwargs(args, overlay_path, overlay_svg_path))
@@ -3726,13 +3984,16 @@ def main(argv=None):
     if floor is not None and not anchored and not args.polyline:
         guide = process_for_print(sil, min_radius=args.min_radius, smooth_mm=args.smooth_mm,
                                   clearance=args.guide)
+    adj = load_adjust(args.in_path)                 # calibração do --edit (sidecar)
+    adj_segments = (adj or {}).get("segments", [])
     svg = polygon_to_svg(guide, name=name, curves=not args.polyline, tol=args.fit_tol,
                          silhouette=floor, c_fit=args.c_fit, anchored=anchored,
                          smooth_mm=args.smooth_mm, simplify_mm=args.simplify,
                          faithful=args.faithful, min_dist_mm=args.min_dist,
                          pocket_eps=args.pocket_eps, symmetry=args.symmetry,
                          line_tol_mm=args.line_tol, arc_tol_mm=args.arc_tol,
-                         shape=args.shape, corner_radius_mm=args.corner_radius)
+                         shape=args.shape, corner_radius_mm=args.corner_radius,
+                         segments=adj_segments)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(svg)
     # Saída COMPACTA e parseável (a skill /ptoo lê isto a cada passo): uma linha de status,
@@ -3749,7 +4010,8 @@ def main(argv=None):
                               pocket_eps=args.pocket_eps, symmetry=args.symmetry,
                               line_tol_mm=args.line_tol, arc_tol_mm=args.arc_tol,
                               shape=args.shape,           # mesma geometria do SVG emitido
-                              corner_radius_mm=args.corner_radius)
+                              corner_radius_mm=args.corner_radius,
+                              segments=adj_segments)
         cov = coverage(flatten_beziers(cub), sil_ref, tol_mm=CONTAIN_TOL_MM)
         if pocket:
             pw, ph = size(flatten_beziers(cub))     # pocket = ≥ objeto (contém a peça)
@@ -3778,11 +4040,10 @@ def main(argv=None):
     print(f"OK  {args.in_path}  ->  {out_path}")
     print(f"    {overlays}")
     print(f"    {metrics}")
-    adj = load_adjust(args.in_path)
     if adj:                                         # calibração do --edit reaplicada
         print(f"    ajuste manual aplicado: rot {adj['rot_deg']:+.2f}° · pan "
-              f"{adj['pan_mm']:+.2f} mm · {len(adj.get('pins', []))} pins "
-              f"({adjust_path(args.in_path)})")
+              f"{adj['pan_mm']:+.2f} mm · {len(adj.get('pins', []))} pins · "
+              f"{len(adj_segments)} trechos fixos ({adjust_path(args.in_path)})")
     for (fx, fy), ext in (hrep["flags"] if hrep else []):
         print(f"    AVISO: trecho incerto de ~{ext:.0f} mm perto de ({fx:.0f},{fy:.0f}) "
               f"mm — revisar no --edit", file=sys.stderr)

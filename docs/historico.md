@@ -165,7 +165,7 @@ overlay → ajustar flag → repetir). Virou uma **skill do Claude Code** em
 
 - **Laço automático:** por passe roda a CLI (`--inkscape --debug-dir`), parseia as métricas do
   stdout (objeto, pocket, clearance, contém) e **inspeciona o contorno emitido com zoom** sobre a
-  foto retificada, lado a lado com o segmentado (`scripts/zoom.py`, helper cv2 que rasteriza os
+  foto retificada, lado a lado com o segmentado (`.claude/skills/ptoo/scripts/zoom.py`, helper cv2 que rasteriza os
   Béziers do overlay editável — não há rasterizador SVG no ambiente). Diagnostica por uma tabela
   de heurísticas (sintoma → Δparâmetro) e recalibra em até `--pass N` tentativas.
 - **Memória pequena** (`memory.md`, < 100 linhas): um **`start` dinâmico** = a melhor aposta atual
@@ -372,7 +372,7 @@ invisível ao `contém`, que mede contra a própria máscara). Antes, a **v0.11*
 de correções "espertas" (registro 2-fotos por ZNCC de gradiente, faint-metal adaptativo,
 watershed com guardas) — protótipos com ganho real, mas **rejeitados conscientemente** pelo
 usuário: em vez de perseguir a segmentação perfeita, **admitir a incerteza** e degradar de forma
-controlada. Plano completo (regras, spec, riscos): `docs/melhorias/v0.12.md`.
+controlada.
 
 A forma concreta é o estágio 2e do pipeline (`humble_rewrite` + flag `--humble`; mecanismo,
 constantes e API em [design.md](design.md) §Pipeline 2e; operação no [manual](manual.md)
@@ -475,6 +475,34 @@ a fundir) e o rotate/pan especial dos loose pins (nós já giram/transladam junt
 grava as posições atuais de **todos** os nós marcados; a idempotência se mantém (Finalize salva os
 pins → próximo run `apply_pins` reproduz → o editor re-encaixa). Suíte: 246 → **248**
 (`snap_pins_to_nodes` substitui os testes de `merge_pins` em `TestPinnedTracking`).
+
+## v0.18 — hierarquia de nós e segmentos fixos (magenta = usuário, amarelo = calculado)
+
+Fecha o buraco que os pins v0.15–v0.17 deixavam: o pin fixava um **ponto**, mas o **trecho**
+entre dois pins seguia livre p/ o algoritmo reancorar/deformar — o usuário corrigia um setor
+difícil à mão e a execução seguinte podia desfazer parte do trabalho. Agrupado numa hierarquia
+única e simples de enunciar: **magenta = apontado pelo usuário (fixo), amarelo = calculado
+(mutável)**, valendo p/ nós **e** trechos. Um trecho da curva cujas **duas pontas são pins** é
+um **segmento fixo** (status **derivado** de `pinned`, sem marcação/estado paralelo): desenhado
+em magenta, exportado ao Finalize p/ o sidecar (`segments`: pontas a/b, flag de reta e a
+**cúbica da tela**) e reaplicado **literalmente** em toda execução. No pipeline: `apply_segments`
+costura a geometria salva na silhueta (depois dos pins; arco escolhido por menor desvio, recusa
+com aviso acima de `SEG_SPLICE_DEV_MM = 15 mm`) e `splice_fixed_cubics` — **último** passo de
+`_fit_for_output`, depois de simetria/snap/humble — substitui o arco da curva ajustada pelas
+cúbicas salvas bit a bit, com as emendas do lado calculado encaixadas exatas em a/b. No setor
+protegido o algoritmo **não adiciona nó nem deforma nada**; ele termina só o resto do contorno.
+É o pedido do usuário: **editar à mão um setor complexo e deixar o algoritmo trabalhar sem
+destruir o que foi feito**. Detalhes de UX: retas do botão Line agora **persistem** entre
+sessões (`line:true` no sidecar → `lines_from_segments` na reabertura, corrigindo a perda das
+versões anteriores); nó inserido dentro de trecho fixo nasce pin (`pin_inserted_nodes` —
+refinar ≠ rebaixar); excluir uma ponta devolve o trecho ao amarelo; **duplo-clique** num nó
+alterna fixo↔calculado no lugar (`toggle_pin` — fixar/soltar sem reposicionar, complemento do
+arrasto); a curva é colorida **por trecho** (magenta fixo / amarelo calculado); a **seleção**
+saiu do vermelho p/ **ciano**
+(`#00e5ff`), que colidia com a família magenta. Suíte: 248 → **264** (`TestFixedSegments`
+nível F: sidecar, `apply_segments`, `splice_fixed_cubics`, proteção em `_fit_for_output`, e2e
+thermpro; `TestFixedSegmentsEditor` nível E: derivação, export a→b, restauração de retas,
+pin em inserção, `toggle_pin`).
 
 ## Pendências / roadmap
 

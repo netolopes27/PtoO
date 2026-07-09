@@ -319,23 +319,18 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 - **`--inkscape`** (default off) — gera também o overlay **SVG editável** `_overlay_<nome>.svg`
   (foto retificada embutida + Béziers em camadas, no referencial mm) para ajuste fino no Inkscape.
   O overlay **PNG** de conferência (contorno sobre a foto) sai **sempre**.
-- **`--edit`** (default off) — abre o **editor de nós** (GUI tkinter, stdlib, rótulos em inglês): a
-  foto retificada de fundo + os nós da curva detectada como alças. Arraste = mover; clique na curva =
-  inserir; botão-direito = excluir; **Shift+clique = selecionar/desselecionar nós (sem teto)** — com
-  seleção ativa, o próximo **clique simples MOVE o grupo**: o Δ que leva o **1º selecionado** ao ponto
-  clicado é aplicado a TODOS (1 nó = "mover o ponto sem arrastar"; 1 clique = 1 movimento, a seleção
-  limpa; exatamente 2 selecionados também alimentam o botão **Line**); **Align V / Align H**
-  (v0.16) — com **2+ selecionados**, alinha todos na **vertical** (mesmo x) ou na **horizontal**
-  (mesmo y), sempre na coordenada do **1º selecionado** (ele não se move; a outra coordenada de
-  cada nó é preservada; com simetria ativa o par recebe o alinhamento espelhado; reconstrução
-  como o Line — **não** marca pin); roda = **zoom no cursor** (o
-  ponto sob o mouse fica parado);
-  **Ctrl + arrasto do botão esquerdo = pan**. **Re-trace** traça a curva G1 pelos nós (spline
-  Catmull-Rom); mover/inserir/excluir um nó já re-traça. **WYSIWYG:** **Finalize** grava as mesmas
-  saídas a partir de **EXATAMENTE a curva que está na tela** — nada é recalculado (fechar sem finalizar
-  não grava). A detecção continua automática — você só posiciona os pontos. Parte sempre da curva
-  **ancorada** (ignora `--polyline`/`--tol-fit` como ponto de partida) e emite-a **literal** (sem snap
-  de bbox). Alternativa fora da CLI: `--inkscape` + Inkscape.
+- **`--edit`** (default off) — abre o **editor de nós** (GUI tkinter, stdlib, rótulos em inglês):
+  foto retificada de fundo + nós da curva como alças. **Arraste** = mover · **clique na curva** =
+  inserir · **botão-direito** = excluir · **roda** = zoom no cursor · **Ctrl+arrasto** = pan de
+  vista. **Shift+clique** seleciona nós (sem teto); com seleção ativa, o próximo clique **move o
+  grupo** (o Δ do 1º selecionado vale p/ todos — mover ponto a ponto sem arrastar). Com 2
+  selecionados, **Line** = reta entre eles; com **2+**, **Align V/H** (v0.16) alinha todos na
+  coordenada do 1º selecionado (vertical = mesmo x, horizontal = mesmo y; a outra coordenada é
+  preservada; com simetria o par recebe o alinhamento espelhado). Line e Align são reconstrução —
+  **não** marcam pin. **Re-trace** traça a curva G1 (Catmull-Rom) pelos nós; qualquer edição já
+  re-traça. **WYSIWYG:** **Finalize** grava **EXATAMENTE a curva na tela** — nada recalculado
+  (fechar sem Finalize não grava). Parte sempre da curva **ancorada** (ignora `--polyline`/
+  `--tol-fit`) e emite-a literal (sem snap de bbox). Alternativa fora da CLI: `--inkscape` + Inkscape.
   Controles do plano 011:
   - **Symmetry** (F1) — com `--symmetry` vindo do CLI abre **ligada** (se o pareamento por índice
     se verificar): mover/inserir/excluir/Line num lado **replica no outro** em torno da linha
@@ -374,29 +369,33 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
     lado). Ao contrário do Rotate, **não** desliga a simetria (nós e eixo andam o mesmo passo,
     o pareamento sobrevive por construção). Reset volta ao deslocamento de abertura e devolve
     o eixo original. Exclusivo com o Rotate (ligar um desliga o outro).
-  - **Pins — pontos fixos do contorno (v0.15)** — todo nó que você **REPOSICIONA** (arrasto ou
-    move em grupo; com simetria, o par junto) fica com a alça **magenta** e vira um **ponto
-    fixo persistente**: ao Finalize, as posições marcadas vão p/ o sidecar (abaixo) e **toda
-    execução seguinte deforma a silhueta detectada p/ passar EXATO por elas** (decaimento cos²
-    ao longo do arco, janela `PIN_FALLOFF_MM = 6 mm` p/ cada lado — correção local). É o canal
-    p/ **corrigir a segmentação onde ela erra** (ex.: sombra que inflou a borda): mova o nó p/
-    a borda verdadeira e a correção fica valendo nos passes seguintes. Pins herdados de sessões
-    anteriores (v0.17) abrem como **nós magenta on-curve normais** — a curva passa **exato** por
-    eles e são **arrastáveis/deletáveis** como um pin da sessão (não há mais marcador × solto):
-    na abertura cada pin herdado **encaixa** no nó existente a ≤ 1 mm (`PIN_SNAP_TOL_MM`) ou, se
-    nenhum está perto, **insere** um nó novo ali (`snap_pins_to_nodes`). **Excluir o nó**
-    (botão-direito) desfaz o pin. Rotate/Pan/Line/Mirror **não**
-    marcam (são calibração/reconstrução, não fixação); inserir também não — o nó inserido marca
-    quando você o arrastar. O status mostra `pins N`.
-  - **Persistência (sidecar `.adjust.json`)** — Rotate/Pan e os **pins** são **calibração da
-    foto**, não edição de nós: ao **Finalize**, o total acumulado (rot, pan, pins mesclados) é
-    salvo em `<foto>.adjust.json` (ao lado da entrada, versionado) e **REAPLICADO
-    automaticamente em toda execução seguinte** da CLI sobre a mesma foto — com ou sem `--edit`
-    (o fluxo padrão imprime `ajuste manual aplicado: rot … · pan … · N pins`). O editor reabre
-    já com o ajuste aplicado e o **status bar mostra SEMPRE `rot ±x.xx°` e `pan ±x.xx mm`
-    acumulados** (p/ saber quanto já girou/deslocou). Zerar rot/pan e excluir os pins ao
-    Finalizar **remove** o sidecar. Por isso vale abrir a GUI já no **1º passe** de uma
-    calibração (fixa rotate/pan e os pontos fortes uma vez) além do último.
+  - **Pins — hierarquia magenta/amarelo (v0.15/v0.17/v0.18)** — a regra única: **magenta =
+    apontado por você (fixo), amarelo = calculado (o algoritmo mexe)**, valendo p/ nós **e**
+    trechos. Todo nó que você **REPOSICIONA** (arrasto/move em grupo; com simetria, o par junto)
+    fica magenta = **pin** persistente; ou **duplo-clique** num nó alterna fixo↔calculado **sem
+    movê-lo** (fixa no lugar ou solta p/ o algoritmo recalcular). Ao Finalize os pins vão p/ o
+    sidecar e **toda execução seguinte deforma a silhueta p/ passar EXATO por eles**
+    (`apply_pins`, decaimento cos² na janela `PIN_FALLOFF_MM = 6 mm`) — o canal p/ **corrigir a
+    segmentação onde ela erra** (ex.: sombra na borda). Pins herdados reabrem como **nós magenta
+    on-curve** arrastáveis/deletáveis (`snap_pins_to_nodes` encaixa a ≤ 1 mm ou insere um nó);
+    **excluir o nó** (botão-direito) desfaz o pin. Rotate/Pan/Line/Mirror/Align/inserir **não**
+    marcam. Nó **selecionado** = ciano. Status: `pins N`.
+  - **Segmentos fixos (v0.18)** — trecho cujas **duas pontas são pins** vira **segmento fixo**
+    (status derivado, sem "marcar segmento"): fica magenta e, ao Finalize, vai p/ o sidecar com a
+    **geometria exata da tela** + flag reta/curva (a reta do botão **Line** passa a persistir).
+    **Toda execução reaplica o trecho LITERAL** — o algoritmo **não adiciona nó nem deforma nada**
+    ali; o CLI só **termina o resto**, emendando nos nós magenta. É o canal p/ **editar à mão um
+    setor difícil sem que o algoritmo o destrua**. Inserir nó **dentro** do trecho o mantém fixo
+    (nasce pin — refinar ≠ rebaixar); **excluir uma ponta** devolve ao amarelo. Se a detecção
+    mudou demais entre passes (desvio > `SEG_SPLICE_DEV_MM = 15 mm`), o CLI **avisa e ignora** o
+    segmento (refaça no `--edit`) em vez de costurar errado. Status: `fixed segs N`.
+  - **Persistência (sidecar `.adjust.json`)** — Rotate/Pan, pins e segmentos fixos são
+    **calibração da foto**: ao Finalize o acumulado é salvo em `<foto>.adjust.json` (versionado)
+    e **REAPLICADO em toda execução** — com ou sem `--edit` (o fluxo padrão imprime `ajuste
+    manual aplicado: rot … · pan … · N pins · M trechos fixos`). O editor reabre já ajustado e o
+    status mostra sempre `rot ±x.xx°` / `pan ±x.xx mm` acumulados. Zerar rot/pan e apagar todos
+    os pins/segmentos ao Finalize **remove** o sidecar. Por isso vale abrir a GUI já no **1º
+    passe** (fixa rotate/pan e os pontos/setores fortes uma vez), além do último.
 - **`--debug-dir <dir>`** — grava os estágios intermediários (retificação, iluminação,
   segmentação) para inspeção.
 - **`--name <nome>`** — rótulo do contorno no SVG; default = nome da foto.
@@ -421,6 +420,7 @@ Tolerância do ajuste por tolerância (só com `--tol-fit`).
 | sombra inflou **um lado** de peça simétrica (eixo detectado puxado) | `--edit` → Symmetry on → arrastar o eixo → **Mirror** com o lado bom |
 | contorno inteiro **deslocado lateralmente** da peça (viés uniforme) | `--edit` → modo **Pan** (0.1 mm/passo; simetria acompanha; salvo no sidecar `.adjust.json`, reaplicado em toda execução) |
 | segmentação erra **num trecho localizado** (sombra infla a borda ali) e insiste a cada passe | `--edit` → **arraste o nó p/ a borda verdadeira** (vira **pin** magenta, salvo no sidecar): toda execução seguinte força a silhueta a passar por ali |
+| **setor complexo** que o algoritmo nunca acerta (contorno intricado, muitos passes sem convergir) | `--edit` → edite os nós desse trecho à mão e **fixe as duas pontas** (ficam magenta = **segmento fixo**, v0.18): o setor é reaplicado **literal** em toda execução e o algoritmo termina só o resto, sem tocar no que você fez |
 | bico/canto vivo onde devia arredondar | ↑`--min-radius` (+0.5) |
 | usuário **mediu** o raio dos cantos (paquímetro/descrição) | `--corner-radius R` — o canto sai com o raio declarado, não o estatístico |
 | a peça **é** um retângulo (de cantos arredondados) — usuário declarou | `--shape rect --corner-radius R` — pocket construído exato (8 Béziers); calibre só a segmentação |

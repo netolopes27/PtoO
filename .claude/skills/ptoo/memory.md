@@ -1,7 +1,7 @@
 # ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
 # Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=8
+## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=9
 ## vencedores; recalcular a cada update)
 SEMPRE:      --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
@@ -15,7 +15,7 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
 ## cache último-bom (≤5 linhas; 1 linha por objeto; evicta a mais antiga; histórico COMPLETO
 ## por-passe fica no runs.tsv — nada morre na evicção)
 <!-- formato: - ~WxH mm | <params> | contém=… clearance=… | nota curta -->
-- ~90.18x59.48 mm | --in2 pi_down --shadow remove --min-dist 5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --corner-radius 3 | contém=0.9999 clearance=+0.06/+0.01 | Raspberry Pi 2B; 2 fotos (metal claro); GENÉRICO (NÃO --shape: conectores saem do retângulo); keep-bumps preserva conectores; sidecar c/ 17 pins nos conectores + rot -0.40; final --edit definitivo 38 Béziers contém 0.9999 (v0.17: pins herdados = nós magenta arrastáveis)
+- ~90.20x59.00 mm | --in2 pi_down --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --corner-radius 3 | contém=0.9993 clearance=+0.07/-0.15 | Raspberry Pi 2B; 2 fotos; GENÉRICO (NÃO --shape); keep-bumps preserva conectores; md10 = ótimo da rampa (com 9 pins NÃO arqueia p/ dentro, ≠ caso 17-pin). v0.18: sidecar tem 23 pins + 22 TRECHOS FIXOS — setores INTOCÁVEIS pelo algoritmo (reaplicados literais); parâmetros/rampas só mexem no resto (amarelo). NÃO re-rodar sem --edit (sobrescreve o amarelo finalizado). final --edit WYSIWYG 55 Béziers contém 0.9998 definitivo
 - ~123.00x78.00 mm | --shadow remove --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --val-frac 0.68 --shape rect --corner-radius 7 | contém=1.0000 clearance=+0.10/+0.52 | case_usb; modelo rect DECLARADO; infl 0 (raio real = 7); contorno perfeito de 8 Beziers
 - ~76.88x140.88 mm | --shadow remove --min-dist 1.5 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --val-frac 0.68 | contém=1.0000 clearance=+0.17/+0.22 | zoerax (alicate); keep-bumps salvou o cabo, val-frac pegou o corpo escuro
 - ~59.62x60.75 mm | --shadow remove --min-dist 1 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 | contém=1.0000 clearance=+0.01/-0.04 | trena azul; assimétrica (aba lateral) → SEM symmetry
@@ -64,8 +64,19 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
   Pi): caminho GENÉRICO, NÃO --shape rect (o retângulo excluiria ou inflaria/torceria p/ os conectores,
   como o soquete do TC1). --in2 (2 fotos) recupera o metal claro ≈ papel; --mask-smooth-mm come CADA
   bump de conector (AVISO "saliência convexa") → --mask-smooth-keep-bumps é OBRIGATÓRIO. min-dist 10
-  fecha SEM pins (Pi: 0.9999 folga +0.07); COM pins nos conectores (sidecar) o ótimo da rampa cai p/
-  ~5 (10 arqueia p/ dentro → folga X NEGATIVA 0.9995; 5→0.9998; 2.5→0.9996). --corner-radius R só cantos REAIS.
+  fecha SEM pins (Pi: 0.9999 folga +0.07); COM pins o ótimo da rampa depende da DENSIDADE de pins:
+  17 pins → md10 arqueia p/ dentro (folga X NEG 0.9995), ótimo ~5 (5→0.9998; 2.5→0.9996); 9 pins →
+  md10 NÃO arqueia (folga +0.31, 0.9999, 48 Bez) e VENCE (menos nós). Menos pins = corda mais livre
+  = tolera min-dist maior. --corner-radius R só cantos REAIS.
+- v0.18 SEGMENTOS FIXOS (hierarquia magenta/amarelo): no --edit, trecho com as DUAS pontas
+  pinned = FIXO (magenta), salvo LITERAL no sidecar (geometria + reta/curva) e reaplicado
+  intocado em todo passe; o resto (amarelo) é do algoritmo. Duplo-clique num nó alterna
+  fixo↔calculado sem movê-lo (fixa no lugar / solta p/ recalcular). Consequência p/ o calibrador:
+  onde há trecho fixo, --min-dist/--smooth-mm/--pocket-eps NÃO mudam nada — o campo de trabalho
+  é só o amarelo. Status/stdout mostram `N pins · M trechos fixos`. AVISO "segmento fixo NÃO
+  costurado" (detecção mudou > 15 mm entre passes) → NÃO compensar por param; refazer o trecho
+  no --edit. Nunca re-rodar sem --edit após um edit com trechos fixos: o amarelo é recomputado
+  e sobrescreve a curva finalizada.
 - v0.12 CONTORNO HUMILDE: CLI avisou "só NN% da borda tem apoio visual" → o humilde JÁ ativou
   (cordas entre trechos firmes; métrica `firme NN%`). Conferir os trechos LARANJA (flags) no
   overlay ANTES de mexer em rampas — o défice ali não é densidade, é borda incerta; acabamento

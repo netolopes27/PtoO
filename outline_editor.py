@@ -555,6 +555,100 @@ def snap_pins_to_nodes(nodes, pins, tol_mm=PIN_SNAP_TOL_MM):
     return out, pinned
 
 
+# --- segmentos FIXOS (v0.18): hierarquia magenta (usuário) / amarelo (calculado) --
+# Trecho k (nó k → nó k+1) é FIXO sse as DUAS pontas são pins — status DERIVADO de
+# `pinned`, sem estado paralelo p/ dessincronizar. Ao Finalizar, cada trecho fixo
+# vai p/ o sidecar com a cúbica DA TELA (WYSIWYG) e o flag de reta; o pipeline o
+# reaplica em toda execução (P.apply_segments + P.splice_fixed_cubics) sem nunca
+# adicionar nó nem deformar nada ali.
+def fixed_segment_indices(nodes, pinned):
+    """Índices dos trechos FIXOS: k tal que os nós k e k+1 (circular) são pins."""
+    n = len(nodes)
+    if n < 2:
+        return set()
+    marked = {i % n for i in pinned}
+    return {k for k in range(n) if k in marked and ((k + 1) % n) in marked}
+
+
+def _cubic_between(cubics, a, b, eps=1e-6):
+    """Cúbica exibida cujas pontas casam com (a, b) — em QUALQUER orientação (o
+    re-traçar inverte p/ CCW quando os nós chegam CW). Devolve orientada a→b, ou
+    None se o trecho não está na curva da tela (não deveria acontecer após um
+    Re-trace são)."""
+    def close(p, q):
+        return abs(p[0] - q[0]) <= eps and abs(p[1] - q[1]) <= eps
+    for (p0, c1, c2, p3) in cubics:
+        if close(p0, a) and close(p3, b):
+            return (p0, c1, c2, p3)
+        if close(p0, b) and close(p3, a):
+            return (p3, c2, c1, p0)
+    return None
+
+
+def export_fixed_segments(nodes, pinned, lines, cubics):
+    """Segmentos FIXOS prontos p/ o sidecar (Finalize): p/ cada trecho com as duas
+    pontas pinned, `{'a','b','line','cubic'}` com a cúbica DA TELA orientada a→b
+    (WYSIWYG entre sessões — é ela que o replay emite literalmente)."""
+    out = []
+    n = len(nodes)
+    line_set = {k % n for k in lines} if n else set()
+    for k in sorted(fixed_segment_indices(nodes, pinned)):
+        a, b = nodes[k], nodes[(k + 1) % n]
+        cubic = _cubic_between(cubics, a, b)
+        if cubic is None:
+            continue
+        out.append({"a": a, "b": b, "line": k in line_set, "cubic": cubic})
+    return out
+
+
+def lines_from_segments(nodes, segments, eps=1e-6):
+    """Restaura o flag de RETA herdado do sidecar: trecho k cujo par de nós casa
+    com (a, b) de um segmento `line:true` (qualquer orientação) volta p/ `lines`.
+    Pontas não adjacentes (a costura falhou nesta execução) são ignoradas."""
+    def close(p, q):
+        return abs(p[0] - q[0]) <= eps and abs(p[1] - q[1]) <= eps
+    out = set()
+    n = len(nodes)
+    for s in segments:
+        if not s.get("line"):
+            continue
+        a, b = s["a"], s["b"]
+        for k in range(n):
+            p, q = nodes[k], nodes[(k + 1) % n]
+            if (close(p, a) and close(q, b)) or (close(p, b) and close(q, a)):
+                out.add(k)
+                break
+    return out
+
+
+def pin_inserted_nodes(nodes_old, nodes_new, pinned, eps=1e-9):
+    """Nó NOVO (posição ausente na lista antiga) cujos DOIS vizinhos são pins nasce
+    pin também: inserir DENTRO de um trecho fixo é refinar o setor do usuário — o
+    trecho não pode ser rebaixado a calculado por isso. Devolve um NOVO set."""
+    n = len(nodes_new)
+    out = {i % n for i in pinned}
+    for k, q in enumerate(nodes_new):
+        is_new = not any(abs(q[0] - p[0]) <= eps and abs(q[1] - p[1]) <= eps
+                         for p in nodes_old)
+        if is_new and ((k - 1) % n) in out and ((k + 1) % n) in out:
+            out.add(k)
+    return out
+
+
+def toggle_pin(pinned, i, n):
+    """Double-clique num nó: alterna sua marca de FIXO. Nó CALCULADO (amarelo) vira
+    FIXO (magenta) e vice-versa — sem mover o nó nem tocar na curva. O trecho com as
+    DUAS pontas fixas passa a ser segmento fixo (magenta); tirar a marca de uma ponta
+    devolve o trecho ao amarelo. Devolve um NOVO set de índices."""
+    out = {k % n for k in pinned}
+    i %= n
+    if i in out:
+        out.discard(i)
+    else:
+        out.add(i)
+    return out
+
+
 # --- transforms mm ↔ pixel da foto retificada --------------------------------
 # Convenção idêntica à de P.write_overlay_svg: a silhueta/cúbicas estão em mm com
 # Y p/ CIMA (x ≥ 0, y ≤ 0, pois P.extract_outline faz y = -py·mmpp); a foto tem o
@@ -622,9 +716,15 @@ ZOOM_STEP = 1.25      # fator de zoom por passo da rodinha
 ZOOM_MIN = 0.05
 ZOOM_MAX = 40.0
 MEASURE_COLOR = "#ff9000"   # medições (Measure): laranja destaca da curva/nós/cota
-PIN_COLOR = "#ff30d0"       # nós FIXADOS (pins, v0.15) — reposicionados na sessão OU
-                            # herdados do sidecar (v0.17): magenta separa do amarelo (nó),
-                            # vermelho (seleção) e laranja
+PIN_COLOR = "#ff30d0"       # nós E trechos FIXOS (magenta = apontado pelo usuário, v0.18):
+                            # pins reposicionados na sessão OU herdados do sidecar (v0.17)
+                            # e os segmentos com as duas pontas pinned
+NODE_COLOR = "#ffe000"      # nó CALCULADO (amarelo = do algoritmo, mutável)
+SEG_CALC_COLOR = "#ffd000"  # trecho CALCULADO da curva: tom levemente distinto do nó p/
+                            # a alça não sumir sobre a linha (v0.18 — a curva era magenta
+                            # única; agora a cor é POR TRECHO: magenta fixo/amarelo calc.)
+SEL_COLOR = "#00e5ff"       # nó SELECIONADO (ciano, v0.18 — saiu do vermelho, que
+                            # colidia com a família magenta da curva/pins)
 
 
 class EditorApp:
@@ -670,6 +770,17 @@ class EditorApp:
     no nó perto ou insere um) — a curva passa exato por eles e são arrastáveis; excluir
     o nó (botão-direito) desfaz a marca. Rotate/Pan/Line/Mirror NÃO marcam
     (calibração/reconstrução ≠ fixação).
+    **Segmentos fixos (v0.18)**: hierarquia magenta/amarelo — magenta = apontado
+    pelo usuário (fixo), amarelo = calculado (mutável). Trecho com as DUAS pontas
+    pinned é FIXO (derivado, sem marcação extra): desenhado em magenta, exportado ao
+    Finalizar com a cúbica DA TELA + flag de reta, e reaplicado LITERALMENTE em toda
+    execução (P.apply_segments + P.splice_fixed_cubics — o algoritmo não adiciona nó
+    nem deforma nada ali; só o resto do contorno é recalculado). Nó inserido DENTRO
+    de trecho fixo nasce pin (refinar ≠ rebaixar); excluir uma ponta devolve o trecho
+    ao amarelo. **Double-clique** num nó ALTERNA fixo↔calculado (magenta↔amarelo) sem
+    movê-lo (toggle_pin) — o atalho p/ fixar/soltar um nó sem reposicioná-lo (o drag
+    fixa por reposicionar; isto fixa no lugar ou solta um pin p/ o algoritmo recalcular).
+    Seleção em CIANO (saiu do vermelho).
     **Measure**: modo de medição — 1º clique marca o ponto A, o preview segue o
     cursor TRAVADO no eixo dominante (Ctrl = ângulo livre, measure_snap) e o 2º
     clique fecha; a medição PERSISTE em destaque (linha + marca central + rótulo mm)
@@ -683,7 +794,8 @@ class EditorApp:
     então o custo não explode com o zoom — o polimento pedido."""
 
     def __init__(self, root, rect, nodes0, mmpp_x, mmpp_y, symmetry="none", sym_c=None,
-                 init_rot_deg=0.0, init_pan_mm=0.0, init_center=None, init_pins=()):
+                 init_rot_deg=0.0, init_pan_mm=0.0, init_center=None, init_pins=(),
+                 init_segments=()):
         import tkinter as tk
         self.tk = tk
         self.root = root
@@ -692,7 +804,6 @@ class EditorApp:
         self.mmpp_y = mmpp_y
         self.nodes0 = list(nodes0)          # nós detectados (p/ Reset)
         self.nodes = list(nodes0)           # nós atuais (em mm)
-        self.lines = set()                  # trechos RETOS manuais (índices de trecho)
         self.sel = []                       # nós selecionados via shift+clique (sem teto)
         # --- pins (v0.15): nós REPOSICIONADOS nesta sessão (arrasto/move em grupo)
         # ficam marcados (self.pinned, índices — cor própria) e viram PONTOS FIXOS no
@@ -700,10 +811,14 @@ class EditorApp:
         # deformou a silhueta por eles) entram como NÓS on-curve magenta — não mais
         # marcadores × soltos — via snap_pins_to_nodes: a curva passa exato por eles e
         # eles são arrastáveis/deletáveis como um pin da sessão. `_pins0` guarda os
-        # herdados p/ o Reset re-encaixar.
+        # herdados p/ o Reset re-encaixar. v0.18: `_segments0` guarda os trechos FIXOS
+        # herdados — o pipeline já os costurou na curva (nós a/b vêm exatos); aqui só
+        # se restaura o flag de RETA deles (lines_from_segments).
         self._pins0 = [(float(p[0]), float(p[1])) for p in init_pins]
+        self._segments0 = [dict(s) for s in init_segments]
         self.nodes, self.pinned = snap_pins_to_nodes(self.nodes, self._pins0)
-        self.cubics = cubics_through_nodes(self.nodes)
+        self.lines = lines_from_segments(self.nodes, self._segments0)
+        self.cubics = cubics_through_nodes(self.nodes, self.lines)
         self.history = []                   # pilha p/ Desfazer (snapshots do estado editável)
         self.result = None                  # (cúbicas, foto) ao Finalizar; None = cancelado
         self.zoom = 1.0
@@ -830,6 +945,7 @@ class EditorApp:
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<Double-Button-1>", self.on_double)            # fixa/solta nó
         self.canvas.bind("<Button-3>", self.on_right)                    # excluir nó
         # seleção p/ o botão Line = Shift + clique esquerdo na alça (binding com
         # modificador tem precedência sobre o <Button-1> simples, como o pan)
@@ -916,15 +1032,22 @@ class EditorApp:
         c.delete("all")
         if self._photo is not None:
             c.create_image(self._photo_xy[0], self._photo_xy[1], anchor="nw", image=self._photo)
-        # curva (achatada) sobre a foto, na cor de saída
+        # curva (achatada) sobre a foto, colorida POR TRECHO (v0.18): magenta =
+        # trecho FIXO (duas pontas pinned — do usuário), amarelo = calculado
         if self.cubics:
-            flat = P.flatten_beziers(self.cubics) + [self.cubics[0][0]]
-            coords = []
-            for pt in flat:
-                sx, sy = self._mm_to_screen(pt)
-                coords += [sx, sy]
-            if len(coords) >= 4:
-                c.create_line(*coords, fill=P.OUTLINE_COLOR, width=2)
+            n = len(self.nodes)
+            pairs = [(self.nodes[k], self.nodes[(k + 1) % n])
+                     for k in fixed_segment_indices(self.nodes, self.pinned)]
+            for bez in self.cubics:
+                fixed = any(_cubic_between([bez], a, b) is not None for (a, b) in pairs)
+                flat = P.flatten_beziers([bez]) + [bez[3]]
+                coords = []
+                for pt in flat:
+                    sx, sy = self._mm_to_screen(pt)
+                    coords += [sx, sy]
+                if len(coords) >= 4:
+                    c.create_line(*coords, width=2,
+                                  fill=PIN_COLOR if fixed else SEG_CALC_COLOR)
         # eixo de simetria (F1): linha PONTILHADA em coordenada de tela contínua
         # (sub-pixel, como as alças) — arrastável perpendicular a si (F1b)
         if self.sym_var.get() and self.sym_c is not None:
@@ -935,12 +1058,12 @@ class EditorApp:
                     c.create_line(pos, 0, pos, ch, dash=(6, 4), fill="#ffd800", width=1)
                 else:
                     c.create_line(0, pos, cw, pos, dash=(6, 4), fill="#ffd800", width=1)
-        # alças dos nós (seleção p/ Line/grupo: vermelha; pin — reposicionado OU
-        # herdado do sidecar (v0.17): magenta)
+        # alças dos nós (seleção p/ Line/grupo: CIANO, v0.18; pin — reposicionado OU
+        # herdado do sidecar: magenta; calculado: amarelo)
         for i, pt in enumerate(self.nodes):
             sx, sy = self._mm_to_screen(pt)
-            fill = ("#ff4040" if i in self.sel
-                    else PIN_COLOR if i in self.pinned else "#ffe000")
+            fill = (SEL_COLOR if i in self.sel
+                    else PIN_COLOR if i in self.pinned else NODE_COLOR)
             c.create_oval(sx - HANDLE_R, sy - HANDLE_R, sx + HANDLE_R, sy + HANDLE_R,
                           fill=fill, outline="#000000", tags=f"node{i}")
         if self.size_var.get():                  # cota W×H verde do objeto
@@ -973,6 +1096,9 @@ class EditorApp:
                  f"obj {w:.1f}×{h:.1f} mm · sym {sym}"]
         if self.pinned:                          # pontos fixos (persistem no sidecar)
             parts.append(f"pins {len(self.pinned)}")
+            fixed = fixed_segment_indices(self.nodes, self.pinned)
+            if fixed:                            # trechos fixos (v0.18, idem)
+                parts.append(f"fixed segs {len(fixed)}")
         if self.measures:
             parts.append(f"{len(self.measures)} meas")
         # rot/pan SEMPRE visíveis (pedido do usuário: "quanto girei/desloquei?") —
@@ -995,7 +1121,8 @@ class EditorApp:
                          "· Align V/H=align to 1st · shift+click=toggle · "
                          "2 selected + Line=straight")
         else:
-            parts.append("drag=move · click curve=insert · right-click=delete · "
+            parts.append("drag=move · double-click=fix/unfix (magenta↔yellow) · "
+                         "click curve=insert · right-click=delete · "
                          "shift+click=select (1+=group move, 2=Line) · wheel=zoom · "
                          "Ctrl+drag=pan")
         if self._notice:
@@ -1166,6 +1293,9 @@ class EditorApp:
                 self.nodes = insert_node(self.nodes, j, mm)
                 self.lines = remap_lines_insert(self.lines, j)
             self.pinned = remap_pinned(old, self.pinned, self.nodes)
+            # v0.18: nó inserido DENTRO de um trecho fixo nasce pin (refina o setor
+            # do usuário; nascer amarelo rebaixaria o trecho salvo a calculado)
+            self.pinned = pin_inserted_nodes(old, self.nodes, self.pinned)
             self.sel = []                        # índices mudaram: seleção caduca
             self.retrace()                       # curva na tela segue os nós (WYSIWYG)
 
@@ -1198,6 +1328,24 @@ class EditorApp:
         if self.drag_idx is not None:
             self.drag_idx = None
             self.retrace()                       # re-traça a curva pelos nós na posição final
+
+    def on_double(self, e):
+        """Double-clique esquerdo num nó (v0.18): alterna FIXO (magenta) ↔ calculado
+        (amarelo) SEM mover o nó — atalho manual da hierarquia (o drag já fixa; isto
+        deixa fixar/soltar sem reposicionar, e soltar um pin que o algoritmo deve
+        recalcular). Fora de alça ou em modo Rotate/Pan/Measure = sem efeito. Só a cor
+        e a derivação de segmento fixo mudam; a curva exibida é a mesma (redraw, não
+        retrace). O 1º clique do par iniciou um drag-sem-movimento: cancela-o."""
+        if self._meas_mode or self._rot_mode or self._pan_mode:
+            return
+        mm = self._screen_to_mm(e.x, e.y)
+        i = nearest_node(self.nodes, mm, max_dist=self._hit_tol_mm())
+        if i is None:
+            return
+        self._push_history()
+        self.pinned = toggle_pin(self.pinned, i, len(self.nodes))
+        self.drag_idx = None                     # anula o drag aberto pelo ButtonPress
+        self.redraw()                            # nada de geometria mudou: só recolore
 
     def on_right(self, e):
         if self._rot_mode:                       # F4: clique-direito = girar +passo
@@ -1539,11 +1687,12 @@ class EditorApp:
         # Reset = estado de ABERTURA da janela (WYSIWYG): nós detectados + o ajuste
         # SALVO no sidecar (que o CLI já aplicou) — só o editado NESTA sessão sai.
         self._push_history()
-        self.lines = set()                       # retas manuais também voltam ao zero
         self.sel = []
         # v0.17: nós detectados + pins herdados re-encaixados como nós (estado de
-        # ABERTURA); as marcas/moves da sessão saem.
+        # ABERTURA); as marcas/moves da sessão saem. v0.18: as retas da sessão saem
+        # e as HERDADAS dos segmentos fixos do sidecar voltam.
         self.nodes, self.pinned = snap_pins_to_nodes(self.nodes0, self._pins0)
+        self.lines = lines_from_segments(self.nodes, self._segments0)
         self.pan_mm = self._pan0                 # pan da sessão fora; o salvo fica
         self.sym_c = self._sym_c0                # ORIGINAL da detecção (pan/arrasto fora)
         if self.sym_var.get() and self.sym_c is None:
@@ -1560,13 +1709,17 @@ class EditorApp:
         """Ajuste manual TOTAL acumulado (salvo no sidecar + editado nesta sessão) —
         é o que o CLI persiste em `<foto>.adjust.json` ao Finalizar. v0.17: `pins` =
         posições ATUAIS de TODOS os nós marcados (herdados que sobreviveram + os
-        reposicionados/criados na sessão); um pin excluído saiu de `self.pinned`."""
+        reposicionados/criados na sessão); um pin excluído saiu de `self.pinned`.
+        v0.18: `segments` = trechos FIXOS (duas pontas pinned) com a cúbica DA TELA
+        e o flag de reta — o pipeline os reaplica literalmente."""
         n = len(self.nodes)
         pins = [self.nodes[i % n] for i in sorted(self.pinned)] if n else []
+        segments = export_fixed_segments(self.nodes, self.pinned, self.lines,
+                                         self.cubics) if n else []
         return {"rot_deg": self.rot_deg, "pan_mm": self.pan_mm,
                 "center": self.rot_center if self.rot_center is not None
                 else self._center0,
-                "pins": pins}
+                "pins": pins, "segments": segments}
 
     def finish(self):
         # WYSIWYG: grava EXATAMENTE a curva que está na tela (o último Re-traçar), sem
@@ -1577,21 +1730,24 @@ class EditorApp:
 
 
 def run_editor(rect, nodes0, mmpp_x, mmpp_y, symmetry="none", sym_c=None,
-               init_rot_deg=0.0, init_pan_mm=0.0, init_center=None, init_pins=()):
+               init_rot_deg=0.0, init_pan_mm=0.0, init_center=None, init_pins=(),
+               init_segments=()):
     """Abre o editor e BLOQUEIA até o usuário Finalizar ou fechar a janela. Devolve
     `(cúbicas, foto, ajuste)` ao Finalizar — as cúbicas EXATAMENTE como exibidas
     (Catmull-Rom G1 pelos nós, o mesmo do Re-traçar), a foto retificada com o giro
     da sessão (p/ o overlay continuar casado) e o dict
-    `{'rot_deg','pan_mm','center','pins'}` TOTAL p/ o CLI salvar no sidecar — ou
-    `None` se cancelado. `symmetry`/`sym_c` (F1): modo e eixo detectados pelo CLI —
-    o editor NÃO recalcula o eixo. `init_rot_deg`/`init_pan_mm`/`init_center`/
-    `init_pins`: ajuste salvo que o CLI já aplicou no pipeline (o editor parte dele:
-    status mostra o total, a view só gira o delta; pins herdados viram NÓS on-curve
-    magenta, v0.17)."""
+    `{'rot_deg','pan_mm','center','pins','segments'}` TOTAL p/ o CLI salvar no
+    sidecar — ou `None` se cancelado. `symmetry`/`sym_c` (F1): modo e eixo detectados
+    pelo CLI — o editor NÃO recalcula o eixo. `init_rot_deg`/`init_pan_mm`/
+    `init_center`/`init_pins`/`init_segments`: ajuste salvo que o CLI já aplicou no
+    pipeline (o editor parte dele: status mostra o total, a view só gira o delta;
+    pins herdados viram NÓS on-curve magenta, v0.17; segmentos fixos herdados chegam
+    costurados na curva e só o flag de reta é restaurado, v0.18)."""
     import tkinter as tk
     root = tk.Tk()
     app = EditorApp(root, rect, nodes0, mmpp_x, mmpp_y, symmetry=symmetry, sym_c=sym_c,
                     init_rot_deg=init_rot_deg, init_pan_mm=init_pan_mm,
-                    init_center=init_center, init_pins=init_pins)
+                    init_center=init_center, init_pins=init_pins,
+                    init_segments=init_segments)
     root.mainloop()
     return app.result

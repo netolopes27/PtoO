@@ -345,7 +345,17 @@ matriz única `adjust_rot_affine`, o pan translada o contorno extraído em mm ex
 alça magenta) viram **pontos fixos** no mesmo sidecar; o replay (`apply_pins`) deforma a
 silhueta extraída — e a `sil_ref` do gate — p/ passar EXATO por cada pin, com decaimento cos²
 ao longo do arco (`PIN_FALLOFF_MM`), corrigindo a segmentação (ex.: sombra) na fonte em toda
-execução; pins herdados abrem como nós magenta on-curve normais (v0.17, `snap_pins_to_nodes` encaixa/insere; botão-direito exclui). `--debug-dir` grava intermediários. Marcadores insuficientes →
+execução; pins herdados abrem como nós magenta on-curve normais (v0.17, `snap_pins_to_nodes` encaixa/insere; botão-direito exclui).
+**Segmentos fixos persistem (v0.18)**: hierarquia magenta (usuário, fixo) / amarelo
+(calculado). Trecho com as DUAS pontas pinned é FIXO — derivado de `pinned`, sem marcação
+extra — e vai p/ o mesmo sidecar (`segments`: pontas a/b, flag de reta e a cúbica DA TELA).
+O replay costura a geometria salva na silhueta (`apply_segments`, depois dos pins; arco
+escolhido por menor desvio, recusa com aviso acima de `SEG_SPLICE_DEV_MM`) e a emissão
+substitui o arco da curva ajustada pelas cúbicas salvas LITERALMENTE
+(`splice_fixed_cubics`, último passo de `_fit_for_output` — depois de simetria/snap/humble,
+nada mais toca o trecho): no setor protegido o algoritmo não adiciona nó nem deforma nada;
+as emendas do lado calculado são encaixadas exatas em a/b (G0 garantido, tangente
+preservada por translação do handle). `--debug-dir` grava intermediários. Marcadores insuficientes →
 aborta com mensagem clara. (Referência operacional completa das flags: [manual.md](manual.md); resumo em inglês no
 [README.md](../README.md) §4.)
 
@@ -378,6 +388,8 @@ mínimos) · `ARC_R_MIN_MM = 0.8` / `ARC_R_MAX_MM = 60.0` (faixa de raio plausí
 reta que é arco disfarçado) · `PRIM_TRIM_MM = 0.8` (recuo das pontas de reta → filete G1) ·
 `CORNER_RADIUS_MM = 0.0` (prior de raio `--corner-radius`, v0.13; 0 desliga) ·
 `PIN_FALLOFF_MM = 6.0` (meia-janela de arco da deformação de um pin do sidecar, v0.15) ·
+`SEG_SPLICE_DEV_MM = 15.0` (desvio máx. p/ casar um arco com um segmento FIXO salvo, v0.18;
+acima disso a costura é recusada com aviso — fallback v0.17, só pins) ·
 `SHAPE_INFL_MAX_MM = 2.0` / `SHAPE_GAP_MM = 5.0` (salvaguardas do `--shape`: inflação e vão
 máximos antes do fallback) ·
 `FIT_TOL_MM = 0.2` · `BEZIER_GUIDE_MM = 0.5` · `CORNER_ANGLE_DEG = 40.0` ·
@@ -416,7 +428,7 @@ personalizável** a partir do contorno medido.
 
 `tests/test_photo_to_outline.py` + `tests/test_calibration_target.py` +
 `tests/test_outline_editor.py` (`unittest`, via `run_image_tests.py`).
-**Contagem canônica: 248/248 verde** (única fonte; os guias só dizem "verde"). Níveis:
+**Contagem canônica: 264/264 verde** (única fonte; os guias só dizem "verde"). Níveis:
 
 - **A. Unidade (puro):** `polygon_area`/`ensure_ccw` (sinal, CCW); `douglas_peucker` (reduz
   vértices, preserva bbox); `chaikin` (baixa o ângulo máx.); `enforce_min_radius`
@@ -531,6 +543,13 @@ personalizável** a partir do contorno medido.
   **Measure (`TestMeasureTool`):** `measure_snap` trava o 2º ponto no eixo dominante (|dx|≥|dy|
   → horizontal, empate incluso; `free=True`/Ctrl mantém livre); `measure_length`/
   `measure_midpoint`; `nearest_measure` mede a distância ao SEGMENTO (hit-test do excluir).
+  **Segmentos fixos (`TestFixedSegmentsEditor`, v0.18):** `fixed_segment_indices` deriva o
+  status (duas pontas pinned, wrap incluso); `export_fixed_segments` exporta a cúbica DA TELA
+  orientada a→b mesmo com a inversão CCW do re-traçar e pula trechos não fixos;
+  `lines_from_segments` restaura o flag de reta herdado (qualquer orientação; pontas não
+  adjacentes ignoradas); `pin_inserted_nodes` faz o nó inserido DENTRO de trecho fixo nascer
+  pin (e só nele); `toggle_pin` alterna a marca de fixo de um nó (double-clique na view,
+  wrap de índice incluso) sem movê-lo.
   A view tkinter é glue fino e **não** é instanciada (runner
   headless); o Finalizar grava EXATAMENTE a curva exibida (WYSIWYG), a foto com o giro
   da sessão e o ajuste TOTAL (rot/pan + pins mesclados) p/ o sidecar, sem recalcular.
@@ -547,7 +566,15 @@ personalizável** a partir do contorno medido.
   pin (vértice mais próximo), decai em cos² ao longo do arco (peso 0.5 na meia-janela) e não
   toca fora da janela; dois pins somam; sidecar SÓ com pins é efetivo (mantém o arquivo) e o
   sidecar legado (sem a chave) lê `pins=[]`; e2e no thermpro: o replay deforma a silhueta
-  localmente (passa pelo pin, lado oposto intacto). `TestCubicRoots`: raiz DUPLA
+  localmente (passa pelo pin, lado oposto intacto). `TestFixedSegments` (v0.18): roundtrip do
+  sidecar com `segments` (SÓ segments mantém o arquivo; legado lê `segments=[]`; zerar tudo
+  remove); `apply_segments` substitui o arco certo pela geometria salva (calombo removido,
+  pontas exatas, lado oposto intacto, silhueta CW inclusive) e RECUSA com aviso o segmento
+  cujo desvio passa de `SEG_SPLICE_DEV_MM`; `splice_fixed_cubics` emite as cúbicas salvas
+  bit a bit (nó interior do arco substituído some, caminho segue fechado/encadeado);
+  `_fit_for_output(segments=)` protege o arco (nenhum nó novo dentro dele, cúbica literal na
+  saída); e2e no thermpro: o replay do segmento reto vira corda exata na silhueta, lado
+  oposto intacto. `TestCubicRoots`: raiz DUPLA
   achada apesar do arredondamento float (tolerância relativa no `det`; antes `det == 0` exato
   perdia a raiz e um cruzamento tangente do eixo sumia). Robustez do layout: borda que não
   comporta 2 marcadores com o vão mínimo recebe **1 centrado** (nunca um par quase-sobreposto)

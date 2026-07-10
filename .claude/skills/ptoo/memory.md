@@ -1,7 +1,7 @@
 # ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
 # Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=11
+## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=12
 ## vencedores; recalcular a cada update)
 SEMPRE:      --shadow remove --min-dist 2 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
@@ -15,7 +15,7 @@ CONDICIONAL: peça RETILÍNEA (placa) → começar a rampa min-dist NO DEFAULT 1
 ## cache último-bom (≤5 linhas; 1 linha por objeto; evicta a mais antiga; histórico COMPLETO
 ## por-passe fica no runs.tsv — nada morre na evicção)
 <!-- formato: - ~WxH mm | <params> | contém=… clearance=… | nota curta -->
-- ~68.69x70.59 mm | --shadow remove --min-dist 4 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --symmetry vertical | contém=0.9999 clearance=+0.00/+0.22 | thermpro (amostra); 1º passe GUI rot -0.60 + 19 pins + 18 trechos fixos → gate direto; platô md 2–4; md 8–10 adicionam nós; 28 Béziers
+- ~68.69x70.59 mm | --shadow remove --min-dist 4 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --symmetry vertical | contém=0.9945 clearance=- | thermpro (amostra); sidecar rot -0.60 · pan +0.30 · 21 pins + 20 trechos fixos; --edit WYSIWYG definitivo 30 Béziers (contém medido vs máscara — edit manual vale mais); platô md 2–4
 - ~77.62x140.07 mm | --val-frac 0.75 --shadow remove --min-dist 2 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps | contém=0.9992 clearance=-/+ | zoerax (alicate); ajuste fino intenso refinado (rot -1.9, 18 pins, 16 trechos fixos); contém 0.9992 definitivo; 66 Béziers
 - ~90.53x58.98 mm | --in2 pi_down --shadow remove --min-dist 10 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --mask-smooth-keep-bumps --corner-radius 3 | contém=1.0000 clearance=+0.00/+0.00 | Raspberry Pi 2B; 2 fotos; GENÉRICO; 34 pins + 34 TRECHOS FIXOS = contorno 100% fixo (sem amarelo); rampas sem efeito; --edit WYSIWYG 34 Béziers contém 1.0000 definitivo; firme 94%
 - ~123.00x78.00 mm | --shadow remove --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2 --val-frac 0.68 --shape rect --corner-radius 7 | contém=1.0000 clearance=+0.10/+0.52 | case_usb; modelo rect DECLARADO; infl 0 (raio real = 7); contorno perfeito de 8 Beziers

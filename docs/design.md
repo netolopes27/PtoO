@@ -228,8 +228,9 @@ polui o contorno.
    remove saliência convexa ≥ `PROTRUSION_DEV_MM` / `MASK_SMOOTH_WARN_AREA_MM2`).
    **Modo fiel (`--faithful`):** ancora nos pontos mais distantes (fecho convexo destilado por
    RDP `--simplify`), ajusta cúbicas **contidas** entre âncoras (maior tolerância sem penetrar
-   além de `ANCHOR_EPS_MM`, via `distanceTransform`) e **fixa a bbox (snap, por eixo) na dimensão
-   real** (`_scale_cubics_to_bbox`).
+   além de `ANCHOR_EPS_MM` **nem estufar p/ fora além de `ANCHOR_OUT_CAP_MM`** — piso
+   `_floor_field` + teto `_ceil_field`, via `distanceTransform`) e **fixa a bbox (snap, por
+   eixo) na dimensão real** (`_scale_cubics_to_bbox`).
    **Todo nó é SUAVE (G1)** nos dois modos: a tangente em cada âncora é **compartilhada** entre
    os trechos vizinhos (`_anchor_tangents`) → sem bico, fácil de editar no Inkscape. Saída =
    contorno + preenchimento translúcido (`OUTLINE_COLOR` a `OUTLINE_FILL_OPACITY`, sobrepõe o
@@ -379,7 +380,8 @@ faint-metal do modo 2 fotos) · `FUSE_GROW_MM = 0.0` (default do `--fuse-grow`) 
 / `LEVEL_LINE_MIN_MM = 8.0` (auto-nível `--level`, 011/F3: faixa fina da correção; guarda de peça
 ~quadrada/redonda + reta que a resgata) · `MIN_RADIUS_MM = 1.5` · `SMOOTH_MM = 8.0` · `CLEARANCE_MM = 0.0` (sem
 ganho) · `ANCHOR_SIMPLIFY_MM = 2.0` (modo fiel) · `ANCHOR_EPS_MM = 0.08` (fiel)
-· `POCKET_EPS_MM = 0.5` (penetração tolerada) · `ANCHOR_HANDLE_CAP = 0.40` (teto do handle =
+· `ANCHOR_OUT_CAP_MM = 0.25` (fiel: teto do estufamento p/ fora por trecho — fidelidade nos
+dois sentidos) · `POCKET_EPS_MM = 0.5` (penetração tolerada) · `ANCHOR_HANDLE_CAP = 0.40` (teto do handle =
 fração da corda, anti-laço) · `ANCHOR_MIN_DIST_MM = 10.0` (densidade do pocket) ·
 `PROTRUSION_DEV_MM = 0.8` (proeminência mín.) · `CONTAIN_COVERAGE = 0.99` (abaixo,
 avisa) · `LINE_TOL_MM = 0.3` / `ARC_TOL_MM = 0.3` (primitivas v0.10; defaults de

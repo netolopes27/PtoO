@@ -165,6 +165,10 @@ CORNER_ANGLE_DEG = 40.0    # ângulo p/ marcar um canto (nó cusp entre curvas s
 ANCHOR_SIMPLIFY_MM = 2.0   # RDP do fecho convexo: MAIOR = menos âncoras/nós (mais "hull"),
                             # MENOR = mais âncoras = contorno mais justo (porém mais nós)
 ANCHOR_EPS_MM = 0.08       # penetração máx. (mm) tolerada no piso ao ajustar cada trecho (modo fiel)
+ANCHOR_OUT_CAP_MM = 0.25   # estufamento máx. (mm) PARA FORA tolerado por trecho no modo fiel: sem
+                            # ele, um arco longo pode passar no piso com tolerância enorme balonando
+                            # >1 mm p/ fora — o snap de bbox converte o balão em DESLOCAMENTO do
+                            # contorno sobre a peça (3 px do campo a 12 px/mm, acima do quantum do dt)
 POCKET_EPS_MM = 0.5        # penetração tolerada (mm) no modo POCKET de encaixe: a curva pode
                             # TOCAR/cortar de leve a peça em vez de estufar p/ fora a span inteira
                             # por ruído sub-mm → pocket bem mais justo, ainda contendo ~0.998
@@ -1787,6 +1791,22 @@ def _floor_field(silhouette, c_fit, ppm):
     return dt, ppm, ox, oy
 
 
+def _ceil_field(silhouette, ppm):
+    """Complemento do `_floor_field`: quão LONGE do lado de FORA da silhueta um ponto
+    está, em mm (0 dentro). Teto do modo fiel — limita o estufamento p/ fora. O pad de
+    6 mm cobre o maior desvio possível do ajuste (tolerância máx. 3 mm): amostras fora
+    do canvas leriam 0 (sem estufamento) em `_max_penetration`, mascarando o balão."""
+    min_x, min_y, max_x, max_y = bbox(silhouette)
+    pad = 6.0
+    ox, oy = min_x - pad, min_y - pad
+    w = int(math.ceil((max_x - min_x + 2 * pad) * ppm))
+    h = int(math.ceil((max_y - min_y + 2 * pad) * ppm))
+    poly = [((x - ox) * ppm, (y - oy) * ppm) for (x, y) in silhouette]
+    mask = _polys_to_mask([poly], w, h)
+    dt = cv2.distanceTransform(cv2.bitwise_not(mask), cv2.DIST_L2, 3)
+    return dt, ppm, ox, oy
+
+
 def _max_penetration(bez, field, nsamp):
     """Maior penetração (mm) da cúbica no piso + parâmetro t do pior ponto."""
     dt, ppm, ox, oy = field
@@ -1882,14 +1902,19 @@ def hull_anchor_indices(rp, simplify_mm=ANCHOR_SIMPLIFY_MM):
     return sorted(hidx[j] for j in keep)
 
 
-def _fit_segment_contained(seg, that1, that2, field, eps, out):
+def _fit_segment_contained(seg, that1, that2, field, eps, out, ceil_field=None,
+                           out_cap=ANCHOR_OUT_CAP_MM):
     """Ajusta o trecho [âncora→âncora] pela MAIOR tolerância cuja cúbica não penetra
-    o piso além de `eps`: 1 curva onde a peça é lisa, mais só onde a forma exige."""
+    o piso além de `eps`: 1 curva onde a peça é lisa, mais só onde a forma exige.
+    Com `ceil_field` (modo fiel), a cúbica também não pode ESTUFAR p/ fora além de
+    `out_cap` — fidelidade vale nos dois sentidos (ver ANCHOR_OUT_CAP_MM)."""
     chosen, tmp = None, []
     for tol in sorted(_FIT_TOL_GRID, reverse=True):
         tmp = []
         _fit_cubic_recursive(seg, that1, that2, tol, tmp)
-        if _beziers_max_penetration(tmp, field) <= eps:
+        if _beziers_max_penetration(tmp, field) <= eps and (
+                ceil_field is None or
+                _beziers_max_penetration(tmp, ceil_field) <= out_cap):
             chosen = tmp
             break
     out.extend(chosen if chosen is not None else tmp)
@@ -2820,13 +2845,14 @@ def fit_closed_beziers_anchored(silhouette, smooth_mm=SMOOTH_MM,
     else:
         # FIEL/ilimitado: âncoras do fecho convexo + subdivisão por contenção (legado).
         field = _floor_field(clean, 0.0, ppm)
+        cfield = _ceil_field(clean, ppm)             # teto: fiel também p/ FORA
         anchors = hull_anchor_indices(rp, simplify_mm=simplify_mm)
         if len(anchors) < 2:
             anchors = [0, n // 2]
         tang = _anchor_tangents(rp, anchors)         # tangente suave (marcha) por âncora
         cubics = []
         for seg, t1, t2 in _anchor_segments(rp, anchors, tang):
-            _fit_segment_contained(seg, t1, t2, field, eps, cubics)
+            _fit_segment_contained(seg, t1, t2, field, eps, cubics, ceil_field=cfield)
 
     # Modelo paramétrico já é exato e simétrico na PRÓPRIA pose; espelhar em torno do
     # eixo da bbox (que ignora a rotação da peça) o entortaria — simetria só no genérico.

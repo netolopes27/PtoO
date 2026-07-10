@@ -3,6 +3,7 @@
 #   python -m venv .venv
 #   .venv/Scripts/python -m pip install -r requirements.txt      # Linux/Mac: .venv/bin/python
 #
-# Verificado em Python 3.14 (Windows): há wheel abi3 do opencv-python que cobre 3.14.
+# Verificado em Python 3.14 (Windows): há wheel abi3 do opencv-python que cobre 3.14
+# (verificado com OpenCV 5.0).
 numpy>=2.5,<3
-opencv-python>=4.13,<5
+opencv-python>=5.0,<6

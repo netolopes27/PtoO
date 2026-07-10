@@ -504,6 +504,20 @@ nível F: sidecar, `apply_segments`, `splice_fixed_cubics`, proteção em `_fit_
 thermpro; `TestFixedSegmentsEditor` nível E: derivação, export a→b, restauração de retas,
 pin em inserção, `toggle_pin`).
 
+## Migração OpenCV 4.13 → 5.0 (jul/2026)
+
+Pin `opencv-python>=5.0,<6` (wheels seguem `cp37-abi3`, cobrindo o Python 3.14; numpy 2.5.1).
+A suíte pegou **1 regressão real**: o `warpPerspective` do 5.0 arredonda ±1 nível de cinza
+(~2% dos pixels), jitter de 1 px na borda da máscara — inócuo em si (bbox idêntica), mas
+suficiente p/ o modo fiel escolher outra tolerância num trecho de fio-de-navalha: a seleção
+só fiscalizava a penetração **p/ dentro**, e um arco longo podia passar com tolerância enorme
+**balonando >1 mm p/ fora** — que o snap de bbox converte em **deslocamento** do contorno
+sobre a peça (coverage 0,986 < 0,99; no 4.13 os trechos "sortudos" caíam do lado que não
+deslocava — 0,993 por sorte). Correção de raiz: **teto de estufamento** no fiel
+(`ANCHOR_OUT_CAP_MM = 0.25`, `_ceil_field` = distanceTransform do complemento) — fidelidade
+passa a valer nos dois sentidos. Coverage subiu p/ **0,998 nas duas versões** (29–30 nós,
+suavidade melhor). Suíte segue em **264**.
+
 ## Pendências / roadmap
 
 - **Objeto claro/dessaturado** (peça metálica fosca) confundindo-se com o miolo branco: **em 2

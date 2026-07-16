@@ -31,7 +31,6 @@ date	object	photo	pass	obj_w_mm	obj_h_mm	shape	cond	min_dist	smooth_mm	pocket_ep
 2026-07-10	thermpro	thermpro.jpg	1	68.69	70.59	organica	croma;simetrica;pins	4	2.5	0	2	remove	vertical	0	-	0.9945	-	-	30	0	1	(sessao --pass 1) unico passe = --edit definitivo c/ params do cache: usuario refinou p/ 21 pins + 20 trechos fixos + pan +0.30; EDITADO 30 Bez contem 0.9945 WYSIWYG
 2026-07-14	one_blade	one_blade_up.jpg	1	161.97	33.13	organica	2fotos;clara-papel;pins	2	2.5	0	2	remove	none	0	--in2 images/one_blade_down.jpg	1.0000	0.00	0.00	23	1	0	(sessao --pass 1) --edit definitivo; 23 pins + 23 trechos fixos + rot -0.40 + pan +0.10; contorno 100% fixo; pocket flush 1.0000; firme 17%
 2026-07-14	one_blade	one_blade_up.jpg	2	161.97	33.13	organica	2fotos;clara-papel;pins	2	2.5	0	2	remove	none	0	--in2 images/one_blade_down.jpg	1.0000	-	-	23	1	1	(passe extra pedido) --edit refinamento; 23 pins + 23 trechos fixos inalterados; EDITADO 23 Bez contorno 162.01x33.13 contem 1.0000 WYSIWYG definitivo
-
 2026-07-16	one_blade	one_blade.jpg	1	159.00	34.62	organica	-	2	2.5	0	2	remove	none	0	-	1.0000	1.22	0.06	20	1	0	1o passe; cruzou gate; mask-smooth-mm removeu saliencia convexa
 2026-07-16	one_blade	one_blade.jpg	2	159.62	34.75	organica	-	4	2.5	0	2	remove	none	1	-	0.9998	0.17	0.16	29	0	0	keep-bumps para preservar saliencia; subiu md p/ 4 buscando menos nos mas perdeu o gate
 2026-07-16	one_blade	one_blade.jpg	3	159.62	34.75	organica	-	2	2.5	0	2	remove	none	1	-	0.9998	0.17	0.16	28	0	0	desceu md p/ 2; ainda fora do gate

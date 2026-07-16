@@ -1,7 +1,7 @@
 # ptoo memory — manter < 100 linhas. Regras de atualização: SKILL.md §Depois do laço.
 # Gate/ranking/rampas: SKILL.md (fonte única). Sintoma → flag: docs/manual.md §6.
 
-## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=13
+## start = melhor aposta p/ objeto NOVO (derivado do runs.tsv via scripts/derive_start.py, n=15
 ## vencedores; recalcular a cada update)
 SEMPRE:      --shadow remove --min-dist 2 --smooth-mm 2.5 --pocket-eps 0 --mask-smooth-mm 2
 CONDICIONAL: --symmetry vertical|horizontal — SÓ com eixo de espelho claro; NUNCA em peça
